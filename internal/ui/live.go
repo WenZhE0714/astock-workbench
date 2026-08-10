@@ -23,6 +23,8 @@ type LiveData struct {
 	FlowError       string
 	Status          string
 	Footer          string
+	GroupName       string
+	GroupCount      int
 	Selected        int
 	Detail          bool
 }
@@ -200,9 +202,17 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 	if displayWidth(first) > width {
 		first = truncateWidth(ansiPattern.ReplaceAllString(first, ""), width)
 	}
-	return first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
+	header := first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
 		"\n" + marketFlowOverview(data.Flows, options.Moyu, options.Color, width) +
 		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, width)
+	if data.GroupName != "" {
+		label := fmt.Sprintf("自选分组  %s  ·  %d只", data.GroupName, data.GroupCount)
+		if options.Moyu {
+			label = fmt.Sprintf("GROUP  %s  |  %d STOCKS", data.GroupName, data.GroupCount)
+		}
+		header += "\n" + truncateWidth(label, width)
+	}
+	return header
 }
 
 func visibleQuoteWindow(total, selected, limit int) (int, int) {
@@ -254,9 +264,15 @@ func liveFooter(data LiveData, options ViewOptions, width int) string {
 		return truncateWidth(data.Footer, width)
 	}
 	if options.Moyu {
-		return truncateWidth("↑/↓ SELECT  ENTER DETAIL  ESC BACK  A ADD  D DELETE  I VIEW  Q QUIT", width)
+		if data.Detail {
+			return truncateWidth("UP/DOWN SCROLL  PGUP/PGDN PAGE  ESC BACK  Q QUIT", width)
+		}
+		return truncateWidth("UP/DOWN SELECT  ENTER DETAIL  A ADD  D DELETE  I VIEW  E REORDER  F GROUP  Q QUIT", width)
 	}
-	return truncateWidth("↑/↓ 选择  Enter详情  Esc返回  a添加  d删除  i查看  q退出", width)
+	if data.Detail {
+		return truncateWidth("↑/↓ 滚动  PgUp/PgDn翻页  Esc返回  q退出", width)
+	}
+	return truncateWidth("↑/↓ 选择  Enter详情  a添加  d删除  i查看  e排序  f分组  q退出", width)
 }
 
 func liveStatus(data LiveData, width int) string {
@@ -304,6 +320,9 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 	reservedRows := 11
 	if options.Moyu {
 		reservedRows = 10
+	}
+	if data.GroupName != "" {
+		reservedRows++
 	}
 	reservedRows += liveStatusRows(data) - 1
 	limit := terminalHeight - reservedRows

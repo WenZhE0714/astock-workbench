@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Add backward-compatible ordered watchlist groups in the existing watchlist
+  file, with an interactive group picker, group creation/deletion and current
+  group visibility in the dashboard.
+- Add two-stage reorder mode: select a stock, press Enter to pick it, move it
+  with navigation keys, then press Enter to persist or Escape to restore.
+- Make interactive add/remove operations group-aware; deleting a group moves
+  stocks unique to that group into the default group to avoid data loss.
+
 ## 0.5.0
 
 - Classify related industry/concept boards as hot, divergent-hot, active,

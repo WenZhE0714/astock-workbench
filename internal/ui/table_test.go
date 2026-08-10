@@ -58,7 +58,7 @@ func TestLiveMoyuFrameShowsMarketRefreshSelectionAndFundFlow(t *testing.T) {
 
 func TestLiveFrameShowsNavigationFooter(t *testing.T) {
 	frame := BuildLiveFrame(LiveData{Quotes: []domain.Quote{dashboardQuote()}}, ViewOptions{}, 79, 24)
-	if !strings.Contains(frame, "↑/↓ 选择  Enter详情  Esc返回  a添加  d删除  i查看  q退出") {
+	if !strings.Contains(frame, "↑/↓ 选择  Enter详情  a添加  d删除  i查看  e排序  f分组  q退出") {
 		t.Fatalf("navigation footer missing:\n%s", frame)
 	}
 	commandFrame := BuildLiveFrame(LiveData{
@@ -68,6 +68,22 @@ func TestLiveFrameShowsNavigationFooter(t *testing.T) {
 	}, ViewOptions{}, 79, 24)
 	if !strings.Contains(commandFrame, "添加自选，请输入代码或完整名称：600519▌\nEnter确认  Esc取消") {
 		t.Fatalf("separate command status/footer missing:\n%s", commandFrame)
+	}
+}
+
+func TestLiveFrameShowsCurrentGroupAndDetailControls(t *testing.T) {
+	quote := dashboardQuote()
+	list := BuildLiveFrame(LiveData{
+		Quotes: []domain.Quote{quote}, GroupName: "科技", GroupCount: 1,
+	}, ViewOptions{}, 99, 30)
+	if !strings.Contains(list, "自选分组  科技  ·  1只") {
+		t.Fatalf("group header missing:\n%s", list)
+	}
+	detail := BuildLiveFrame(LiveData{
+		Quotes: []domain.Quote{quote}, GroupName: "科技", GroupCount: 1, Detail: true,
+	}, ViewOptions{}, 99, 30)
+	if !strings.Contains(detail, "↑/↓ 滚动  PgUp/PgDn翻页  Esc返回  q退出") {
+		t.Fatalf("detail controls missing:\n%s", detail)
 	}
 }
 

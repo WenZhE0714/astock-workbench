@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
 func TestParseWatchOptions(t *testing.T) {
@@ -110,7 +111,7 @@ func TestWatchCommandFooterAndRuneEditing(t *testing.T) {
 	if got := command.controls(false); got != "Enter确认  Esc取消" {
 		t.Fatalf("unexpected command controls: %q", got)
 	}
-	command.confirmDelete("sh600519", "贵州茅台")
+	command.confirmDelete("sh600519", "贵州茅台", storage.AllWatchlistGroup)
 	if command.buffer != "" || !command.confirm {
 		t.Fatalf("delete should confirm the selected symbol without input: %#v", command)
 	}
@@ -146,5 +147,22 @@ func TestWatchCommandSelectsAmbiguousCandidate(t *testing.T) {
 	}
 	if got := command.controls(false); got != "↑/↓ 选择  Enter确认  Esc取消" {
 		t.Fatalf("unexpected candidate controls: %q", got)
+	}
+}
+
+func TestWatchGroupCommandsShowExplicitPrompts(t *testing.T) {
+	command := watchCommand{}
+	command.begin(watchCommandGroupCreate)
+	command.buffer = "科技"
+	if got := command.status(false, true); got != "新建分组，请输入名称：科技▌" {
+		t.Fatalf("unexpected create prompt: %q", got)
+	}
+	command.confirmGroupDelete("科技")
+	if got := command.status(false, false); got != "确认删除分组“科技”？独有股票将移到默认分组" {
+		t.Fatalf("unexpected delete prompt: %q", got)
+	}
+	command.confirmDelete("sz300750", "宁德时代", "科技")
+	if got := command.status(false, false); got != "确认从“科技”移出 300750 宁德时代？" {
+		t.Fatalf("unexpected grouped stock prompt: %q", got)
 	}
 }

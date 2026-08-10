@@ -15,7 +15,7 @@ import (
 
 const (
 	programName = "astock"
-	version     = "0.5.0"
+	version     = "0.6.0"
 	maxStocks   = 50
 )
 
@@ -141,8 +141,10 @@ const usageText = `A 股实时行情与策略研究工作台
 	Enter                   打开所选股票完整详情
 	Esc                     从详情返回股票列表
 	a                       输入代码或名称添加自选
-	d                       删除当前选中的自选（需确认）
+	d                       从当前分组移出所选自选（“全部”中为全局删除，需确认）
 	i                       输入代码或名称查看股票详情
+	e                       排序：选择股票后 Enter 锁定，方向键移动，Enter 保存
+	f                       分组列表：Enter切换、n新建、d删除
 	PgUp/PgDn 或 b/空格     列表跳选/详情翻页
   g/G                     选择第一只/最后一只
   q 或 Ctrl-C             退出并恢复原终端

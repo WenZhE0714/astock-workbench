@@ -33,6 +33,7 @@ TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
 - `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents。
 - `internal/domain`：跨模块稳定对象，尤其是 `AnalysisResult`。
 - `internal/storage`：自选、缓存和报告归档；采用原子写入。
+- 自选文件在原有逐行代码格式上增加 `[分组名]` 标题；无标题旧数据归入“默认”，加载“全部”时按分组顺序去重汇总，组内顺序独立持久化。
 - `internal/strategy`：研究信号接口，不允许直接提交订单。
 - `internal/backtest`：历史仿真接口，与执行系统隔离。
 - `internal/execution`：订单、Broker 和确定性 RiskGate 契约。

@@ -283,11 +283,18 @@ func (app *App) runWatch(ctx context.Context, arguments []string) error {
 		return err
 	}
 	var symbols []string
+	groupName := temporaryWatchlistGroup
 	if len(options.Inputs) > 0 {
 		symbols, err = app.resolver.ResolveMany(ctx, options.Inputs)
 	} else {
 		var warnings []string
-		symbols, warnings, err = storage.LoadWatchlist(app.paths.WatchlistFile)
+		var groups []storage.WatchlistGroup
+		groups, warnings, err = storage.LoadWatchlistGroups(app.paths.WatchlistFile)
+		groupName = storage.AllWatchlistGroup
+		if len(groups) == 1 {
+			groupName = storage.DefaultWatchlistGroup
+		}
+		symbols = storage.WatchlistSymbols(groups, groupName)
 		for _, warning := range warnings {
 			fmt.Fprintf(app.errOut, "%s: %s\n", programName, warning)
 		}
@@ -295,16 +302,16 @@ func (app *App) runWatch(ctx context.Context, arguments []string) error {
 	if err != nil {
 		return err
 	}
-	if len(symbols) == 0 {
+	if len(symbols) == 0 && len(options.Inputs) > 0 {
 		return fmt.Errorf("没有要显示的股票。直接查看: astock 600519；保存自选: astock add 贵州茅台")
 	}
 	if len(symbols) > maxStocks {
 		return fmt.Errorf("一次最多显示 %d 只股票", maxStocks)
 	}
-	return app.watchLoop(ctx, symbols, options)
+	return app.watchLoop(ctx, symbols, options, groupName)
 }
 
-func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOptions) error {
+func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOptions, initialGroup string) error {
 	var pinyins *storage.PinyinCache
 	var err error
 	if options.Pinyin {
@@ -378,6 +385,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	session := marketSessionAt(time.Now())
 	viewState := watchViewState{}
 	command := watchCommand{}
+	sortState := watchSortState{}
+	groupChooser := watchGroupChooser{}
+	currentGroup := initialGroup
 	notice := ""
 	noticeExpires := time.Time{}
 	inputCursorVisible := true
@@ -391,13 +401,40 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		noticeExpires = time.Now().Add(5 * time.Second)
 	}
+	selectedStock := func() (string, string) {
+		if viewState.Selected < 0 || viewState.Selected >= len(symbols) {
+			return "", ""
+		}
+		symbol := symbols[viewState.Selected]
+		name := app.names.LookupName(symbol)
+		for _, quote := range current {
+			if quote.Symbol == symbol && quote.Name != "" {
+				name = quote.Name
+				break
+			}
+		}
+		return symbol, name
+	}
 	status := func() string {
+		if sortState.active {
+			symbol, name := selectedStock()
+			return sortState.status(symbol, name, options.Moyu)
+		}
+		if groupChooser.active {
+			return groupChooser.status(options.Moyu)
+		}
 		if command.active() {
 			return command.status(options.Moyu, inputCursorVisible)
 		}
 		return notice
 	}
 	controls := func() string {
+		if sortState.active {
+			return sortState.controls(options.Moyu)
+		}
+		if groupChooser.active {
+			return groupChooser.controls(options.Moyu)
+		}
 		if command.active() {
 			return command.controls(options.Moyu)
 		}
@@ -425,6 +462,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			RefreshedAt:     refreshed, MarketStatus: session.Label,
 			FetchError: message, FlowError: flowMessage,
 			Status: status(), Footer: controls(),
+			GroupName: currentGroup, GroupCount: len(symbols),
 			Selected: viewState.Selected, Detail: viewState.Detail,
 		}, viewOptions, width, height)
 		renderer.Render(frame, width, height)
@@ -464,6 +502,41 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			return nil
 		}
 		return err
+	}
+
+	openGroupChooser := func() error {
+		groups, warnings, loadError := storage.LoadWatchlistGroups(app.paths.WatchlistFile)
+		if loadError != nil {
+			return loadError
+		}
+		groupChooser.begin(groups, currentGroup)
+		if len(warnings) > 0 {
+			setNotice(warnings[0])
+		}
+		return nil
+	}
+	switchGroup := func(groupName string) error {
+		groups, _, loadError := storage.LoadWatchlistGroups(app.paths.WatchlistFile)
+		if loadError != nil {
+			return loadError
+		}
+		previousSymbol, _ := selectedStock()
+		symbols = storage.WatchlistSymbols(groups, groupName)
+		currentGroup = groupName
+		requestSymbols = quoteRequestSymbols(symbols)
+		viewState.Detail = false
+		viewState.Selected = 0
+		if fetchError := fetch(); fetchError != nil {
+			return fetchError
+		}
+		for index, symbol := range symbols {
+			if symbol == previousSymbol {
+				viewState.Selected = index
+				break
+			}
+		}
+		renderer.ResetViewport()
+		return nil
 	}
 
 	type flowResult struct {
@@ -575,17 +648,27 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				render(true)
 				return
 			}
-			added, addError := storage.AddWatchlist(app.paths.WatchlistFile, []string{symbol})
+			var added []bool
+			var addError error
+			if currentGroup != storage.AllWatchlistGroup && currentGroup != temporaryWatchlistGroup {
+				added, addError = storage.AddWatchlistToGroup(app.paths.WatchlistFile, currentGroup, []string{symbol})
+			} else {
+				added, addError = storage.AddWatchlist(app.paths.WatchlistFile, []string{symbol})
+			}
 			if addError != nil {
 				setNotice("添加失败: " + addError.Error())
 			} else if len(added) == 0 || !added[0] {
-				setNotice("已在自选中: " + symbol[2:])
+				setNotice("已在当前分组中: " + symbol[2:])
 			} else {
 				if !inView {
 					symbols = append(symbols, symbol)
 				}
 				requestSymbols = quoteRequestSymbols(symbols)
-				setNotice("已添加自选: " + symbol[2:])
+				if currentGroup != storage.AllWatchlistGroup && currentGroup != temporaryWatchlistGroup {
+					setNotice("已添加到“" + currentGroup + "”: " + symbol[2:])
+				} else {
+					setNotice("已添加到默认分组: " + symbol[2:])
+				}
 			}
 			command.reset()
 			if addError == nil && len(added) > 0 && added[0] {
@@ -680,6 +763,135 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				events = nil
 				continue
 			}
+			if sortState.active {
+				if event.Key == terminalKeyBack || event.Key == terminalKeyQuit {
+					symbols = append([]string(nil), sortState.original...)
+					current = reorderQuotes(current, symbols)
+					requestSymbols = quoteRequestSymbols(symbols)
+					viewState.Selected = sortState.originalSelected
+					sortState.reset()
+					setNotice("已取消排序")
+					render(true)
+					continue
+				}
+				if event.Key == terminalKeyEnter {
+					if !sortState.picked {
+						sortState.picked = true
+						render(true)
+						continue
+					}
+					saveError := storage.SaveWatchlistGroupOrder(app.paths.WatchlistFile, currentGroup, symbols)
+					if saveError != nil {
+						symbols = append([]string(nil), sortState.original...)
+						current = reorderQuotes(current, symbols)
+						requestSymbols = quoteRequestSymbols(symbols)
+						viewState.Selected = sortState.originalSelected
+					}
+					sortState.reset()
+					if saveError != nil {
+						setNotice("排序保存失败: " + saveError.Error())
+					} else {
+						setNotice("已保存“" + currentGroup + "”分组顺序")
+					}
+					render(true)
+					continue
+				}
+				target := viewState.Selected
+				switch event.Key {
+				case terminalKeyUp:
+					target--
+				case terminalKeyDown:
+					target++
+				case terminalKeyPageUp:
+					target -= 10
+				case terminalKeyPageDown:
+					target += 10
+				case terminalKeyHome:
+					target = 0
+				case terminalKeyEnd:
+					target = len(symbols) - 1
+				default:
+					continue
+				}
+				if target < 0 {
+					target = 0
+				}
+				if target >= len(symbols) {
+					target = len(symbols) - 1
+				}
+				if sortState.picked {
+					if moveWatchlistSymbol(symbols, viewState.Selected, target) {
+						current = reorderQuotes(current, symbols)
+						requestSymbols = quoteRequestSymbols(symbols)
+					}
+				}
+				viewState.Selected = target
+				renderer.ResetViewport()
+				render(true)
+				continue
+			}
+			if groupChooser.active {
+				if event.Key == terminalKeyBack || event.Key == terminalKeyQuit {
+					groupChooser.reset()
+					render(true)
+					continue
+				}
+				if event.Key == terminalKeyNone {
+					switch event.Text {
+					case "n", "N":
+						groupChooser.reset()
+						command.begin(watchCommandGroupCreate)
+						inputCursorVisible = true
+						render(true)
+						continue
+					case "d", "D":
+						group, selected := groupChooser.selectedGroup()
+						if !selected {
+							continue
+						}
+						if group.Name == storage.AllWatchlistGroup || group.Name == storage.DefaultWatchlistGroup {
+							setNotice("不能删除“" + group.Name + "”分组")
+							groupChooser.reset()
+							render(true)
+							continue
+						}
+						groupChooser.reset()
+						command.confirmGroupDelete(group.Name)
+						render(true)
+						continue
+					}
+				}
+				switch event.Key {
+				case terminalKeyUp:
+					groupChooser.move(-1)
+				case terminalKeyDown:
+					groupChooser.move(1)
+				case terminalKeyPageUp:
+					groupChooser.move(-5)
+				case terminalKeyPageDown:
+					groupChooser.move(5)
+				case terminalKeyHome:
+					groupChooser.selected = 0
+				case terminalKeyEnd:
+					groupChooser.selected = len(groupChooser.groups) - 1
+				case terminalKeyEnter:
+					group, selected := groupChooser.selectedGroup()
+					if !selected {
+						continue
+					}
+					groupChooser.reset()
+					if groupError := switchGroup(group.Name); groupError != nil {
+						setNotice("切换分组失败: " + groupError.Error())
+					} else {
+						setNotice("当前分组: " + group.Name)
+						startFlowFetch()
+					}
+				default:
+					continue
+				}
+				render(true)
+				continue
+			}
 			if command.active() {
 				if event.Key == terminalKeyBack || event.Key == terminalKeyQuit {
 					command.reset()
@@ -689,7 +901,39 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				}
 				if command.confirm {
 					if event.Key == terminalKeyEnter || event.Text == "y" || event.Text == "Y" {
-						removed, removeError := storage.RemoveWatchlist(app.paths.WatchlistFile, []string{command.symbol})
+						if command.kind == watchCommandGroupDelete {
+							groupName := command.name
+							deleted, moved, deleteError := storage.DeleteWatchlistGroup(app.paths.WatchlistFile, groupName)
+							command.reset()
+							if deleteError != nil {
+								setNotice("删除分组失败: " + deleteError.Error())
+							} else if !deleted {
+								setNotice("分组不存在: " + groupName)
+							} else {
+								targetGroup := currentGroup
+								if targetGroup == groupName || targetGroup == temporaryWatchlistGroup {
+									targetGroup = storage.AllWatchlistGroup
+								}
+								message := "已删除分组: " + groupName
+								if moved > 0 {
+									message += fmt.Sprintf("，%d只独有股票已移到默认", moved)
+								}
+								if groupError := switchGroup(targetGroup); groupError != nil {
+									message += "，但刷新失败: " + groupError.Error()
+								}
+								setNotice(message)
+							}
+							startFlowFetch()
+							render(true)
+							continue
+						}
+						var removed []bool
+						var removeError error
+						if currentGroup != storage.AllWatchlistGroup && currentGroup != temporaryWatchlistGroup {
+							removed, removeError = storage.RemoveWatchlistFromGroup(app.paths.WatchlistFile, currentGroup, []string{command.symbol})
+						} else {
+							removed, removeError = storage.RemoveWatchlist(app.paths.WatchlistFile, []string{command.symbol})
+						}
 						if removeError != nil {
 							setNotice("删除失败: " + removeError.Error())
 						} else if len(removed) == 0 || !removed[0] {
@@ -718,7 +962,11 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 							delete(boardRefreshed, command.symbol)
 							delete(dragonTigers, command.symbol)
 							delete(dragonTigerRefreshed, command.symbol)
-							setNotice("已删除自选: " + command.symbol[2:])
+							if currentGroup != storage.AllWatchlistGroup && currentGroup != temporaryWatchlistGroup {
+								setNotice("已从“" + currentGroup + "”移出: " + command.symbol[2:])
+							} else {
+								setNotice("已从全部分组删除: " + command.symbol[2:])
+							}
 							if temporarySymbol == command.symbol {
 								temporarySymbol = ""
 							}
@@ -772,8 +1020,29 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				case terminalKeyEnter:
 					input := commandText(command.buffer)
 					if input == "" {
-						setNotice("请输入代码或完整名称")
+						if command.kind == watchCommandGroupCreate {
+							setNotice("请输入分组名称")
+						} else {
+							setNotice("请输入代码或完整名称")
+						}
 						command.reset()
+						render(true)
+						continue
+					}
+					if command.kind == watchCommandGroupCreate {
+						created, createError := storage.CreateWatchlistGroup(app.paths.WatchlistFile, input)
+						command.reset()
+						if createError != nil {
+							setNotice("新建分组失败: " + createError.Error())
+						} else if groupError := switchGroup(input); groupError != nil {
+							setNotice("分组已创建，切换失败: " + groupError.Error())
+						} else if created {
+							setNotice("已新建并切换分组: " + input)
+							startFlowFetch()
+						} else {
+							setNotice("分组已存在，已切换: " + input)
+							startFlowFetch()
+						}
 						render(true)
 						continue
 					}
@@ -832,9 +1101,43 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 							break
 						}
 					}
-					command.confirmDelete(symbol, name)
+					command.confirmDelete(symbol, name, currentGroup)
 				case "i", "I":
 					command.begin(watchCommandJump)
+				case "e", "E":
+					if viewState.Detail {
+						setNotice("请先按 Esc 返回列表再调整顺序")
+						render(true)
+						continue
+					}
+					if currentGroup == storage.AllWatchlistGroup || currentGroup == temporaryWatchlistGroup {
+						setNotice("请先按 f 选择具体分组后调整顺序")
+						render(true)
+						continue
+					}
+					if len(symbols) < 2 {
+						setNotice("当前分组至少需要 2 只股票才能排序")
+						render(true)
+						continue
+					}
+					sortState.begin(symbols, viewState.Selected)
+					renderer.ResetViewport()
+					render(true)
+					continue
+				case "f", "F":
+					if viewState.Detail {
+						setNotice("请先按 Esc 返回列表再切换分组")
+						render(true)
+						continue
+					}
+					if groupError := openGroupChooser(); groupError != nil {
+						setNotice("读取分组失败: " + groupError.Error())
+						render(true)
+						continue
+					}
+					renderer.ResetViewport()
+					render(true)
+					continue
 				default:
 					continue
 				}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
 type watchCommandKind int
@@ -15,6 +16,8 @@ const (
 	watchCommandAdd
 	watchCommandDelete
 	watchCommandJump
+	watchCommandGroupCreate
+	watchCommandGroupDelete
 )
 
 type watchCommand struct {
@@ -23,6 +26,7 @@ type watchCommand struct {
 	confirm           bool
 	symbol            string
 	name              string
+	group             string
 	candidates        []domain.Candidate
 	candidateSelected int
 }
@@ -35,9 +39,16 @@ func (command *watchCommand) begin(kind watchCommandKind) {
 	*command = watchCommand{kind: kind}
 }
 
-func (command *watchCommand) confirmDelete(symbol, name string) {
+func (command *watchCommand) confirmDelete(symbol, name, group string) {
 	command.begin(watchCommandDelete)
 	command.symbol = symbol
+	command.name = name
+	command.group = group
+	command.confirm = true
+}
+
+func (command *watchCommand) confirmGroupDelete(name string) {
+	command.begin(watchCommandGroupDelete)
 	command.name = name
 	command.confirm = true
 }
@@ -89,8 +100,17 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 		return ""
 	}
 	if command.confirm {
+		if command.kind == watchCommandGroupDelete {
+			if moyu {
+				return "DELETE GROUP " + command.name + " ? UNIQUE STOCKS MOVE TO DEFAULT"
+			}
+			return "确认删除分组“" + command.name + "”？独有股票将移到默认分组"
+		}
 		if moyu {
 			return "DELETE " + command.symbol[2:] + " " + command.name + " ?"
+		}
+		if command.group != "" && command.group != storage.AllWatchlistGroup && command.group != temporaryWatchlistGroup {
+			return "确认从“" + command.group + "”移出 " + command.symbol[2:] + " " + command.name + "？"
 		}
 		return "确认删除 " + command.symbol[2:] + " " + command.name + "？"
 	}
@@ -116,6 +136,8 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 		prefix = "添加自选，请输入代码或完整名称："
 	case watchCommandJump:
 		prefix = "查看详情，请输入代码或完整名称："
+	case watchCommandGroupCreate:
+		prefix = "新建分组，请输入名称："
 	}
 	if moyu {
 		switch command.kind {
@@ -123,6 +145,8 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 			prefix = "ADD CODE/NAME: "
 		case watchCommandJump:
 			prefix = "VIEW CODE/NAME: "
+		case watchCommandGroupCreate:
+			prefix = "NEW GROUP NAME: "
 		}
 	}
 	cursor := " "
