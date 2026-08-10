@@ -161,15 +161,62 @@ func TestLiveDetailShowsSixRelatedBoardFlowsAndAnalysis(t *testing.T) {
 	}, ViewOptions{}, 119, 35)
 	for _, expected := range []string{
 		"板块资金  多数净流入（4/6），个股与板块同向",
-		"行业  食品饮料  +2.25%  ↑ 11.99亿 +4.62%  领涨 金达威 +10.03%",
-		"概念  超级品牌  +1.39%  ↓ 9.49亿 -5.35%  领涨 贵州茅台 +2.89%",
+		"行业  食品饮料  +2.25%  ↑ 11.99亿  +4.62%  领涨  金达威",
+		"概念  超级品牌  +1.39%   ↓ 9.49亿  -5.35%  领涨  贵州茅台",
 	} {
 		if !strings.Contains(frame, expected) {
 			t.Fatalf("board detail missing %q:\n%s", expected, frame)
 		}
 	}
-	if count := strings.Count(frame, "领涨 "); count != 6 {
+	if count := strings.Count(frame, "领涨  "); count != 6 {
 		t.Fatalf("expected six related boards, got %d:\n%s", count, frame)
+	}
+}
+
+func TestBoardFlowLinesAlignColumnsWithAndWithoutColor(t *testing.T) {
+	boards := []domain.BoardFlow{
+		{Code: "BK0438", Name: "食品饮料", Kind: domain.BoardKindIndustry, Percent: 2.25, MainNet: 1199132256, MainRatio: 4.62, LeaderName: "金达威", LeaderPercent: 10.03},
+		{Code: "BK1277", Name: "白酒Ⅱ", Kind: domain.BoardKindIndustry, Percent: -0.72, MainNet: -854524336, MainRatio: -7.31, LeaderName: "迎驾贡酒", LeaderPercent: 6.15},
+		{Code: "BK1653", Name: "味蕾经济", Kind: domain.BoardKindConcept, Percent: 12.32, MainNet: 69653264, MainRatio: 0.53, LeaderName: "一鸣食品", LeaderPercent: -9.98},
+	}
+	for _, color := range []bool{false, true} {
+		lines := boardFlowLines(boards, color, 96)
+		var expected []int
+		for index, line := range lines {
+			columns := []struct {
+				token      string
+				rightAlign bool
+			}{
+				{token: boards[index].Name},
+				{token: signedPercent(boards[index].Percent), rightAlign: true},
+				{token: directionalFundFlow(&domain.FundFlow{MainNet: boards[index].MainNet}), rightAlign: true},
+				{token: fundFlowRatio(&domain.FundFlow{MainRatio: boards[index].MainRatio}), rightAlign: true},
+				{token: "领涨"},
+				{token: boards[index].LeaderName},
+				{token: signedPercent(boards[index].LeaderPercent), rightAlign: true},
+			}
+			positions := make([]int, 0, len(columns))
+			for _, column := range columns {
+				position := strings.Index(line, column.token)
+				if position < 0 {
+					t.Fatalf("missing token %q in board line %q", column.token, line)
+				}
+				visiblePosition := displayWidth(line[:position])
+				if column.rightAlign {
+					visiblePosition += displayWidth(column.token)
+				}
+				positions = append(positions, visiblePosition)
+			}
+			if index == 0 {
+				expected = positions
+				continue
+			}
+			for column := range positions {
+				if positions[column] != expected[column] {
+					t.Fatalf("color=%v row=%d column=%d boundary is %d, want %d:\n%s", color, index, column, positions[column], expected[column], line)
+				}
+			}
+		}
 	}
 }
 

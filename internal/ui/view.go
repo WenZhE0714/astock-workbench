@@ -256,29 +256,118 @@ func boardFlowSummary(boards []domain.BoardFlow, stockFlow *domain.FundFlow) str
 	}
 }
 
-func boardFlowLine(board domain.BoardFlow, color bool) string {
-	kind := "概念"
-	if board.Kind == domain.BoardKindIndustry {
-		kind = "行业"
-	}
-	percent := signedPercent(board.Percent)
-	if color && !math.IsNaN(board.Percent) {
-		percent = trendValue(percent, board.Percent, true)
-	}
-	flow := domain.FundFlow{MainNet: board.MainNet, MainRatio: board.MainRatio}
-	flowText := directionalFundFlow(&flow) + " " + fundFlowRatio(&flow)
-	if color && !math.IsNaN(board.MainNet) {
-		flowText = style(flowText, trendCode(board.MainNet, false), true)
-	}
-	line := style(kind, "90", color) + "  " + board.Name + "  " + percent + "  " + flowText
-	if board.LeaderName != "" && board.LeaderName != "-" {
-		leaderPercent := signedPercent(board.LeaderPercent)
-		if color && !math.IsNaN(board.LeaderPercent) {
-			leaderPercent = trendValue(leaderPercent, board.LeaderPercent, true)
+type boardFlowRow struct {
+	kind          string
+	name          string
+	percent       string
+	flow          string
+	ratio         string
+	leader        string
+	leaderPercent string
+	percentValue  float64
+	flowValue     float64
+	leaderValue   float64
+}
+
+type boardFlowLayout struct {
+	kind          int
+	name          int
+	percent       int
+	flow          int
+	ratio         int
+	leaderLabel   int
+	leader        int
+	leaderPercent int
+	gap           int
+}
+
+func (layout boardFlowLayout) width() int {
+	return layout.kind + layout.name + layout.percent + layout.flow + layout.ratio +
+		layout.leaderLabel + layout.leader + layout.leaderPercent + layout.gap*7
+}
+
+func boardFlowRows(boards []domain.BoardFlow) []boardFlowRow {
+	rows := make([]boardFlowRow, 0, len(boards))
+	for _, board := range boards {
+		kind := "概念"
+		if board.Kind == domain.BoardKindIndustry {
+			kind = "行业"
 		}
-		line += "  " + style("领涨", "90", color) + " " + board.LeaderName + " " + leaderPercent
+		flow := domain.FundFlow{MainNet: board.MainNet, MainRatio: board.MainRatio}
+		leader := board.LeaderName
+		leaderPercent := signedPercent(board.LeaderPercent)
+		leaderValue := board.LeaderPercent
+		if leader == "" || leader == "-" {
+			leader = "--"
+			leaderPercent = "--"
+			leaderValue = math.NaN()
+		}
+		rows = append(rows, boardFlowRow{
+			kind: kind, name: board.Name, percent: signedPercent(board.Percent),
+			flow: directionalFundFlow(&flow), ratio: fundFlowRatio(&flow),
+			leader: leader, leaderPercent: leaderPercent,
+			percentValue: board.Percent, flowValue: board.MainNet, leaderValue: leaderValue,
+		})
 	}
-	return line
+	return rows
+}
+
+func boardFlowLines(boards []domain.BoardFlow, color bool, availableWidth int) []string {
+	rows := boardFlowRows(boards)
+	layout := boardFlowLayout{leaderLabel: displayWidth("领涨"), gap: 2}
+	for _, row := range rows {
+		layout.kind = maxInt(layout.kind, displayWidth(row.kind))
+		layout.name = maxInt(layout.name, displayWidth(row.name))
+		layout.percent = maxInt(layout.percent, displayWidth(row.percent))
+		layout.flow = maxInt(layout.flow, displayWidth(row.flow))
+		layout.ratio = maxInt(layout.ratio, displayWidth(row.ratio))
+		layout.leader = maxInt(layout.leader, displayWidth(row.leader))
+		layout.leaderPercent = maxInt(layout.leaderPercent, displayWidth(row.leaderPercent))
+	}
+	if layout.name > 16 {
+		layout.name = 16
+	}
+	if layout.leader > 12 {
+		layout.leader = 12
+	}
+	if availableWidth > 0 && layout.width() > availableWidth {
+		layout.gap = 1
+		for layout.width() > availableWidth && (layout.leader > 4 || layout.name > 4) {
+			if layout.leader >= layout.name && layout.leader > 4 {
+				layout.leader--
+			} else if layout.name > 4 {
+				layout.name--
+			} else {
+				layout.leader--
+			}
+		}
+	}
+
+	gap := strings.Repeat(" ", layout.gap)
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		percent := trendValue(row.percent, row.percentValue, color)
+		flow := row.flow
+		ratio := row.ratio
+		if color && !math.IsNaN(row.flowValue) {
+			code := trendCode(row.flowValue, false)
+			flow = style(flow, code, true)
+			ratio = style(ratio, code, true)
+		}
+		leaderPercent := trendValue(row.leaderPercent, row.leaderValue, color)
+		cells := []string{
+			padWidth(style(row.kind, "90", color), layout.kind, "left"),
+			padWidth(truncateWidth(row.name, layout.name), layout.name, "left"),
+			padWidth(percent, layout.percent, "right"),
+			padWidth(flow, layout.flow, "right"),
+			padWidth(ratio, layout.ratio, "right"),
+			padWidth(style("领涨", "90", color), layout.leaderLabel, "left"),
+			padWidth(truncateWidth(row.leader, layout.leader), layout.leader, "left"),
+			padWidth(leaderPercent, layout.leaderPercent, "right"),
+		}
+		lines = append(lines, strings.Join(cells, gap))
+	}
+	return lines
 }
 
 func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.BoardFlow, options ViewOptions, terminalWidth int) string {
@@ -347,9 +436,7 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 	if len(boards) > 0 {
 		lines = append(lines, "\x00separator")
 		lines = append(lines, style("板块资金", "1;36", color)+"  "+boardFlowSummary(boards, flow))
-		for _, board := range boards {
-			lines = append(lines, boardFlowLine(board, color))
-		}
+		lines = append(lines, boardFlowLines(boards, color, innerWidth)...)
 	}
 
 	if options.Depth {
