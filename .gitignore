@@ -1,0 +1,9 @@
+/dist/
+/astock
+/.idea/
+/.vscode/
+.DS_Store
+*.tmp
+*.log
+__pycache__/
+.env
