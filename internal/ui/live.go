@@ -15,6 +15,7 @@ type LiveData struct {
 	Indices         []domain.Quote
 	Flows           map[string]domain.FundFlow
 	Boards          []domain.BoardFlow
+	DragonTiger     *domain.DragonTigerSnapshot
 	PreviousAmounts map[string]float64
 	RefreshedAt     time.Time
 	MarketStatus    string
@@ -291,7 +292,7 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		}
 		detailOptions := options
 		detailOptions.Moyu = false
-		frame := header + "\n\n" + dashboardCard(quotes[data.Selected], flowPointer, data.Boards, detailOptions, terminalWidth)
+		frame := header + "\n\n" + dashboardCard(quotes[data.Selected], flowPointer, data.Boards, data.DragonTiger, detailOptions, terminalWidth)
 		if message := liveError(data, options, terminalWidth); message != "" {
 			frame += "\n" + message
 		}
@@ -347,7 +348,7 @@ func BuildSnapshotFrame(data LiveData, options ViewOptions, terminalWidth int) s
 		if ok {
 			flowPointer = &flow
 		}
-		builder.WriteString(dashboardCard(item, flowPointer, nil, options, terminalWidth))
+		builder.WriteString(dashboardCard(item, flowPointer, nil, nil, options, terminalWidth))
 		if index < len(quotes)-1 {
 			builder.WriteString("\n\n")
 		}

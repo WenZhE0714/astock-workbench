@@ -256,6 +256,121 @@ func boardFlowSummary(boards []domain.BoardFlow, stockFlow *domain.FundFlow) str
 	}
 }
 
+func boardRankFraction(rank, total int) float64 {
+	if rank <= 0 || total <= 0 || rank > total {
+		return math.NaN()
+	}
+	return float64(rank) / float64(total)
+}
+
+func boardRiseRatio(board domain.BoardFlow) float64 {
+	total := board.RiseCount + board.FallCount + board.FlatCount
+	if total <= 0 {
+		return math.NaN()
+	}
+	return float64(board.RiseCount) / float64(total)
+}
+
+func boardHeatLabel(board domain.BoardFlow) string {
+	if board.UniverseSize <= 0 {
+		return ""
+	}
+	changeRank := boardRankFraction(board.ChangeRank, board.UniverseSize)
+	flowRank := boardRankFraction(board.FlowRank, board.UniverseSize)
+	turnoverRank := boardRankFraction(board.TurnoverRank, board.UniverseSize)
+	breadth := boardRiseRatio(board)
+	strongChange := !math.IsNaN(changeRank) && board.Percent > 0 && changeRank <= 0.15
+	strongFlow := !math.IsNaN(flowRank) && board.MainNet > 0 && flowRank <= 0.20
+	activeTurnover := !math.IsNaN(turnoverRank) && turnoverRank <= 0.20
+	broadRise := !math.IsNaN(breadth) && breadth >= 0.65
+	if broadRise && ((strongChange && (strongFlow || activeTurnover)) || (strongFlow && activeTurnover && board.Percent > 0)) {
+		if board.MainNet < 0 {
+			return "热门分歧"
+		}
+		return "热门"
+	}
+	activeSignals := 0
+	if !math.IsNaN(changeRank) && board.Percent > 0 && changeRank <= 0.30 {
+		activeSignals++
+	}
+	if !math.IsNaN(flowRank) && board.MainNet > 0 && flowRank <= 0.30 {
+		activeSignals++
+	}
+	if !math.IsNaN(turnoverRank) && turnoverRank <= 0.30 {
+		activeSignals++
+	}
+	if !math.IsNaN(breadth) && breadth >= 0.55 {
+		activeSignals++
+	}
+	if board.Percent > 0 && activeSignals >= 2 {
+		return "活跃"
+	}
+	coldRank := (!math.IsNaN(changeRank) && changeRank >= 0.70) || (!math.IsNaN(flowRank) && flowRank >= 0.70)
+	weakBreadth := !math.IsNaN(breadth) && breadth <= 0.35
+	if board.Percent < 0 && board.MainNet < 0 && (coldRank || weakBreadth) {
+		return "偏冷"
+	}
+	return "一般"
+}
+
+func boardHeatCode(label string) string {
+	switch label {
+	case "热门":
+		return "1;31"
+	case "热门分歧":
+		return "1;33"
+	case "活跃":
+		return "1;36"
+	case "偏冷":
+		return "32"
+	default:
+		return "37"
+	}
+}
+
+func boardHeatSummary(boards []domain.BoardFlow, color bool) string {
+	counts := make(map[string]int)
+	for _, board := range boards {
+		if label := boardHeatLabel(board); label != "" {
+			counts[label]++
+		}
+	}
+	parts := make([]string, 0, len(counts))
+	for _, label := range []string{"热门", "热门分歧", "活跃", "一般", "偏冷"} {
+		if count := counts[label]; count > 0 {
+			parts = append(parts, style(fmt.Sprintf("%s%d", label, count), boardHeatCode(label), color))
+		}
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+func boardHeatLine(board domain.BoardFlow, color bool) string {
+	label := boardHeatLabel(board)
+	if label == "" {
+		return ""
+	}
+	parts := []string{
+		style("热度", "90", color) + " " + style(label, boardHeatCode(label), color),
+	}
+	if board.ChangeRank > 0 {
+		parts = append(parts, fmt.Sprintf("涨幅 %d/%d", board.ChangeRank, board.UniverseSize))
+	}
+	if board.FlowRank > 0 {
+		parts = append(parts, fmt.Sprintf("资金 %d/%d", board.FlowRank, board.UniverseSize))
+	}
+	if board.TurnoverRank > 0 && !math.IsNaN(board.Turnover) {
+		parts = append(parts, fmt.Sprintf("换手 %d/%d(%.2f%%)", board.TurnoverRank, board.UniverseSize, board.Turnover))
+	}
+	if board.RiseCount+board.FallCount+board.FlatCount > 0 {
+		breadth := fmt.Sprintf("涨%d/跌%d", board.RiseCount, board.FallCount)
+		if board.FlatCount > 0 {
+			breadth += fmt.Sprintf("/平%d", board.FlatCount)
+		}
+		parts = append(parts, breadth)
+	}
+	return "      " + strings.Join(parts, "  ")
+}
+
 type boardFlowRow struct {
 	kind          string
 	name          string
@@ -370,7 +485,111 @@ func boardFlowLines(boards []domain.BoardFlow, color bool, availableWidth int) [
 	return lines
 }
 
-func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.BoardFlow, options ViewOptions, terminalWidth int) string {
+func humanYuanAmount(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "--"
+	}
+	absolute := math.Abs(value)
+	switch {
+	case absolute >= 1e8:
+		return fmt.Sprintf("%.2f亿", absolute/1e8)
+	case absolute >= 1e4:
+		return fmt.Sprintf("%.0f万", absolute/1e4)
+	default:
+		return fmt.Sprintf("%.0f元", absolute)
+	}
+}
+
+func dragonTigerDateCount(entries []domain.DragonTigerEntry) int {
+	dates := make(map[string]bool)
+	for _, entry := range entries {
+		dates[entry.TradeDate] = true
+	}
+	return len(dates)
+}
+
+func dragonTigerShortDate(value string) string {
+	if len(value) >= 10 {
+		return value[5:10]
+	}
+	return value
+}
+
+func dragonTigerFollowUp(entry domain.DragonTigerEntry, color bool) string {
+	metrics := []struct {
+		label string
+		value float64
+	}{
+		{label: "1日", value: entry.Next1Percent},
+		{label: "5日", value: entry.Next5Percent},
+		{label: "10日", value: entry.Next10Percent},
+	}
+	parts := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		if math.IsNaN(metric.value) || math.IsInf(metric.value, 0) {
+			continue
+		}
+		parts = append(parts, metric.label+" "+trendValue(signedPercent(metric.value), metric.value, color))
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+func dragonTigerLines(snapshot *domain.DragonTigerSnapshot, color bool) []string {
+	if snapshot == nil || !snapshot.Loaded {
+		return nil
+	}
+	windowDays := snapshot.WindowDays
+	if windowDays <= 0 {
+		windowDays = 30
+	}
+	if len(snapshot.Entries) == 0 {
+		return []string{style("龙虎榜", "1;36", color) + fmt.Sprintf("  近%d日无上榜记录", windowDays)}
+	}
+	lines := []string{
+		style("龙虎榜", "1;36", color) + fmt.Sprintf("  近%d日上榜%d日 / %d条  ·  最近 %s", windowDays,
+			dragonTigerDateCount(snapshot.Entries), len(snapshot.Entries), dragonTigerShortDate(snapshot.Entries[0].TradeDate)),
+	}
+	limit := len(snapshot.Entries)
+	if limit > 3 {
+		limit = 3
+	}
+	for index := 0; index < limit; index++ {
+		entry := snapshot.Entries[index]
+		change := trendValue(signedPercent(entry.ChangePercent), entry.ChangePercent, color)
+		netFlow := domain.FundFlow{MainNet: entry.NetAmount, MainRatio: entry.NetRatio}
+		net := directionalFundFlow(&netFlow) + " " + fundFlowRatio(&netFlow)
+		if color && !math.IsNaN(entry.NetAmount) {
+			net = style(net, trendCode(entry.NetAmount, false), true)
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s  %s %s  %s %s  %s %s",
+			dragonTigerShortDate(entry.TradeDate), change,
+			style("净买入", "90", color), net,
+			style("买入", "90", color), humanYuanAmount(entry.BuyAmount),
+			style("卖出", "90", color), humanYuanAmount(entry.SellAmount)))
+		if entry.Reason != "" {
+			lines = append(lines, style("原因", "90", color)+"  "+entry.Reason)
+		}
+		details := []string{}
+		if !math.IsNaN(entry.DealAmountRatio) {
+			details = append(details, fmt.Sprintf("榜单成交占比 %.2f%%", entry.DealAmountRatio))
+		}
+		if !math.IsNaN(entry.Turnover) {
+			details = append(details, fmt.Sprintf("换手 %.2f%%", entry.Turnover))
+		}
+		if entry.SeatSummary != "" {
+			details = append(details, "席位标签 "+entry.SeatSummary)
+		}
+		if len(details) > 0 {
+			lines = append(lines, strings.Join(details, "  ·  "))
+		}
+		if followUp := dragonTigerFollowUp(entry, color); followUp != "" {
+			lines = append(lines, style("上榜后", "90", color)+"  "+followUp)
+		}
+	}
+	return lines
+}
+
+func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.BoardFlow, dragonTiger *domain.DragonTigerSnapshot, options ViewOptions, terminalWidth int) string {
 	cardWidth := terminalWidth
 	if cardWidth > 100 {
 		cardWidth = 100
@@ -436,7 +655,23 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 	if len(boards) > 0 {
 		lines = append(lines, "\x00separator")
 		lines = append(lines, style("板块资金", "1;36", color)+"  "+boardFlowSummary(boards, flow))
-		lines = append(lines, boardFlowLines(boards, color, innerWidth)...)
+		if heat := boardHeatSummary(boards, color); heat != "" {
+			lines = append(lines, style("板块热度", "1;36", color)+"  "+heat)
+		}
+		flowLines := boardFlowLines(boards, color, innerWidth)
+		for index, line := range flowLines {
+			lines = append(lines, line)
+			if index < len(boards) {
+				if heatLine := boardHeatLine(boards[index], color); heatLine != "" {
+					lines = append(lines, heatLine)
+				}
+			}
+		}
+	}
+
+	if dragonLines := dragonTigerLines(dragonTiger, color); len(dragonLines) > 0 {
+		lines = append(lines, "\x00separator")
+		lines = append(lines, dragonLines...)
 	}
 
 	if options.Depth {
@@ -485,7 +720,7 @@ func buildStandardView(quotes []domain.Quote, options ViewOptions, terminalWidth
 	builder.WriteString(brand)
 	builder.WriteString("\n\n")
 	for quoteIndex, item := range quotes {
-		builder.WriteString(dashboardCard(item, nil, nil, options, terminalWidth))
+		builder.WriteString(dashboardCard(item, nil, nil, nil, options, terminalWidth))
 		if quoteIndex < len(quotes)-1 {
 			builder.WriteString("\n\n")
 		}

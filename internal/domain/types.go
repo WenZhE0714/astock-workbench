@@ -67,9 +67,47 @@ type BoardFlow struct {
 	Percent       float64 `json:"percent"`
 	MainNet       float64 `json:"main_net_yuan"`
 	MainRatio     float64 `json:"main_ratio_percent"`
+	Turnover      float64 `json:"turnover_percent"`
+	RiseCount     int     `json:"rise_count"`
+	FallCount     int     `json:"fall_count"`
+	FlatCount     int     `json:"flat_count"`
+	ChangeRank    int     `json:"change_rank"`
+	FlowRank      int     `json:"flow_rank"`
+	TurnoverRank  int     `json:"turnover_rank"`
+	UniverseSize  int     `json:"universe_size"`
 	LeaderName    string  `json:"leader_name"`
 	LeaderCode    string  `json:"leader_code"`
 	LeaderPercent float64 `json:"leader_percent"`
+}
+
+// DragonTigerEntry is one Eastmoney daily-billboard record. A stock can have
+// multiple entries on the same date when it triggers more than one rule.
+type DragonTigerEntry struct {
+	Symbol          string  `json:"symbol"`
+	Name            string  `json:"name"`
+	TradeDate       string  `json:"trade_date"`
+	Reason          string  `json:"reason"`
+	SeatSummary     string  `json:"seat_summary"`
+	ClosePrice      float64 `json:"close_price"`
+	ChangePercent   float64 `json:"change_percent"`
+	NetAmount       float64 `json:"net_amount_yuan"`
+	BuyAmount       float64 `json:"buy_amount_yuan"`
+	SellAmount      float64 `json:"sell_amount_yuan"`
+	DealAmount      float64 `json:"deal_amount_yuan"`
+	MarketAmount    float64 `json:"market_amount_yuan"`
+	NetRatio        float64 `json:"net_ratio_percent"`
+	DealAmountRatio float64 `json:"deal_amount_ratio_percent"`
+	Turnover        float64 `json:"turnover_percent"`
+	Next1Percent    float64 `json:"next_1d_percent"`
+	Next2Percent    float64 `json:"next_2d_percent"`
+	Next5Percent    float64 `json:"next_5d_percent"`
+	Next10Percent   float64 `json:"next_10d_percent"`
+}
+
+type DragonTigerSnapshot struct {
+	Loaded     bool               `json:"loaded"`
+	WindowDays int                `json:"window_days"`
+	Entries    []DragonTigerEntry `json:"entries"`
 }
 
 type EngineInfo struct {

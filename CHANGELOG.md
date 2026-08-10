@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- Classify related industry/concept boards as hot, divergent-hot, active,
+  normal or cold using same-type top-100 change, main-flow and turnover ranks
+  together with board breadth.
+- Show the ranking evidence, turnover and advancing/declining breadth for each
+  related board; rank snapshots are cached for five minutes.
+- Show the latest three Eastmoney Dragon-Tiger list records from the last 30
+  days, including trigger reason, buy/sell/net amounts, deal ratio, turnover,
+  seat tag and available post-listing returns.
+
 ## 0.4.0
 
 - Show the six most relevant Eastmoney industry/concept boards in live stock

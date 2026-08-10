@@ -370,6 +370,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	var indices []domain.Quote
 	flows := map[string]domain.FundFlow{}
 	boardFlows := map[string][]domain.BoardFlow{}
+	dragonTigers := map[string]domain.DragonTigerSnapshot{}
 	previousAmounts := map[string]float64{}
 	refreshed := time.Time{}
 	message := ""
@@ -408,12 +409,18 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			return
 		}
 		var selectedBoards []domain.BoardFlow
+		var selectedDragonTiger *domain.DragonTigerSnapshot
 		if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
-			selectedBoards = boardFlows[symbols[viewState.Selected]]
+			symbol := symbols[viewState.Selected]
+			selectedBoards = boardFlows[symbol]
+			if snapshot, ok := dragonTigers[symbol]; ok {
+				selectedDragonTiger = &snapshot
+			}
 		}
 		frame := ui.BuildLiveFrame(ui.LiveData{
 			Quotes: current, Symbols: symbols, Indices: indices, Flows: flows,
 			Boards:          selectedBoards,
+			DragonTiger:     selectedDragonTiger,
 			PreviousAmounts: previousAmounts,
 			RefreshedAt:     refreshed, MarketStatus: session.Label,
 			FetchError: message, FlowError: flowMessage,
@@ -472,13 +479,21 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		boards []domain.BoardFlow
 		err    error
 	}
+	type dragonTigerResult struct {
+		symbol   string
+		snapshot domain.DragonTigerSnapshot
+		err      error
+	}
 	flowResults := make(chan flowResult, 1)
 	amountResults := make(chan amountResult, 1)
 	boardResults := make(chan boardResult, 8)
+	dragonTigerResults := make(chan dragonTigerResult, 8)
 	flowRunning := false
 	amountRunning := false
 	boardRunning := make(map[string]bool)
 	boardRefreshed := make(map[string]time.Time)
+	dragonTigerRunning := make(map[string]bool)
+	dragonTigerRefreshed := make(map[string]time.Time)
 	startFlowFetch := func() {
 		if app.flows == nil || flowRunning {
 			return
@@ -520,6 +535,24 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			result, fetchError := app.boards.FetchBoards(ctx, symbol)
 			select {
 			case boardResults <- boardResult{symbol: symbol, boards: result, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startDragonTigerFetch := func(symbol string, force bool) {
+		if app.dragonTiger == nil || symbol == "" || dragonTigerRunning[symbol] {
+			return
+		}
+		if !force {
+			if refreshedAt, ok := dragonTigerRefreshed[symbol]; ok && time.Since(refreshedAt) < 30*time.Minute {
+				return
+			}
+		}
+		dragonTigerRunning[symbol] = true
+		go func() {
+			snapshot, fetchError := app.dragonTiger.FetchDragonTiger(ctx, symbol)
+			select {
+			case dragonTigerResults <- dragonTigerResult{symbol: symbol, snapshot: snapshot, err: fetchError}:
 			case <-ctx.Done():
 			}
 		}()
@@ -621,6 +654,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			startFlowFetch()
 			if opened {
 				startBoardFetch(symbol, false)
+				startDragonTigerFetch(symbol, false)
 			}
 			renderer.ResetViewport()
 			render(true)
@@ -682,6 +716,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 							requestSymbols = quoteRequestSymbols(symbols)
 							delete(boardFlows, command.symbol)
 							delete(boardRefreshed, command.symbol)
+							delete(dragonTigers, command.symbol)
+							delete(dragonTigerRefreshed, command.symbol)
 							setNotice("已删除自选: " + command.symbol[2:])
 							if temporarySymbol == command.symbol {
 								temporarySymbol = ""
@@ -813,7 +849,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				return nil
 			}
 			if !wasDetail && viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
-				startBoardFetch(symbols[viewState.Selected], false)
+				symbol := symbols[viewState.Selected]
+				startBoardFetch(symbol, false)
+				startDragonTigerFetch(symbol, false)
 			}
 			if wasDetail && !viewState.Detail && temporarySymbol != "" {
 				for index, value := range symbols {
@@ -860,6 +898,15 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) && symbols[viewState.Selected] == result.symbol {
 				render(true)
 			}
+		case result := <-dragonTigerResults:
+			dragonTigerRunning[result.symbol] = false
+			if result.err == nil {
+				dragonTigers[result.symbol] = result.snapshot
+				dragonTigerRefreshed[result.symbol] = time.Now()
+			}
+			if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) && symbols[viewState.Selected] == result.symbol {
+				render(true)
+			}
 		case result := <-amountResults:
 			amountRunning = false
 			if result.err == nil {
@@ -894,7 +941,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					startFlowFetch()
 					startAmountFetch()
 					if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
-						startBoardFetch(symbols[viewState.Selected], true)
+						symbol := symbols[viewState.Selected]
+						startBoardFetch(symbol, true)
+						startDragonTigerFetch(symbol, false)
 					}
 				}
 			}

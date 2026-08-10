@@ -235,6 +235,95 @@ func TestBoardFlowSummaryComparesStockWithBoards(t *testing.T) {
 	}
 }
 
+func TestBoardHeatLabelsUseRanksBreadthAndFlow(t *testing.T) {
+	tests := []struct {
+		name  string
+		board domain.BoardFlow
+		want  string
+	}{
+		{
+			name: "hot",
+			board: domain.BoardFlow{Percent: 3.2, MainNet: 5e8, Turnover: 4.2, RiseCount: 80, FallCount: 20,
+				ChangeRank: 8, FlowRank: 12, TurnoverRank: 15, UniverseSize: 100},
+			want: "热门",
+		},
+		{
+			name: "hot divergence",
+			board: domain.BoardFlow{Percent: 3.2, MainNet: -2e8, Turnover: 7.1, RiseCount: 75, FallCount: 25,
+				ChangeRank: 5, FlowRank: 82, TurnoverRank: 8, UniverseSize: 100},
+			want: "热门分歧",
+		},
+		{
+			name: "active",
+			board: domain.BoardFlow{Percent: 1.1, MainNet: 8e7, Turnover: 1.8, RiseCount: 60, FallCount: 40,
+				ChangeRank: 25, FlowRank: 28, TurnoverRank: 45, UniverseSize: 100},
+			want: "活跃",
+		},
+		{
+			name: "cold",
+			board: domain.BoardFlow{Percent: -2.1, MainNet: -5e8, Turnover: 0.5, RiseCount: 20, FallCount: 80,
+				ChangeRank: 85, FlowRank: 90, TurnoverRank: 80, UniverseSize: 100},
+			want: "偏冷",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := boardHeatLabel(test.board); got != test.want {
+				t.Fatalf("got %q want %q", got, test.want)
+			}
+		})
+	}
+	line := boardHeatLine(tests[0].board, false)
+	for _, expected := range []string{"热度 热门", "涨幅 8/100", "资金 12/100", "换手 15/100(4.20%)", "涨80/跌20"} {
+		if !strings.Contains(line, expected) {
+			t.Fatalf("heat line missing %q: %s", expected, line)
+		}
+	}
+}
+
+func TestLiveDetailShowsDragonTigerReasonsAndData(t *testing.T) {
+	quote := dashboardQuote()
+	snapshot := &domain.DragonTigerSnapshot{
+		Loaded: true, WindowDays: 30,
+		Entries: []domain.DragonTigerEntry{
+			{
+				Symbol: "sz000603", TradeDate: "2026-08-07", Reason: "连续三个交易日内，涨幅偏离值累计达到20%的证券",
+				SeatSummary: "4家机构买入，成功率40.14%", ChangePercent: 10, NetAmount: 113039557.06,
+				BuyAmount: 1309617360.05, SellAmount: 1196577802.99, NetRatio: 1.2746, DealAmountRatio: 28.259,
+				Turnover: 16.9158, Next1Percent: math.NaN(), Next5Percent: math.NaN(), Next10Percent: math.NaN(),
+			},
+			{
+				Symbol: "sz000603", TradeDate: "2026-08-07", Reason: "日涨幅偏离值达到7%的前5只证券",
+				SeatSummary: "3家机构买入，成功率15.83%", ChangePercent: 10, NetAmount: -28864029.08,
+				BuyAmount: 550792447.15, SellAmount: 579656476.23, NetRatio: -0.7982, DealAmountRatio: 31.2624,
+				Turnover: 16.9158, Next1Percent: -0.12, Next5Percent: -3.06, Next10Percent: 26.06,
+			},
+		},
+	}
+	frame := BuildLiveFrame(LiveData{
+		Quotes: []domain.Quote{quote}, DragonTiger: snapshot, Detail: true, MarketStatus: "交易中",
+	}, ViewOptions{}, 119, 40)
+	for _, expected := range []string{
+		"龙虎榜  近30日上榜1日 / 2条  ·  最近 08-07",
+		"净买入 ↑ 1.13亿 +1.27%",
+		"买入 13.10亿  卖出 11.97亿",
+		"原因  连续三个交易日内，涨幅偏离值累计达到20%的证券",
+		"榜单成交占比 28.26%  ·  换手 16.92%  ·  席位标签 4家机构买入，成功率40.14%",
+		"上榜后  1日 -0.12%  ·  5日 -3.06%  ·  10日 +26.06%",
+	} {
+		if !strings.Contains(frame, expected) {
+			t.Fatalf("dragon-tiger detail missing %q:\n%s", expected, frame)
+		}
+	}
+}
+
+func TestDragonTigerLoadedEmptyShowsNoRecentRecord(t *testing.T) {
+	lines := dragonTigerLines(&domain.DragonTigerSnapshot{Loaded: true, WindowDays: 30}, false)
+	if len(lines) != 1 || lines[0] != "龙虎榜  近30日无上榜记录" {
+		t.Fatalf("unexpected empty snapshot: %#v", lines)
+	}
+}
+
 func TestMarketTotalAmountUsesShanghaiAndShenzhenOnly(t *testing.T) {
 	indices := []domain.Quote{
 		{Symbol: "sh000001", Amount: 120954357},

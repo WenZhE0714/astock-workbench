@@ -15,22 +15,23 @@ import (
 
 const (
 	programName = "astock"
-	version     = "0.4.0"
+	version     = "0.5.0"
 	maxStocks   = 50
 )
 
 type App struct {
-	out      io.Writer
-	errOut   io.Writer
-	paths    storage.Paths
-	names    *storage.NameCache
-	resolver *market.Resolver
-	quotes   market.QuoteClient
-	flows    market.FundFlowClient
-	boards   market.BoardFlowClient
-	amounts  market.PreviousAmountClient
-	analyzer *analysis.Runner
-	reports  *storage.ReportStore
+	out         io.Writer
+	errOut      io.Writer
+	paths       storage.Paths
+	names       *storage.NameCache
+	resolver    *market.Resolver
+	quotes      market.QuoteClient
+	flows       market.FundFlowClient
+	boards      market.BoardFlowClient
+	dragonTiger market.DragonTigerClient
+	amounts     market.PreviousAmountClient
+	analyzer    *analysis.Runner
+	reports     *storage.ReportStore
 }
 
 func New(output, errorOutput io.Writer) (*App, error) {
@@ -43,17 +44,18 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		return nil, err
 	}
 	return &App{
-		out:      output,
-		errOut:   errorOutput,
-		paths:    paths,
-		names:    names,
-		resolver: market.NewResolver(names),
-		quotes:   market.TencentClient{},
-		flows:    market.EastmoneyClient{},
-		boards:   market.EastmoneyClient{},
-		amounts:  market.EastmoneyClient{},
-		analyzer: analysis.NewRunner(errorOutput),
-		reports:  storage.NewReportStore(paths.ReportsDir),
+		out:         output,
+		errOut:      errorOutput,
+		paths:       paths,
+		names:       names,
+		resolver:    market.NewResolver(names),
+		quotes:      market.TencentClient{},
+		flows:       market.EastmoneyClient{},
+		boards:      market.EastmoneyClient{},
+		dragonTiger: market.EastmoneyClient{},
+		amounts:     market.EastmoneyClient{},
+		analyzer:    analysis.NewRunner(errorOutput),
+		reports:     storage.NewReportStore(paths.ReportsDir),
 	}, nil
 }
 
