@@ -142,6 +142,52 @@ func TestLiveDetailShowsOnlySelectedStockAndFlow(t *testing.T) {
 	}
 }
 
+func TestLiveDetailShowsSixRelatedBoardFlowsAndAnalysis(t *testing.T) {
+	quote := dashboardQuote()
+	boards := []domain.BoardFlow{
+		{Code: "BK0438", Name: "食品饮料", Kind: domain.BoardKindIndustry, Percent: 2.25, MainNet: 1199132256, MainRatio: 4.62, LeaderName: "金达威", LeaderPercent: 10.03},
+		{Code: "BK1277", Name: "白酒Ⅱ", Kind: domain.BoardKindIndustry, Percent: 2.12, MainNet: 854524336, MainRatio: 7.31, LeaderName: "迎驾贡酒", LeaderPercent: 6.15},
+		{Code: "BK1575", Name: "白酒Ⅲ", Kind: domain.BoardKindIndustry, Percent: 2.12, MainNet: 854524336, MainRatio: 7.31, LeaderName: "迎驾贡酒", LeaderPercent: 6.15},
+		{Code: "BK1653", Name: "味蕾经济", Kind: domain.BoardKindConcept, Percent: 2.32, MainNet: 1069653264, MainRatio: 5.03, LeaderName: "一鸣食品", LeaderPercent: 9.98},
+		{Code: "BK0896", Name: "白酒", Kind: domain.BoardKindConcept, Percent: 1.52, MainNet: -837661504, MainRatio: -6.21, LeaderName: "迎驾贡酒", LeaderPercent: 6.15},
+		{Code: "BK0811", Name: "超级品牌", Kind: domain.BoardKindConcept, Percent: 1.39, MainNet: -948835904, MainRatio: -5.35, LeaderName: "贵州茅台", LeaderPercent: 2.89},
+	}
+	frame := BuildLiveFrame(LiveData{
+		Quotes: []domain.Quote{quote},
+		Flows: map[string]domain.FundFlow{
+			quote.Symbol: {Symbol: quote.Symbol, MainNet: 125000000, MainRatio: 3.25},
+		},
+		Boards: boards, Detail: true, MarketStatus: "交易中",
+	}, ViewOptions{}, 119, 35)
+	for _, expected := range []string{
+		"板块资金  多数净流入（4/6），个股与板块同向",
+		"行业  食品饮料  +2.25%  ↑ 11.99亿 +4.62%  领涨 金达威 +10.03%",
+		"概念  超级品牌  +1.39%  ↓ 9.49亿 -5.35%  领涨 贵州茅台 +2.89%",
+	} {
+		if !strings.Contains(frame, expected) {
+			t.Fatalf("board detail missing %q:\n%s", expected, frame)
+		}
+	}
+	if count := strings.Count(frame, "领涨 "); count != 6 {
+		t.Fatalf("expected six related boards, got %d:\n%s", count, frame)
+	}
+}
+
+func TestBoardFlowSummaryComparesStockWithBoards(t *testing.T) {
+	positiveBoards := []domain.BoardFlow{{MainNet: 3}, {MainNet: 2}, {MainNet: 1}, {MainNet: 1}, {MainNet: -1}, {MainNet: -2}}
+	if got := boardFlowSummary(positiveBoards, &domain.FundFlow{MainNet: -1}); got != "多数净流入（4/6），个股弱于板块" {
+		t.Fatalf("unexpected positive-board summary: %s", got)
+	}
+	negativeBoards := []domain.BoardFlow{{MainNet: -3}, {MainNet: -2}, {MainNet: -1}, {MainNet: -1}, {MainNet: 1}, {MainNet: 2}}
+	if got := boardFlowSummary(negativeBoards, &domain.FundFlow{MainNet: 1}); got != "多数净流出（4/6），个股逆板块走强" {
+		t.Fatalf("unexpected negative-board summary: %s", got)
+	}
+	mixedBoards := []domain.BoardFlow{{MainNet: 3}, {MainNet: 2}, {MainNet: 1}, {MainNet: -1}, {MainNet: -2}, {MainNet: -3}}
+	if got := boardFlowSummary(mixedBoards, nil); got != "资金分化（流入3/流出3）" {
+		t.Fatalf("unexpected mixed summary: %s", got)
+	}
+}
+
 func TestMarketTotalAmountUsesShanghaiAndShenzhenOnly(t *testing.T) {
 	indices := []domain.Quote{
 		{Symbol: "sh000001", Amount: 120954357},

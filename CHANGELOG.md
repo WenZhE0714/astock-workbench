@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- Show the six most relevant Eastmoney industry/concept boards in live stock
+  detail, including board change, main-fund flow, ratio and leading stock.
+- Summarize whether related-board funds are mostly flowing in, flowing out or
+  diverging, and compare the stock's main-fund direction with its boards.
+- Cache board snapshots per stock and refresh them at most once per minute
+  during trading sessions; closed markets remain interactive without polling.
+
 ## 0.3.5
 
 - Add optional Tushare Pro `index_daily` fallback for previous-day index

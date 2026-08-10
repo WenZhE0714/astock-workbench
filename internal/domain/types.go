@@ -53,6 +53,25 @@ type FundFlow struct {
 	MainRatio float64 `json:"main_ratio_percent"`
 }
 
+const (
+	BoardKindIndustry = "industry"
+	BoardKindConcept  = "concept"
+)
+
+// BoardFlow is an Eastmoney industry/concept board snapshot associated with
+// one stock. MainNet is denominated in yuan.
+type BoardFlow struct {
+	Code          string  `json:"code"`
+	Name          string  `json:"name"`
+	Kind          string  `json:"kind"`
+	Percent       float64 `json:"percent"`
+	MainNet       float64 `json:"main_net_yuan"`
+	MainRatio     float64 `json:"main_ratio_percent"`
+	LeaderName    string  `json:"leader_name"`
+	LeaderCode    string  `json:"leader_code"`
+	LeaderPercent float64 `json:"leader_percent"`
+}
+
 type EngineInfo struct {
 	Name     string `json:"name"`
 	Version  string `json:"version,omitempty"`

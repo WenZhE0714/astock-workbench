@@ -15,7 +15,7 @@ import (
 
 const (
 	programName = "astock"
-	version     = "0.3.5"
+	version     = "0.4.0"
 	maxStocks   = 50
 )
 
@@ -27,6 +27,7 @@ type App struct {
 	resolver *market.Resolver
 	quotes   market.QuoteClient
 	flows    market.FundFlowClient
+	boards   market.BoardFlowClient
 	amounts  market.PreviousAmountClient
 	analyzer *analysis.Runner
 	reports  *storage.ReportStore
@@ -49,6 +50,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		resolver: market.NewResolver(names),
 		quotes:   market.TencentClient{},
 		flows:    market.EastmoneyClient{},
+		boards:   market.EastmoneyClient{},
 		amounts:  market.EastmoneyClient{},
 		analyzer: analysis.NewRunner(errorOutput),
 		reports:  storage.NewReportStore(paths.ReportsDir),

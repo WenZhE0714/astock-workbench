@@ -9,6 +9,7 @@
 ```text
 腾讯 Level-1 ─────────> market adapter ──> Quote ─────> terminal UI
 东方财富主力资金流 ───> market adapter ──> FundFlow ──┘
+东方财富 F10/板块资金 ─> market adapter ──> BoardFlow ─┘
                                              │
                                              └──> future strategy input
 
@@ -26,8 +27,8 @@ TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
 
 ## 模块边界
 
-- `internal/market`：个股/指数行情、主力资金流和名称解析适配器，不包含策略逻辑。
-- `internal/ui`：纯终端渲染，输入是标准 `Quote` 与 `FundFlow`。
+- `internal/market`：个股/指数行情、个股与板块主力资金流、关联板块和名称解析适配器，不包含策略逻辑。
+- `internal/ui`：纯终端渲染，输入是标准 `Quote`、`FundFlow` 与 `BoardFlow`。
 - `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents。
 - `internal/domain`：跨模块稳定对象，尤其是 `AnalysisResult`。
 - `internal/storage`：自选、缓存和报告归档；采用原子写入。

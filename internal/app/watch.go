@@ -369,6 +369,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	var current []domain.Quote
 	var indices []domain.Quote
 	flows := map[string]domain.FundFlow{}
+	boardFlows := map[string][]domain.BoardFlow{}
 	previousAmounts := map[string]float64{}
 	refreshed := time.Time{}
 	message := ""
@@ -406,8 +407,13 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if !force && width == lastWidth && height == lastHeight {
 			return
 		}
+		var selectedBoards []domain.BoardFlow
+		if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
+			selectedBoards = boardFlows[symbols[viewState.Selected]]
+		}
 		frame := ui.BuildLiveFrame(ui.LiveData{
 			Quotes: current, Symbols: symbols, Indices: indices, Flows: flows,
+			Boards:          selectedBoards,
 			PreviousAmounts: previousAmounts,
 			RefreshedAt:     refreshed, MarketStatus: session.Label,
 			FetchError: message, FlowError: flowMessage,
@@ -461,10 +467,18 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		amounts map[string]float64
 		err     error
 	}
+	type boardResult struct {
+		symbol string
+		boards []domain.BoardFlow
+		err    error
+	}
 	flowResults := make(chan flowResult, 1)
 	amountResults := make(chan amountResult, 1)
+	boardResults := make(chan boardResult, 8)
 	flowRunning := false
 	amountRunning := false
+	boardRunning := make(map[string]bool)
+	boardRefreshed := make(map[string]time.Time)
 	startFlowFetch := func() {
 		if app.flows == nil || flowRunning {
 			return
@@ -488,6 +502,24 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			result, fetchError := app.amounts.FetchPreviousAmounts(ctx, market.BroadMarketSymbols)
 			select {
 			case amountResults <- amountResult{amounts: result, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startBoardFetch := func(symbol string, force bool) {
+		if app.boards == nil || symbol == "" || boardRunning[symbol] {
+			return
+		}
+		if !force {
+			if refreshedAt, ok := boardRefreshed[symbol]; ok && time.Since(refreshedAt) < 60*time.Second {
+				return
+			}
+		}
+		boardRunning[symbol] = true
+		go func() {
+			result, fetchError := app.boards.FetchBoards(ctx, symbol)
+			select {
+			case boardResults <- boardResult{symbol: symbol, boards: result, err: fetchError}:
 			case <-ctx.Done():
 			}
 		}()
@@ -531,6 +563,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			startFlowFetch()
 			render(true)
 		case watchCommandJump:
+			opened := false
 			if temporarySymbol != "" && temporarySymbol != symbol {
 				for index, value := range symbols {
 					if value == temporarySymbol {
@@ -559,6 +592,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 			if found >= 0 {
 				viewState.Selected, viewState.Detail = found, true
+				opened = true
 				setNotice("")
 			} else {
 				quotes, quoteError := app.quotes.Fetch(ctx, quoteRequestSymbols([]string{symbol}))
@@ -579,11 +613,15 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					}
 					temporarySymbol = symbol
 					viewState.Selected, viewState.Detail = len(symbols)-1, true
+					opened = true
 					setNotice("")
 				}
 			}
 			command.reset()
 			startFlowFetch()
+			if opened {
+				startBoardFetch(symbol, false)
+			}
 			renderer.ResetViewport()
 			render(true)
 		}
@@ -642,6 +680,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 								}
 							}
 							requestSymbols = quoteRequestSymbols(symbols)
+							delete(boardFlows, command.symbol)
+							delete(boardRefreshed, command.symbol)
 							setNotice("已删除自选: " + command.symbol[2:])
 							if temporarySymbol == command.symbol {
 								temporarySymbol = ""
@@ -772,6 +812,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if quit {
 				return nil
 			}
+			if !wasDetail && viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
+				startBoardFetch(symbols[viewState.Selected], false)
+			}
 			if wasDetail && !viewState.Detail && temporarySymbol != "" {
 				for index, value := range symbols {
 					if value == temporarySymbol {
@@ -808,6 +851,15 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				flowMessage = ""
 			}
 			render(true)
+		case result := <-boardResults:
+			boardRunning[result.symbol] = false
+			if result.err == nil {
+				boardFlows[result.symbol] = result.boards
+				boardRefreshed[result.symbol] = time.Now()
+			}
+			if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) && symbols[viewState.Selected] == result.symbol {
+				render(true)
+			}
 		case result := <-amountResults:
 			amountRunning = false
 			if result.err == nil {
@@ -841,6 +893,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					}
 					startFlowFetch()
 					startAmountFetch()
+					if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
+						startBoardFetch(symbols[viewState.Selected], true)
+					}
 				}
 			}
 		case <-quoteTicker.C:
@@ -856,6 +911,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		case <-flowTicker.C:
 			if session.Poll {
 				startFlowFetch()
+				if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
+					startBoardFetch(symbols[viewState.Selected], true)
+				}
 			}
 		}
 	}

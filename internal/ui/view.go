@@ -218,7 +218,70 @@ func marketTag(symbol string) string {
 	return "SZ"
 }
 
-func dashboardCard(item domain.Quote, flow *domain.FundFlow, options ViewOptions, terminalWidth int) string {
+func boardFlowSummary(boards []domain.BoardFlow, stockFlow *domain.FundFlow) string {
+	positive, negative, valid := 0, 0, 0
+	for _, board := range boards {
+		if math.IsNaN(board.MainNet) || math.IsInf(board.MainNet, 0) {
+			continue
+		}
+		valid++
+		if board.MainNet > 0 {
+			positive++
+		} else if board.MainNet < 0 {
+			negative++
+		}
+	}
+	if valid == 0 {
+		return "板块资金暂不可用"
+	}
+	bias := 0
+	label := fmt.Sprintf("资金分化（流入%d/流出%d）", positive, negative)
+	if positive*3 >= valid*2 {
+		bias = 1
+		label = fmt.Sprintf("多数净流入（%d/%d）", positive, valid)
+	} else if negative*3 >= valid*2 {
+		bias = -1
+		label = fmt.Sprintf("多数净流出（%d/%d）", negative, valid)
+	}
+	if stockFlow == nil || math.IsNaN(stockFlow.MainNet) || math.IsInf(stockFlow.MainNet, 0) || bias == 0 || stockFlow.MainNet == 0 {
+		return label
+	}
+	switch {
+	case bias > 0 && stockFlow.MainNet > 0, bias < 0 && stockFlow.MainNet < 0:
+		return label + "，个股与板块同向"
+	case bias > 0 && stockFlow.MainNet < 0:
+		return label + "，个股弱于板块"
+	default:
+		return label + "，个股逆板块走强"
+	}
+}
+
+func boardFlowLine(board domain.BoardFlow, color bool) string {
+	kind := "概念"
+	if board.Kind == domain.BoardKindIndustry {
+		kind = "行业"
+	}
+	percent := signedPercent(board.Percent)
+	if color && !math.IsNaN(board.Percent) {
+		percent = trendValue(percent, board.Percent, true)
+	}
+	flow := domain.FundFlow{MainNet: board.MainNet, MainRatio: board.MainRatio}
+	flowText := directionalFundFlow(&flow) + " " + fundFlowRatio(&flow)
+	if color && !math.IsNaN(board.MainNet) {
+		flowText = style(flowText, trendCode(board.MainNet, false), true)
+	}
+	line := style(kind, "90", color) + "  " + board.Name + "  " + percent + "  " + flowText
+	if board.LeaderName != "" && board.LeaderName != "-" {
+		leaderPercent := signedPercent(board.LeaderPercent)
+		if color && !math.IsNaN(board.LeaderPercent) {
+			leaderPercent = trendValue(leaderPercent, board.LeaderPercent, true)
+		}
+		line += "  " + style("领涨", "90", color) + " " + board.LeaderName + " " + leaderPercent
+	}
+	return line
+}
+
+func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.BoardFlow, options ViewOptions, terminalWidth int) string {
 	cardWidth := terminalWidth
 	if cardWidth > 100 {
 		cardWidth = 100
@@ -281,6 +344,14 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, options ViewOptions
 	}
 	lines = append(lines, packMetrics(metrics, innerWidth, color)...)
 
+	if len(boards) > 0 {
+		lines = append(lines, "\x00separator")
+		lines = append(lines, style("板块资金", "1;36", color)+"  "+boardFlowSummary(boards, flow))
+		for _, board := range boards {
+			lines = append(lines, boardFlowLine(board, color))
+		}
+	}
+
 	if options.Depth {
 		lines = append(lines, "\x00separator")
 		lines = append(lines, style("五档盘口", "1;36", color)+"  "+style("价格 × 手", "90", color))
@@ -327,7 +398,7 @@ func buildStandardView(quotes []domain.Quote, options ViewOptions, terminalWidth
 	builder.WriteString(brand)
 	builder.WriteString("\n\n")
 	for quoteIndex, item := range quotes {
-		builder.WriteString(dashboardCard(item, nil, options, terminalWidth))
+		builder.WriteString(dashboardCard(item, nil, nil, options, terminalWidth))
 		if quoteIndex < len(quotes)-1 {
 			builder.WriteString("\n\n")
 		}
