@@ -7,12 +7,14 @@ import (
 
 func TestKeyDecoderSupportsPlainNavigation(t *testing.T) {
 	decoder := keyDecoder{}
-	got := decoder.Feed([]byte{'k', 'j', 'b', ' ', 'g', 'G', '\r', '\n', 'q', 0x03})
+	got := decoder.Feed([]byte{'k', 'j', 'b', '[', ']', ' ', 'g', 'G', '\r', '\n', 'q', 0x03})
 	want := []terminalKey{
 		terminalKeyUp,
 		terminalKeyDown,
 		terminalKeyPageUp,
+		terminalKeyPageUp,
 		terminalKeyPageDown,
+		terminalKeySpace,
 		terminalKeyHome,
 		terminalKeyEnd,
 		terminalKeyEnter,
@@ -22,6 +24,15 @@ func TestKeyDecoderSupportsPlainNavigation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected keys: %#v", got)
+	}
+}
+
+func TestKeyDecoderDistinguishesSpaceFromPageDown(t *testing.T) {
+	decoder := keyDecoder{}
+	got := decoder.Feed([]byte{' ', ']', 0x04})
+	want := []terminalKey{terminalKeySpace, terminalKeyPageDown, terminalKeyPageDown}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected space/page-down keys: %#v", got)
 	}
 }
 

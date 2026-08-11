@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.9.0
+
+- Add top-20 Shanghai/Shenzhen A-share gainers, losers and rapid-rise rankings
+  with Eastmoney industry classification on every row.
+- Add `1`/`2`/`3` ranking shortcuts, height-aware selection, direct detail
+  navigation and return-to-ranking behavior.
+- Refresh the active ranking during trading at the configured quote interval,
+  defaulting to once per second while preventing overlapping requests.
+- Split the base operation footer into two lines so market rankings remain
+  visible without truncating the existing watchlist shortcuts.
+
+## 0.8.0
+
+- Persist the 100 most recently viewed stocks opened through the interactive
+  view command, with duplicate views moved back to the front.
+- Add `h` history selection with newest-first ordering and direct detail
+  restoration without changing the saved watchlist.
+
+## 0.7.0
+
+- Add an unadjusted daily K-line contract with Eastmoney as the primary source
+  and an automatic Tencent fallback when the primary history is unavailable.
+- Add deterministic daily swing signals based on MA5/20/60, MACD, RSI14,
+  prior-20-day structure and volume confirmation.
+- Show bullish, bearish or range-bound bias together with conditional buy/sell
+  triggers, invalidation, support/resistance basis and a staged position plan.
+- Map directional signals to `CALL-like` / `PUT-like` labels while explicitly
+  distinguishing them from option contracts, short selling and automatic
+  trading instructions.
+- Load technical signals asynchronously on the stock detail screen and cache
+  them for five minutes during trading, without resuming polling after close.
+- Add `m` group assignment for the selected stock, with multi-select checkboxes
+  and explicit current/add/remove membership states before saving.
+- Preserve existing per-group order during assignment and keep a stock in the
+  default group when every group is unchecked, preventing accidental loss.
+- Show one compact turnover row labelled Shanghai-Shenzhen while calculating
+  the Shanghai-Shenzhen-Beijing A-share total without double-counting Shenzhen
+  Component or ChiNext constituents.
+- Fetch the previous session's Shanghai Composite, Shenzhen Composite and BSE
+  50 five-minute turnover from Sina and sum exact amount fields by trade date;
+  no Tushare token or volume-based estimation is required.
+- Keep current Tencent and previous Sina values on the same live-quote scope,
+  and hide the comparison before the quote date advances on a new session.
+- Remove the Tushare runtime adapter and its token configuration.
+
 ## 0.6.0
 
 - Add backward-compatible ordered watchlist groups in the existing watchlist

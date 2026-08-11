@@ -267,6 +267,58 @@ func RemoveWatchlistFromGroup(file, groupName string, removals []string) ([]bool
 	return removed, SaveWatchlistGroups(file, groups)
 }
 
+// SetWatchlistSymbolGroups replaces one stock's group memberships while
+// preserving its position in groups where it remains selected. An empty
+// selection falls back to the default group so the stock cannot disappear.
+func SetWatchlistSymbolGroups(file, rawSymbol string, groupNames []string) ([]string, error) {
+	symbol, status := market.InspectSymbol(rawSymbol)
+	if status != "ok" {
+		return nil, fmt.Errorf("无效股票代码 %q", rawSymbol)
+	}
+	groups, _, err := LoadWatchlistGroups(file)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(groupNames))
+	for _, rawName := range groupNames {
+		name, nameError := validateWatchlistGroupName(rawName)
+		if nameError != nil {
+			return nil, nameError
+		}
+		if findWatchlistGroup(groups, name) < 0 {
+			return nil, fmt.Errorf("自选分组不存在: %s", name)
+		}
+		wanted[name] = true
+	}
+	if len(wanted) == 0 {
+		wanted[DefaultWatchlistGroup] = true
+	}
+
+	assigned := make([]string, 0, len(wanted))
+	for groupIndex := range groups {
+		group := &groups[groupIndex]
+		contains := false
+		kept := group.Symbols[:0]
+		for _, existing := range group.Symbols {
+			if existing == symbol {
+				contains = true
+				if !wanted[group.Name] {
+					continue
+				}
+			}
+			kept = append(kept, existing)
+		}
+		group.Symbols = kept
+		if wanted[group.Name] {
+			assigned = append(assigned, group.Name)
+			if !contains {
+				group.Symbols = append(group.Symbols, symbol)
+			}
+		}
+	}
+	return assigned, SaveWatchlistGroups(file, groups)
+}
+
 func SaveWatchlistGroupOrder(file, groupName string, symbols []string) error {
 	groups, _, err := LoadWatchlistGroups(file)
 	if err != nil {

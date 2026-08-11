@@ -11,6 +11,8 @@
 东方财富主力资金流 ───> market adapter ──> FundFlow ──┘
 东方财富 F10/板块资金 ─> market adapter ──> BoardFlow ─┘
 东方财富龙虎榜 ────────> market adapter ──> DragonTigerSnapshot ─┘
+东方财富/腾讯未复权日K ─> market adapter ──> DailyBar ─> technical strategy
+新浪沪深京5分钟成交额 ───> market adapter ──> MarketAmountSnapshot ─┘
                                              │
                                              └──> future strategy input
 
@@ -28,13 +30,14 @@ TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
 
 ## 模块边界
 
-- `internal/market`：个股/指数行情、个股与板块主力资金流、关联板块排行、龙虎榜和名称解析适配器，不包含策略逻辑。
-- `internal/ui`：纯终端渲染，输入是标准 `Quote`、`FundFlow`、`BoardFlow` 与 `DragonTigerSnapshot`；热门标签只基于已采集的同类排名和板块广度。
+- `internal/market`：个股/指数行情、沪深个股涨跌幅/涨速榜、未复权日 K、沪深京历史成交额、个股与板块主力资金流、关联板块排行、龙虎榜和名称解析适配器，不包含策略逻辑。个股榜单直接携带东方财富行业分类；日 K 先使用东方财富，自动回退腾讯未复权序列；上一交易日成交额使用新浪上证指数、深证综指和北证 50 的 5 分钟精确成交额按日汇总。
+- `internal/ui`：纯终端渲染，输入是标准 `Quote`、`DailyBar` 派生信号、`FundFlow`、`BoardFlow` 与 `DragonTigerSnapshot`；热门标签只基于已采集的同类排名和板块广度。
 - `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents。
-- `internal/domain`：跨模块稳定对象，尤其是 `AnalysisResult`。
-- `internal/storage`：自选、缓存和报告归档；采用原子写入。
+- `internal/domain`：跨模块稳定对象，包括带交易日和沪深京分项的 `MarketAmountSnapshot` 以及 `AnalysisResult`。
+- `internal/storage`：自选、最近查看历史、缓存和报告归档；采用原子写入。
 - 自选文件在原有逐行代码格式上增加 `[分组名]` 标题；无标题旧数据归入“默认”，加载“全部”时按分组顺序去重汇总，组内顺序独立持久化。
-- `internal/strategy`：研究信号接口，不允许直接提交订单。
+- 最近查看历史使用独立的有界 MRU 文件，只记录通过交互式查看命令成功打开的股票。
+- `internal/strategy`：研究信号接口和确定性日线量价策略，不允许直接提交订单。技术信号必须包含方向、条件触发、失效位和仓位计划。
 - `internal/backtest`：历史仿真接口，与执行系统隔离。
 - `internal/execution`：订单、Broker 和确定性 RiskGate 契约。
 - `internal/paper`：未来模拟账户与 A 股撮合规则。

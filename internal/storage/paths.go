@@ -12,6 +12,7 @@ type Paths struct {
 	NameCacheFile    string
 	PinyinCacheFile  string
 	DataDir          string
+	ViewHistoryFile  string
 	ReportsDir       string
 	TradingAgentsDir string
 	PaperFile        string
@@ -43,6 +44,7 @@ func ResolvePaths() (Paths, error) {
 		NameCacheFile:    filepath.Join(cacheRoot, "astock", "names.tsv"),
 		PinyinCacheFile:  filepath.Join(cacheRoot, "astock", "pinyin.tsv"),
 		DataDir:          dataDir,
+		ViewHistoryFile:  filepath.Join(dataDir, "view-history.tsv"),
 		ReportsDir:       filepath.Join(dataDir, "reports"),
 		TradingAgentsDir: filepath.Join(dataDir, "tradingagents"),
 		PaperFile:        filepath.Join(dataDir, "paper", "account.json"),

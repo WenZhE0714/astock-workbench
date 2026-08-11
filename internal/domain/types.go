@@ -6,6 +6,24 @@ type Candidate struct {
 	Name   string `json:"name"`
 }
 
+type MarketRankingKind string
+
+const (
+	MarketRankingGainers   MarketRankingKind = "gainers"
+	MarketRankingLosers    MarketRankingKind = "losers"
+	MarketRankingRapidRise MarketRankingKind = "rapid_rise"
+)
+
+// MarketRankingItem is one Eastmoney Shanghai/Shenzhen A-share ranking row.
+type MarketRankingItem struct {
+	Symbol   string  `json:"symbol"`
+	Name     string  `json:"name"`
+	Price    float64 `json:"price"`
+	Percent  float64 `json:"percent"`
+	Speed    float64 `json:"speed"`
+	Industry string  `json:"industry"`
+}
+
 type DepthLevel struct {
 	Level  int    `json:"level"`
 	Price  string `json:"price"`
@@ -43,6 +61,68 @@ type Quote struct {
 	AveragePrice   string       `json:"average_price"`
 	Bids           []DepthLevel `json:"bids,omitempty"`
 	Asks           []DepthLevel `json:"asks,omitempty"`
+}
+
+// MarketAmountSnapshot contains one trading day's exchange-wide A-share
+// turnover. Amounts use ten-thousand yuan, matching Tencent quote field 37.
+type MarketAmountSnapshot struct {
+	TradeDate string  `json:"trade_date"`
+	Shanghai  float64 `json:"shanghai_wan_yuan"`
+	Shenzhen  float64 `json:"shenzhen_wan_yuan"`
+	Beijing   float64 `json:"beijing_wan_yuan"`
+	Source    string  `json:"source"`
+}
+
+// DailyBar is one unadjusted daily K-line. Price levels derived from these
+// bars stay on the same scale as the Level-1 quote shown to the user.
+type DailyBar struct {
+	Symbol   string  `json:"symbol"`
+	Source   string  `json:"source"`
+	Date     string  `json:"date"`
+	Open     float64 `json:"open"`
+	Close    float64 `json:"close"`
+	High     float64 `json:"high"`
+	Low      float64 `json:"low"`
+	Volume   float64 `json:"volume"`
+	Amount   float64 `json:"amount_yuan"`
+	Turnover float64 `json:"turnover_percent"`
+}
+
+const (
+	TechnicalStatusLoading     = "loading"
+	TechnicalStatusReady       = "ready"
+	TechnicalStatusUnavailable = "unavailable"
+)
+
+// TechnicalSignal is a deterministic price-volume observation. It describes
+// scenarios and invalidations, not an executable order.
+type TechnicalSignal struct {
+	Status       string   `json:"status"`
+	Symbol       string   `json:"symbol"`
+	DataSource   string   `json:"data_source"`
+	DataDate     string   `json:"data_date"`
+	Bias         string   `json:"bias"`
+	Action       string   `json:"action"`
+	OptionLike   string   `json:"option_like,omitempty"`
+	Strength     int      `json:"strength"`
+	Score        int      `json:"score"`
+	Price        float64  `json:"price"`
+	MA5          float64  `json:"ma5"`
+	MA20         float64  `json:"ma20"`
+	MA60         float64  `json:"ma60"`
+	MACD         float64  `json:"macd_histogram"`
+	RSI14        float64  `json:"rsi14"`
+	VolumeRatio  float64  `json:"volume_ratio_20d"`
+	High20       float64  `json:"prior_20d_high"`
+	Low20        float64  `json:"prior_20d_low"`
+	Support      string   `json:"support"`
+	Resistance   string   `json:"resistance"`
+	BuyTrigger   string   `json:"buy_trigger"`
+	SellTrigger  string   `json:"sell_trigger"`
+	Invalidation string   `json:"invalidation"`
+	PositionPlan string   `json:"position_plan"`
+	Evidence     []string `json:"evidence"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // FundFlow is an Eastmoney main-fund-flow snapshot. MainNet is denominated in

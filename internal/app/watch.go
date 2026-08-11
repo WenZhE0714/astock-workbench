@@ -13,6 +13,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
+	"github.com/wenzhe/astock-workbench/internal/strategy"
 	"github.com/wenzhe/astock-workbench/internal/ui"
 )
 
@@ -80,7 +81,7 @@ func (state *watchViewState) handle(key terminalKey, count int) (changed, quit b
 		state.Selected++
 	case terminalKeyPageUp:
 		state.Selected -= 10
-	case terminalKeyPageDown:
+	case terminalKeyPageDown, terminalKeySpace:
 		state.Selected += 10
 	case terminalKeyHome:
 		state.Selected = 0
@@ -230,8 +231,16 @@ func quoteCandidates(quotes []domain.Quote) []domain.Candidate {
 }
 
 func quoteRequestSymbols(symbols []string) []string {
+	return requestSymbolsWith(symbols, market.QuoteMarketSymbols)
+}
+
+func fundFlowRequestSymbols(symbols []string) []string {
+	return requestSymbolsWith(symbols, market.BroadMarketSymbols)
+}
+
+func requestSymbolsWith(symbols, additional []string) []string {
 	result := append([]string(nil), symbols...)
-	for _, indexSymbol := range market.BroadMarketSymbols {
+	for _, indexSymbol := range additional {
 		found := false
 		for _, symbol := range result {
 			if symbol == indexSymbol {
@@ -256,7 +265,7 @@ func splitMarketQuotes(quotes []domain.Quote, symbols []string) (stocks, indices
 			stocks = append(stocks, item)
 		}
 	}
-	for _, symbol := range market.BroadMarketSymbols {
+	for _, symbol := range market.QuoteMarketSymbols {
 		if item, ok := bySymbol[symbol]; ok {
 			indices = append(indices, item)
 		}
@@ -335,11 +344,11 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			return err
 		}
 		flows := map[string]domain.FundFlow{}
-		previousAmounts := map[string]float64{}
+		previousAmounts := domain.MarketAmountSnapshot{}
 		flowError := ""
 		if app.flows != nil {
 			flowContext, cancelFlow := context.WithTimeout(ctx, 8*time.Second)
-			flows, err = app.flows.Fetch(flowContext, requestSymbols)
+			flows, err = app.flows.Fetch(flowContext, fundFlowRequestSymbols(symbols))
 			cancelFlow()
 			if err != nil {
 				flowError = err.Error()
@@ -348,10 +357,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		if app.amounts != nil {
 			amountContext, cancelAmounts := context.WithTimeout(ctx, 8*time.Second)
-			previousAmounts, err = app.amounts.FetchPreviousAmounts(amountContext, market.BroadMarketSymbols)
+			previousAmounts, err = app.amounts.FetchPreviousMarketAmount(amountContext)
 			cancelAmounts()
 			if err != nil {
-				previousAmounts = map[string]float64{}
+				previousAmounts = domain.MarketAmountSnapshot{}
 			}
 		}
 		data := ui.LiveData{
@@ -378,7 +387,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	flows := map[string]domain.FundFlow{}
 	boardFlows := map[string][]domain.BoardFlow{}
 	dragonTigers := map[string]domain.DragonTigerSnapshot{}
-	previousAmounts := map[string]float64{}
+	technicalSignals := map[string]domain.TechnicalSignal{}
+	previousAmounts := domain.MarketAmountSnapshot{}
 	refreshed := time.Time{}
 	message := ""
 	flowMessage := ""
@@ -387,6 +397,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	command := watchCommand{}
 	sortState := watchSortState{}
 	groupChooser := watchGroupChooser{}
+	groupAssignment := watchGroupAssignment{}
+	marketRanking := watchMarketRanking{}
+	marketRankingEpoch := uint64(0)
 	currentGroup := initialGroup
 	notice := ""
 	noticeExpires := time.Time{}
@@ -420,17 +433,29 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			symbol, name := selectedStock()
 			return sortState.status(symbol, name, options.Moyu)
 		}
+		if groupAssignment.active {
+			return groupAssignment.status(options.Moyu)
+		}
 		if groupChooser.active {
 			return groupChooser.status(options.Moyu)
 		}
 		if command.active() {
 			return command.status(options.Moyu, inputCursorVisible)
 		}
-		return notice
+		if notice != "" {
+			return notice
+		}
+		if marketRanking.active && !viewState.Detail {
+			return marketRanking.status(options.Moyu)
+		}
+		return ""
 	}
 	controls := func() string {
 		if sortState.active {
 			return sortState.controls(options.Moyu)
+		}
+		if groupAssignment.active {
+			return groupAssignment.controls(options.Moyu)
 		}
 		if groupChooser.active {
 			return groupChooser.controls(options.Moyu)
@@ -438,7 +463,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if command.active() {
 			return command.controls(options.Moyu)
 		}
-		return ""
+		if marketRanking.active && !viewState.Detail {
+			return marketRanking.controls(options.Moyu)
+		}
+		return watchBaseControls(viewState.Detail, options.Moyu)
 	}
 	render := func(force bool) {
 		width, height := terminalDimensions(app.out)
@@ -447,23 +475,38 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		var selectedBoards []domain.BoardFlow
 		var selectedDragonTiger *domain.DragonTigerSnapshot
+		var selectedTechnical *domain.TechnicalSignal
+		var rankingKind domain.MarketRankingKind
+		var rankingItems []domain.MarketRankingItem
+		rankingSelected := 0
 		if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 			symbol := symbols[viewState.Selected]
 			selectedBoards = boardFlows[symbol]
 			if snapshot, ok := dragonTigers[symbol]; ok {
 				selectedDragonTiger = &snapshot
 			}
+			if signal, ok := technicalSignals[symbol]; ok {
+				selectedTechnical = &signal
+			}
+		}
+		if marketRanking.active && !viewState.Detail {
+			rankingKind = marketRanking.kind
+			rankingItems = marketRanking.items
+			rankingSelected = marketRanking.selected
 		}
 		frame := ui.BuildLiveFrame(ui.LiveData{
 			Quotes: current, Symbols: symbols, Indices: indices, Flows: flows,
 			Boards:          selectedBoards,
 			DragonTiger:     selectedDragonTiger,
+			Technical:       selectedTechnical,
 			PreviousAmounts: previousAmounts,
 			RefreshedAt:     refreshed, MarketStatus: session.Label,
 			FetchError: message, FlowError: flowMessage,
 			Status: status(), Footer: controls(),
 			GroupName: currentGroup, GroupCount: len(symbols),
 			Selected: viewState.Selected, Detail: viewState.Detail,
+			RankingKind: rankingKind, RankingItems: rankingItems, RankingSelected: rankingSelected,
+			RankingRefreshedAt: marketRanking.refreshedAt,
 		}, viewOptions, width, height)
 		renderer.Render(frame, width, height)
 		lastWidth, lastHeight = width, height
@@ -497,6 +540,28 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		render(true)
 		return nil
 	}
+	openMarketRanking := func(kind domain.MarketRankingKind) {
+		if app.rankings == nil {
+			setNotice("个股榜单暂不可用")
+			render(true)
+			return
+		}
+		setNotice("正在加载个股榜单…")
+		render(true)
+		rankingContext, cancelRanking := context.WithTimeout(ctx, 6*time.Second)
+		items, rankingError := app.rankings.FetchMarketRanking(rankingContext, kind, 20)
+		cancelRanking()
+		if rankingError != nil {
+			setNotice("榜单加载失败: " + rankingError.Error())
+			render(true)
+			return
+		}
+		marketRankingEpoch++
+		marketRanking.begin(kind, items)
+		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
 	if err := fetch(); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -510,6 +575,24 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			return loadError
 		}
 		groupChooser.begin(groups, currentGroup)
+		if len(warnings) > 0 {
+			setNotice(warnings[0])
+		}
+		return nil
+	}
+	openGroupAssignment := func() error {
+		if currentGroup == temporaryWatchlistGroup {
+			return fmt.Errorf("临时列表中的股票尚未加入自选")
+		}
+		symbol, name := selectedStock()
+		if symbol == "" || symbol == temporarySymbol {
+			return fmt.Errorf("当前股票尚未加入自选")
+		}
+		groups, warnings, loadError := storage.LoadWatchlistGroups(app.paths.WatchlistFile)
+		if loadError != nil {
+			return loadError
+		}
+		groupAssignment.begin(groups, symbol, name)
 		if len(warnings) > 0 {
 			setNotice(warnings[0])
 		}
@@ -544,7 +627,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		err   error
 	}
 	type amountResult struct {
-		amounts map[string]float64
+		amounts domain.MarketAmountSnapshot
 		err     error
 	}
 	type boardResult struct {
@@ -557,22 +640,38 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		snapshot domain.DragonTigerSnapshot
 		err      error
 	}
+	type technicalResult struct {
+		symbol string
+		signal domain.TechnicalSignal
+		err    error
+	}
+	type marketRankingResult struct {
+		kind  domain.MarketRankingKind
+		epoch uint64
+		items []domain.MarketRankingItem
+		err   error
+	}
 	flowResults := make(chan flowResult, 1)
 	amountResults := make(chan amountResult, 1)
 	boardResults := make(chan boardResult, 8)
 	dragonTigerResults := make(chan dragonTigerResult, 8)
+	technicalResults := make(chan technicalResult, 8)
+	marketRankingResults := make(chan marketRankingResult, 1)
 	flowRunning := false
 	amountRunning := false
 	boardRunning := make(map[string]bool)
 	boardRefreshed := make(map[string]time.Time)
 	dragonTigerRunning := make(map[string]bool)
 	dragonTigerRefreshed := make(map[string]time.Time)
+	technicalRunning := make(map[string]bool)
+	technicalRefreshed := make(map[string]time.Time)
+	marketRankingRunning := false
 	startFlowFetch := func() {
 		if app.flows == nil || flowRunning {
 			return
 		}
 		flowRunning = true
-		request := append([]string(nil), requestSymbols...)
+		request := fundFlowRequestSymbols(symbols)
 		go func() {
 			result, fetchError := app.flows.Fetch(ctx, request)
 			select {
@@ -587,7 +686,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		amountRunning = true
 		go func() {
-			result, fetchError := app.amounts.FetchPreviousAmounts(ctx, market.BroadMarketSymbols)
+			result, fetchError := app.amounts.FetchPreviousMarketAmount(ctx)
 			select {
 			case amountResults <- amountResult{amounts: result, err: fetchError}:
 			case <-ctx.Done():
@@ -626,6 +725,55 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			snapshot, fetchError := app.dragonTiger.FetchDragonTiger(ctx, symbol)
 			select {
 			case dragonTigerResults <- dragonTigerResult{symbol: symbol, snapshot: snapshot, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startTechnicalFetch := func(symbol string, force bool) {
+		if app.history == nil || symbol == "" || technicalRunning[symbol] {
+			return
+		}
+		if !force {
+			if refreshedAt, ok := technicalRefreshed[symbol]; ok {
+				ttl := 5 * time.Minute
+				if technicalSignals[symbol].Status == domain.TechnicalStatusUnavailable {
+					ttl = time.Minute
+				}
+				if time.Since(refreshedAt) < ttl {
+					return
+				}
+			}
+		}
+		technicalRunning[symbol] = true
+		technicalSignals[symbol] = domain.TechnicalSignal{
+			Status: domain.TechnicalStatusLoading,
+			Symbol: symbol,
+		}
+		go func() {
+			bars, fetchError := app.history.FetchDailyBars(ctx, symbol)
+			var signal domain.TechnicalSignal
+			if fetchError == nil {
+				signal, fetchError = strategy.AnalyzeTechnical(symbol, bars)
+			}
+			select {
+			case technicalResults <- technicalResult{symbol: symbol, signal: signal, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startMarketRankingFetch := func() {
+		if app.rankings == nil || !marketRanking.active || marketRankingRunning || !session.Poll {
+			return
+		}
+		marketRankingRunning = true
+		kind := marketRanking.kind
+		epoch := marketRankingEpoch
+		go func() {
+			requestContext, cancel := context.WithTimeout(ctx, 6*time.Second)
+			items, fetchError := app.rankings.FetchMarketRanking(requestContext, kind, 20)
+			cancel()
+			select {
+			case marketRankingResults <- marketRankingResult{kind: kind, epoch: epoch, items: items, err: fetchError}:
 			case <-ctx.Done():
 			}
 		}()
@@ -678,7 +826,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 			startFlowFetch()
 			render(true)
-		case watchCommandJump:
+		case watchCommandJump, watchCommandHistory, watchCommandRanking:
+			recordHistory := command.kind != watchCommandRanking
 			opened := false
 			if temporarySymbol != "" && temporarySymbol != symbol {
 				for index, value := range symbols {
@@ -738,6 +887,13 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if opened {
 				startBoardFetch(symbol, false)
 				startDragonTigerFetch(symbol, false)
+				startTechnicalFetch(symbol, false)
+				if recordHistory {
+					_, name := selectedStock()
+					if historyError := storage.RecordViewHistory(app.paths.ViewHistoryFile, symbol, name); historyError != nil {
+						setNotice("已打开，但保存查看历史失败: " + historyError.Error())
+					}
+				}
 			}
 			renderer.ResetViewport()
 			render(true)
@@ -761,6 +917,52 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		case event, ok := <-events:
 			if !ok {
 				events = nil
+				continue
+			}
+			if marketRanking.active && !viewState.Detail {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					marketRankingEpoch++
+					marketRanking.reset()
+					setNotice("")
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				if event.Key == terminalKeyNone {
+					if kind, ok := marketRankingShortcut(event.Text); ok {
+						openMarketRanking(kind)
+						continue
+					}
+				}
+				switch event.Key {
+				case terminalKeyUp:
+					marketRanking.move(-1)
+				case terminalKeyDown:
+					marketRanking.move(1)
+				case terminalKeyPageUp:
+					marketRanking.move(-10)
+				case terminalKeyPageDown, terminalKeySpace:
+					marketRanking.move(10)
+				case terminalKeyHome:
+					marketRanking.selectIndex(0)
+				case terminalKeyEnd:
+					marketRanking.selectIndex(len(marketRanking.items) - 1)
+				case terminalKeyEnter:
+					item, selected := marketRanking.selectedItem()
+					if !selected {
+						continue
+					}
+					command.begin(watchCommandRanking)
+					executeWatchCommand(item.Symbol)
+					continue
+				default:
+					continue
+				}
+				renderer.ResetViewport()
+				render(true)
 				continue
 			}
 			if sortState.active {
@@ -804,7 +1006,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					target++
 				case terminalKeyPageUp:
 					target -= 10
-				case terminalKeyPageDown:
+				case terminalKeyPageDown, terminalKeySpace:
 					target += 10
 				case terminalKeyHome:
 					target = 0
@@ -827,6 +1029,58 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				}
 				viewState.Selected = target
 				renderer.ResetViewport()
+				render(true)
+				continue
+			}
+			if groupAssignment.active {
+				if event.Key == terminalKeyBack || event.Key == terminalKeyQuit {
+					groupAssignment.reset()
+					setNotice("已取消分组分配")
+					render(true)
+					continue
+				}
+				switch event.Key {
+				case terminalKeyUp:
+					groupAssignment.move(-1)
+				case terminalKeyDown:
+					groupAssignment.move(1)
+				case terminalKeyPageUp:
+					groupAssignment.move(-5)
+				case terminalKeyPageDown:
+					groupAssignment.move(5)
+				case terminalKeyHome:
+					groupAssignment.selected = 0
+				case terminalKeyEnd:
+					groupAssignment.selected = len(groupAssignment.groups) - 1
+				case terminalKeySpace:
+					groupAssignment.toggle()
+				case terminalKeyEnter:
+					symbol := groupAssignment.symbol
+					selectedGroups := groupAssignment.selectedGroups()
+					usedDefaultFallback := len(selectedGroups) == 0
+					assignedGroups, assignError := storage.SetWatchlistSymbolGroups(
+						app.paths.WatchlistFile, symbol, selectedGroups,
+					)
+					groupAssignment.reset()
+					if assignError != nil {
+						setNotice("分组分配失败: " + assignError.Error())
+					} else {
+						assignNotice := "已分配到: " + strings.Join(assignedGroups, "、")
+						if usedDefaultFallback {
+							assignNotice = "未选择分组，已保留在默认分组"
+						}
+						if groupError := switchGroup(currentGroup); groupError != nil {
+							assignNotice += "，但刷新失败: " + groupError.Error()
+						}
+						setNotice(assignNotice)
+						startFlowFetch()
+					}
+					renderer.ResetViewport()
+					render(true)
+					continue
+				default:
+					continue
+				}
 				render(true)
 				continue
 			}
@@ -868,7 +1122,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					groupChooser.move(1)
 				case terminalKeyPageUp:
 					groupChooser.move(-5)
-				case terminalKeyPageDown:
+				case terminalKeyPageDown, terminalKeySpace:
 					groupChooser.move(5)
 				case terminalKeyHome:
 					groupChooser.selected = 0
@@ -962,6 +1216,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 							delete(boardRefreshed, command.symbol)
 							delete(dragonTigers, command.symbol)
 							delete(dragonTigerRefreshed, command.symbol)
+							delete(technicalSignals, command.symbol)
+							delete(technicalRefreshed, command.symbol)
 							if currentGroup != storage.AllWatchlistGroup && currentGroup != temporaryWatchlistGroup {
 								setNotice("已从“" + currentGroup + "”移出: " + command.symbol[2:])
 							} else {
@@ -995,7 +1251,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 						command.moveCandidate(1)
 					case terminalKeyPageUp:
 						command.moveCandidate(-5)
-					case terminalKeyPageDown:
+					case terminalKeyPageDown, terminalKeySpace:
 						command.moveCandidate(5)
 					case terminalKeyHome:
 						command.selectCandidate(0)
@@ -1073,6 +1329,15 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 			if event.Key == terminalKeyNone && event.Text != "" {
 				switch event.Text {
+				case "1", "2", "3":
+					if viewState.Detail {
+						setNotice("请先按 Esc 返回列表再查看榜单")
+						render(true)
+						continue
+					}
+					kind, _ := marketRankingShortcut(event.Text)
+					openMarketRanking(kind)
+					continue
 				case "a", "A":
 					command.begin(watchCommandAdd)
 				case "d", "D":
@@ -1104,6 +1369,21 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					command.confirmDelete(symbol, name, currentGroup)
 				case "i", "I":
 					command.begin(watchCommandJump)
+				case "h", "H":
+					history, historyError := storage.LoadViewHistory(app.paths.ViewHistoryFile)
+					if historyError != nil {
+						setNotice("读取查看历史失败: " + historyError.Error())
+						render(true)
+						continue
+					}
+					if len(history) == 0 {
+						setNotice("暂无查看历史")
+						render(true)
+						continue
+					}
+					command.begin(watchCommandHistory)
+					command.chooseCandidates("", history)
+					renderer.ResetViewport()
 				case "e", "E":
 					if viewState.Detail {
 						setNotice("请先按 Esc 返回列表再调整顺序")
@@ -1138,6 +1418,25 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					renderer.ResetViewport()
 					render(true)
 					continue
+				case "m", "M":
+					if viewState.Detail {
+						setNotice("请先按 Esc 返回列表再分配分组")
+						render(true)
+						continue
+					}
+					if len(symbols) == 0 {
+						setNotice("当前没有可分配的自选")
+						render(true)
+						continue
+					}
+					if groupError := openGroupAssignment(); groupError != nil {
+						setNotice("读取分组失败: " + groupError.Error())
+						render(true)
+						continue
+					}
+					renderer.ResetViewport()
+					render(true)
+					continue
 				default:
 					continue
 				}
@@ -1155,6 +1454,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				symbol := symbols[viewState.Selected]
 				startBoardFetch(symbol, false)
 				startDragonTigerFetch(symbol, false)
+				startTechnicalFetch(symbol, false)
 			}
 			if wasDetail && !viewState.Detail && temporarySymbol != "" {
 				for index, value := range symbols {
@@ -1192,6 +1492,19 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				flowMessage = ""
 			}
 			render(true)
+		case result := <-marketRankingResults:
+			marketRankingRunning = false
+			if !marketRanking.active || result.epoch != marketRankingEpoch || result.kind != marketRanking.kind {
+				continue
+			}
+			if result.err != nil {
+				marketRanking.failRefresh(result.err)
+			} else {
+				marketRanking.refresh(result.items)
+			}
+			if !viewState.Detail {
+				render(true)
+			}
 		case result := <-boardResults:
 			boardRunning[result.symbol] = false
 			if result.err == nil {
@@ -1206,6 +1519,21 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if result.err == nil {
 				dragonTigers[result.symbol] = result.snapshot
 				dragonTigerRefreshed[result.symbol] = time.Now()
+			}
+			if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) && symbols[viewState.Selected] == result.symbol {
+				render(true)
+			}
+		case result := <-technicalResults:
+			technicalRunning[result.symbol] = false
+			technicalRefreshed[result.symbol] = time.Now()
+			if result.err != nil {
+				technicalSignals[result.symbol] = domain.TechnicalSignal{
+					Status: domain.TechnicalStatusUnavailable,
+					Symbol: result.symbol,
+					Error:  result.err.Error(),
+				}
+			} else {
+				technicalSignals[result.symbol] = result.signal
 			}
 			if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) && symbols[viewState.Selected] == result.symbol {
 				render(true)
@@ -1235,6 +1563,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				session = nextSession
 				render(true)
 				if !wasPolling && session.Poll {
+					startMarketRankingFetch()
 					if err := fetch(); err != nil {
 						if errors.Is(err, context.Canceled) {
 							return nil
@@ -1247,6 +1576,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 						symbol := symbols[viewState.Selected]
 						startBoardFetch(symbol, true)
 						startDragonTigerFetch(symbol, false)
+						startTechnicalFetch(symbol, true)
 					}
 				}
 			}
@@ -1254,6 +1584,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if !session.Poll {
 				continue
 			}
+			startMarketRankingFetch()
 			if err := fetch(); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil
@@ -1265,6 +1596,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				startFlowFetch()
 				if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 					startBoardFetch(symbols[viewState.Selected], true)
+					startTechnicalFetch(symbols[viewState.Selected], false)
 				}
 			}
 		}
@@ -1279,7 +1611,7 @@ func navigateRenderer(renderer *ui.Renderer, key terminalKey) {
 		renderer.Navigate(ui.NavigateDown)
 	case terminalKeyPageUp:
 		renderer.Navigate(ui.NavigatePageUp)
-	case terminalKeyPageDown:
+	case terminalKeyPageDown, terminalKeySpace:
 		renderer.Navigate(ui.NavigatePageDown)
 	case terminalKeyHome:
 		renderer.Navigate(ui.NavigateHome)

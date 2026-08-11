@@ -10,23 +10,28 @@ import (
 )
 
 type LiveData struct {
-	Quotes          []domain.Quote
-	Symbols         []string
-	Indices         []domain.Quote
-	Flows           map[string]domain.FundFlow
-	Boards          []domain.BoardFlow
-	DragonTiger     *domain.DragonTigerSnapshot
-	PreviousAmounts map[string]float64
-	RefreshedAt     time.Time
-	MarketStatus    string
-	FetchError      string
-	FlowError       string
-	Status          string
-	Footer          string
-	GroupName       string
-	GroupCount      int
-	Selected        int
-	Detail          bool
+	Quotes             []domain.Quote
+	Symbols            []string
+	Indices            []domain.Quote
+	Flows              map[string]domain.FundFlow
+	Boards             []domain.BoardFlow
+	DragonTiger        *domain.DragonTigerSnapshot
+	Technical          *domain.TechnicalSignal
+	PreviousAmounts    domain.MarketAmountSnapshot
+	RefreshedAt        time.Time
+	MarketStatus       string
+	FetchError         string
+	FlowError          string
+	Status             string
+	Footer             string
+	GroupName          string
+	GroupCount         int
+	Selected           int
+	Detail             bool
+	RankingKind        domain.MarketRankingKind
+	RankingItems       []domain.MarketRankingItem
+	RankingSelected    int
+	RankingRefreshedAt time.Time
 }
 
 func indexLabel(symbol string, moyu bool) string {
@@ -97,12 +102,18 @@ func marketOverview(indices []domain.Quote, moyu, color bool, width int) string 
 				percent = trendValue(percent, item.Percent, true)
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%s %s %s", indexLabel(symbol, moyu), current, percent))
+		labelWidth := 6
+		if moyu {
+			labelWidth = 7
+		}
+		parts = append(parts,
+			padWidth(indexLabel(symbol, moyu), labelWidth, "left")+" "+
+				padWidth(current, 8, "left")+" "+padWidth(percent, 7, "left"))
 	}
-	prefix := "大盘  "
+	prefix := padWidth("大盘", 10, "left")
 	separator := "  ·  "
 	if moyu {
-		prefix = "MARKET  "
+		prefix = padWidth("MARKET", 10, "left")
 		separator = " | "
 	}
 	line := prefix + strings.Join(parts, separator)
@@ -110,6 +121,17 @@ func marketOverview(indices []domain.Quote, moyu, color bool, width int) string 
 }
 
 func marketFlowOverview(flows map[string]domain.FundFlow, moyu, color bool, width int) string {
+	labelWidth := 6
+	partWidth := 23
+	prefix := padWidth("指数资金", 10, "left")
+	separator := "  ·  "
+	if moyu {
+		labelWidth = 7
+		partWidth = 24
+		prefix = padWidth("INDEX FLOW", 10, "left")
+		separator = " | "
+	}
+	alignedWidth := displayWidth(prefix) + 3*partWidth + 2*displayWidth(separator)
 	parts := make([]string, 0, 3)
 	for _, symbol := range []string{"sh000001", "sz399001", "sz399006"} {
 		value := "--"
@@ -119,37 +141,45 @@ func marketFlowOverview(flows map[string]domain.FundFlow, moyu, color bool, widt
 				value = style(value, trendCode(flow.MainNet, false), true)
 			}
 		}
-		parts = append(parts, indexLabel(symbol, moyu)+" "+value)
-	}
-	prefix := "指数资金  "
-	separator := "  ·  "
-	if moyu {
-		prefix = "INDEX FLOW  "
-		separator = " | "
+		part := padWidth(indexLabel(symbol, moyu), labelWidth, "left") + " " + padWidth(value, 10, "left")
+		if width >= alignedWidth {
+			part = padWidth(part, partWidth, "left")
+		}
+		parts = append(parts, part)
 	}
 	return truncateWidth(prefix+strings.Join(parts, separator), width)
 }
 
 func marketTotalAmount(indices []domain.Quote) float64 {
-	var total float64
-	seenShanghai, seenShenzhen := false, false
+	shanghai, shenzhen, _ := marketAmountComponents(indices)
+	if math.IsNaN(shanghai) || math.IsNaN(shenzhen) {
+		return math.NaN()
+	}
+	return shanghai + shenzhen
+}
+
+func marketAmountComponents(indices []domain.Quote) (shanghai, shenzhen, beijing float64) {
+	shanghai, shenzhen, beijing = math.NaN(), math.NaN(), math.NaN()
+	seenShenzhenComposite := false
 	for _, item := range indices {
 		if item.Amount <= 0 || math.IsNaN(item.Amount) || math.IsInf(item.Amount, 0) {
 			continue
 		}
 		switch item.Symbol {
 		case "sh000001":
-			total += item.Amount
-			seenShanghai = true
+			shanghai = item.Amount
+		case "sz399106":
+			shenzhen = item.Amount
+			seenShenzhenComposite = true
 		case "sz399001":
-			total += item.Amount
-			seenShenzhen = true
+			if !seenShenzhenComposite {
+				shenzhen = item.Amount
+			}
+		case "bj899050":
+			beijing = item.Amount
 		}
 	}
-	if !seenShanghai || !seenShenzhen {
-		return math.NaN()
-	}
-	return total
+	return shanghai, shenzhen, beijing
 }
 
 func humanMarketAmount(value float64) string {
@@ -166,28 +196,55 @@ func humanMarketAmount(value float64) string {
 	}
 }
 
-func marketAmountOverview(indices []domain.Quote, previous map[string]float64, moyu bool, width int) string {
-	current := marketTotalAmount(indices)
-	value := humanMarketAmount(current)
-	change := ""
-	previousShanghai, shanghaiOK := previous["sh000001"]
-	previousShenzhen, shenzhenOK := previous["sz399001"]
-	if shanghaiOK && shenzhenOK && previousShanghai > 0 && previousShenzhen > 0 && !math.IsNaN(current) {
-		previous := previousShanghai + previousShenzhen
-		delta := current - previous
-		arrow := "→"
-		if delta > 0 {
-			arrow = "↑"
-		} else if delta < 0 {
-			arrow = "↓"
+func marketQuoteTradeDate(indices []domain.Quote) string {
+	for _, item := range indices {
+		if item.Symbol == "sh000001" && len(item.QuoteTime) >= 10 {
+			return item.QuoteTime[:10]
 		}
-		percent := delta / previous * 100
-		change = fmt.Sprintf(" 较昨 %s %s (%+.2f%%)", arrow, humanMarketAmount(math.Abs(delta)), percent)
+	}
+	return ""
+}
+
+func marketAmountChange(current, previous float64, currentDate, previousDate string) string {
+	if current <= 0 || previous <= 0 || math.IsNaN(current) || math.IsNaN(previous) ||
+		currentDate == "" || previousDate == "" || currentDate <= previousDate {
+		return ""
+	}
+	delta := current - previous
+	arrow := "→"
+	if delta > 0 {
+		arrow = "↑"
+	} else if delta < 0 {
+		arrow = "↓"
+	}
+	percent := delta / previous * 100
+	return fmt.Sprintf(" 较昨 %s %s (%+.2f%%)", arrow, humanMarketAmount(math.Abs(delta)), percent)
+}
+
+func marketAmountLine(label string, current, previous float64, currentDate, previousDate string, width int) string {
+	value := humanMarketAmount(current)
+	change := marketAmountChange(current, previous, currentDate, previousDate)
+	return truncateWidth(padWidth(label, 12, "left")+value+change, width)
+}
+
+func marketAmountOverview(indices []domain.Quote, previous domain.MarketAmountSnapshot, moyu bool, width int) string {
+	shanghai, shenzhen, beijing := marketAmountComponents(indices)
+	currentDate := marketQuoteTradeDate(indices)
+	previousDate := previous.TradeDate
+	allCurrent := math.NaN()
+	allPrevious := math.NaN()
+	if !math.IsNaN(shanghai) && !math.IsNaN(shenzhen) {
+		if !math.IsNaN(beijing) {
+			allCurrent = shanghai + shenzhen + beijing
+		}
+	}
+	if previous.Shanghai > 0 && previous.Shenzhen > 0 && previous.Beijing > 0 {
+		allPrevious = previous.Shanghai + previous.Shenzhen + previous.Beijing
 	}
 	if moyu {
-		return truncateWidth("TOTAL AMT  "+value+change, width)
+		return marketAmountLine("TOTAL AMT", allCurrent, allPrevious, currentDate, previousDate, width)
 	}
-	return truncateWidth("沪深总成交额  "+value+change, width)
+	return marketAmountLine("沪深成交额", allCurrent, allPrevious, currentDate, previousDate, width)
 }
 
 func liveHeader(data LiveData, options ViewOptions, width int) string {
@@ -205,7 +262,7 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 	header := first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
 		"\n" + marketFlowOverview(data.Flows, options.Moyu, options.Color, width) +
 		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, width)
-	if data.GroupName != "" {
+	if data.GroupName != "" && data.RankingKind == "" {
 		label := fmt.Sprintf("自选分组  %s  ·  %d只", data.GroupName, data.GroupCount)
 		if options.Moyu {
 			label = fmt.Sprintf("GROUP  %s  |  %d STOCKS", data.GroupName, data.GroupCount)
@@ -260,19 +317,26 @@ func liveError(data LiveData, options ViewOptions, width int) string {
 }
 
 func liveFooter(data LiveData, options ViewOptions, width int) string {
+	truncateLines := func(value string) string {
+		lines := strings.Split(value, "\n")
+		for index := range lines {
+			lines[index] = truncateWidth(lines[index], width)
+		}
+		return strings.Join(lines, "\n")
+	}
 	if data.Footer != "" {
-		return truncateWidth(data.Footer, width)
+		return truncateLines(data.Footer)
 	}
 	if options.Moyu {
 		if data.Detail {
-			return truncateWidth("UP/DOWN SCROLL  PGUP/PGDN PAGE  ESC BACK  Q QUIT", width)
+			return truncateWidth("UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT", width)
 		}
-		return truncateWidth("UP/DOWN SELECT  ENTER DETAIL  A ADD  D DELETE  I VIEW  E REORDER  F GROUP  Q QUIT", width)
+		return truncateLines("UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE")
 	}
 	if data.Detail {
-		return truncateWidth("↑/↓ 滚动  PgUp/PgDn翻页  Esc返回  q退出", width)
+		return truncateWidth("↑/↓ 滚动  [/]翻页  Esc返回  q退出", width)
 	}
-	return truncateWidth("↑/↓ 选择  Enter详情  a添加  d删除  i查看  e排序  f分组  q退出", width)
+	return truncateLines("↑/↓ 选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20")
 }
 
 func liveStatus(data LiveData, width int) string {
@@ -299,6 +363,7 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		data.Selected = len(quotes) - 1
 	}
 	header := liveHeader(data, options, terminalWidth)
+	footer := liveFooter(data, options, terminalWidth)
 
 	if data.Detail && data.Selected >= 0 && data.Selected < len(quotes) {
 		flow, hasFlow := data.Flows[quotes[data.Selected].Symbol]
@@ -308,12 +373,44 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		}
 		detailOptions := options
 		detailOptions.Moyu = false
-		frame := header + "\n\n" + dashboardCard(quotes[data.Selected], flowPointer, data.Boards, data.DragonTiger, detailOptions, terminalWidth)
+		frame := header + "\n\n" + dashboardCard(quotes[data.Selected], flowPointer, data.Boards, data.DragonTiger, data.Technical, detailOptions, terminalWidth)
 		if message := liveError(data, options, terminalWidth); message != "" {
 			frame += "\n" + message
 		}
 		frame += "\n" + liveStatus(data, terminalWidth)
-		frame += "\n" + liveFooter(data, options, terminalWidth)
+		frame += "\n" + footer
+		return frame
+	}
+
+	if data.RankingKind != "" && len(data.RankingItems) > 0 {
+		statusRows := liveStatusRows(data)
+		footerRows := strings.Count(footer, "\n") + 1
+		errorMessage := liveError(data, options, terminalWidth)
+		fixedRows := strings.Count(header, "\n") + 1 + 1 + 4 + statusRows + footerRows
+		if errorMessage != "" {
+			fixedRows++
+		}
+		limit := terminalHeight - fixedRows
+		if limit < 1 {
+			limit = 1
+		}
+		if len(data.RankingItems) > limit && limit > 1 {
+			limit--
+		}
+		start, end := visibleQuoteWindow(len(data.RankingItems), data.RankingSelected, limit)
+		table := buildMarketRankingTable(
+			data.RankingItems[start:end], data.RankingSelected-start, start,
+			data.RankingKind, terminalWidth, options.Moyu, options.Color,
+		)
+		frame := header + "\n" + marketRankingTitle(data.RankingKind, len(data.RankingItems), data.RankingRefreshedAt, options.Moyu) + "\n" + table
+		if len(data.RankingItems) > end-start {
+			frame += fmt.Sprintf("\n%d-%d/%d", start+1, end, len(data.RankingItems))
+		}
+		if errorMessage != "" {
+			frame += "\n" + errorMessage
+		}
+		frame += "\n" + liveStatus(data, terminalWidth)
+		frame += "\n" + footer
 		return frame
 	}
 
@@ -325,6 +422,7 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		reservedRows++
 	}
 	reservedRows += liveStatusRows(data) - 1
+	reservedRows += strings.Count(footer, "\n")
 	limit := terminalHeight - reservedRows
 	if limit < 1 {
 		limit = 1
@@ -341,7 +439,7 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		frame += "\n" + message
 	}
 	frame += "\n" + liveStatus(data, terminalWidth)
-	frame += "\n" + liveFooter(data, options, terminalWidth)
+	frame += "\n" + footer
 	return frame
 }
 
@@ -367,7 +465,7 @@ func BuildSnapshotFrame(data LiveData, options ViewOptions, terminalWidth int) s
 		if ok {
 			flowPointer = &flow
 		}
-		builder.WriteString(dashboardCard(item, flowPointer, nil, nil, options, terminalWidth))
+		builder.WriteString(dashboardCard(item, flowPointer, nil, nil, nil, options, terminalWidth))
 		if index < len(quotes)-1 {
 			builder.WriteString("\n\n")
 		}

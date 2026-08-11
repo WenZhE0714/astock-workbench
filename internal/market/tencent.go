@@ -18,7 +18,14 @@ const quoteAPIURL = "https://qt.gtimg.cn/q="
 
 var BroadMarketSymbols = []string{"sh000001", "sz399001", "sz399006"}
 
-var quoteRecordPattern = regexp.MustCompile(`v_(sh|sz)([0-9]{6})="([^"]*)";`)
+// MarketAmountSymbols are quote-only helpers. The Shenzhen Component's quote
+// amount currently represents the full Shenzhen market, but sz399106 is used
+// explicitly so the real-time and historical definitions stay unambiguous.
+var MarketAmountSymbols = []string{"sh000001", "sz399106", "bj899050"}
+
+var QuoteMarketSymbols = []string{"sh000001", "sz399001", "sz399006", "sz399106", "bj899050"}
+
+var quoteRecordPattern = regexp.MustCompile(`v_(sh|sz|bj)([0-9]{6})="([^"]*)";`)
 
 type QuoteClient interface {
 	Fetch(context.Context, []string) ([]domain.Quote, error)
@@ -27,7 +34,7 @@ type QuoteClient interface {
 type TencentClient struct{}
 
 func IsBroadMarketSymbol(symbol string) bool {
-	for _, candidate := range BroadMarketSymbols {
+	for _, candidate := range QuoteMarketSymbols {
 		if symbol == candidate {
 			return true
 		}

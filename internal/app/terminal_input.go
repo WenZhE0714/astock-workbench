@@ -24,6 +24,7 @@ const (
 	terminalKeyEnter
 	terminalKeyBack
 	terminalKeyBackspace
+	terminalKeySpace
 	terminalKeyQuit
 )
 
@@ -44,8 +45,12 @@ func plainKey(value byte) terminalKey {
 		return terminalKeyDown
 	case 'b', 0x15:
 		return terminalKeyPageUp
-	case ' ', 0x04:
+	case ']', 0x04:
 		return terminalKeyPageDown
+	case '[':
+		return terminalKeyPageUp
+	case ' ':
+		return terminalKeySpace
 	case 'g':
 		return terminalKeyHome
 	case 'G':

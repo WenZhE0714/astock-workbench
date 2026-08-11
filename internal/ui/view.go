@@ -589,7 +589,197 @@ func dragonTigerLines(snapshot *domain.DragonTigerSnapshot, color bool) []string
 	return lines
 }
 
-func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.BoardFlow, dragonTiger *domain.DragonTigerSnapshot, options ViewOptions, terminalWidth int) string {
+func wrapPlainText(value string, width int) []string {
+	if width <= 0 || displayWidth(value) <= width {
+		return []string{value}
+	}
+	lines := make([]string, 0, 2)
+	var current strings.Builder
+	currentWidth := 0
+	for _, character := range value {
+		characterWidth := runeDisplayWidth(character)
+		if currentWidth > 0 && currentWidth+characterWidth > width {
+			lines = append(lines, current.String())
+			current.Reset()
+			currentWidth = 0
+		}
+		current.WriteRune(character)
+		currentWidth += characterWidth
+	}
+	if current.Len() > 0 {
+		lines = append(lines, current.String())
+	}
+	return lines
+}
+
+func technicalTextSegments(value string) ([]string, string) {
+	if strings.Contains(value, "  ·  ") {
+		return strings.Split(value, "  ·  "), "  ·  "
+	}
+	segments := make([]string, 0, 2)
+	start := 0
+	runes := []rune(value)
+	for index, character := range runes {
+		if character == '，' || character == '；' || character == '。' {
+			segments = append(segments, string(runes[start:index+1]))
+			start = index + 1
+		}
+	}
+	if start < len(runes) {
+		segments = append(segments, string(runes[start:]))
+	}
+	if len(segments) == 0 {
+		return []string{value}, ""
+	}
+	return segments, ""
+}
+
+func wrapTechnicalText(value string, width int) []string {
+	segments, separator := technicalTextSegments(value)
+	lines := make([]string, 0, 2)
+	current := ""
+	for _, segment := range segments {
+		candidate := segment
+		if current != "" {
+			candidate = current + separator + segment
+		}
+		if current != "" && displayWidth(candidate) > width {
+			lines = append(lines, current)
+			current = segment
+		} else {
+			current = candidate
+		}
+		if displayWidth(current) > width {
+			wrapped := wrapPlainText(current, width)
+			lines = append(lines, wrapped[:len(wrapped)-1]...)
+			current = wrapped[len(wrapped)-1]
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+func labeledTechnicalLines(label, value string, width int, color bool) []string {
+	plainPrefix := label + "  "
+	available := width - displayWidth(plainPrefix)
+	if available < 8 {
+		lines := []string{style(label, "90", color)}
+		return append(lines, wrapTechnicalText(value, width)...)
+	}
+	chunks := wrapTechnicalText(value, available)
+	lines := make([]string, 0, len(chunks))
+	for index, chunk := range chunks {
+		prefix := strings.Repeat(" ", displayWidth(plainPrefix))
+		if index == 0 {
+			prefix = style(label, "90", color) + "  "
+		}
+		lines = append(lines, prefix+chunk)
+	}
+	return lines
+}
+
+func technicalBarIntraday(item domain.Quote, signal *domain.TechnicalSignal) bool {
+	if signal == nil || signal.DataDate == "" || !strings.HasPrefix(item.QuoteTime, signal.DataDate) {
+		return false
+	}
+	clock := quoteClock(item.QuoteTime)
+	return clock >= "09:30:00" && clock < "15:00:00"
+}
+
+func technicalBiasCode(bias string) string {
+	switch bias {
+	case "看涨":
+		return "1;31"
+	case "看跌":
+		return "1;32"
+	default:
+		return "1;33"
+	}
+}
+
+func technicalContext(flow *domain.FundFlow, boards []domain.BoardFlow, dragonTiger *domain.DragonTigerSnapshot) string {
+	parts := make([]string, 0, 3)
+	if flow != nil && !math.IsNaN(flow.MainNet) {
+		parts = append(parts, "个股主力 "+directionalFundFlow(flow)+" "+fundFlowRatio(flow))
+	}
+	if len(boards) > 0 {
+		parts = append(parts, "关联板块"+boardFlowSummary(boards, nil))
+	}
+	if dragonTiger != nil && dragonTiger.Loaded {
+		if len(dragonTiger.Entries) == 0 {
+			parts = append(parts, fmt.Sprintf("近%d日无龙虎榜", dragonTiger.WindowDays))
+		} else {
+			parts = append(parts, fmt.Sprintf("近%d日龙虎榜上榜%d日", dragonTiger.WindowDays, dragonTigerDateCount(dragonTiger.Entries)))
+		}
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+func technicalSignalLines(signal *domain.TechnicalSignal, flow *domain.FundFlow, boards []domain.BoardFlow, dragonTiger *domain.DragonTigerSnapshot, color, intraday bool, width int) []string {
+	if signal == nil {
+		return nil
+	}
+	if signal.Status == domain.TechnicalStatusLoading {
+		return []string{style("交易信号", "1;36", color) + "  正在加载未复权日 K…"}
+	}
+	if signal.Status != domain.TechnicalStatusReady {
+		message := "历史日 K 暂不可用"
+		if signal.Error != "" {
+			message += "：" + signal.Error
+		}
+		return labeledTechnicalLines("交易信号", message, width, color)
+	}
+
+	header := style("交易信号（日线波段）", "1;36", color) + "  " + style(signal.Bias, technicalBiasCode(signal.Bias), color) +
+		"  ·  " + style(signal.Action, technicalBiasCode(signal.Bias), color)
+	if signal.OptionLike != "" {
+		header += "  ·  " + signal.OptionLike
+	}
+	header += fmt.Sprintf("  ·  强度 %d/100", signal.Strength)
+	lines := []string{header}
+	lines = append(lines, labeledTechnicalLines("趋势指标", fmt.Sprintf(
+		"收盘 %.2f  ·  MA5 %.2f  ·  MA20 %.2f  ·  MA60 %.2f", signal.Price, signal.MA5, signal.MA20, signal.MA60,
+	), width, color)...)
+	volumeRatio := "--"
+	if !math.IsNaN(signal.VolumeRatio) && !math.IsInf(signal.VolumeRatio, 0) {
+		volumeRatio = fmt.Sprintf("%.2fx", signal.VolumeRatio)
+	}
+	lines = append(lines, labeledTechnicalLines("动量量价", fmt.Sprintf(
+		"MACD柱 %+.3f  ·  RSI14 %.1f  ·  量能 %s  ·  前20日 %.2f–%.2f",
+		signal.MACD, signal.RSI14, volumeRatio, signal.Low20, signal.High20,
+	), width, color)...)
+	if len(signal.Evidence) > 0 {
+		lines = append(lines, labeledTechnicalLines("判断依据", strings.Join(signal.Evidence, "  ·  "), width, color)...)
+	}
+	lines = append(lines, labeledTechnicalLines("买入条件", signal.BuyTrigger, width, color)...)
+	lines = append(lines, labeledTechnicalLines("卖出条件", signal.SellTrigger, width, color)...)
+	lines = append(lines, labeledTechnicalLines("失效条件", signal.Invalidation, width, color)...)
+	if signal.PositionPlan != "" {
+		lines = append(lines, labeledTechnicalLines("仓位策略", signal.PositionPlan, width, color)...)
+	}
+	lines = append(lines, labeledTechnicalLines("关键位置", "支撑 "+signal.Support+"  ·  压力 "+signal.Resistance, width, color)...)
+	if context := technicalContext(flow, boards, dragonTiger); context != "" {
+		lines = append(lines, labeledTechnicalLines("短线侧证", context+"（不参与基础信号）", width, color)...)
+	}
+	dataBasis := signal.DataDate
+	if signal.DataSource != "" {
+		dataBasis += "  ·  " + signal.DataSource
+	}
+	dataBasis += "  ·  未复权日 K"
+	if intraday {
+		dataBasis += "（当日 K 线未收盘）"
+	}
+	dataBasis += "  ·  技术观察，不是自动交易指令"
+	lines = append(lines, labeledTechnicalLines("数据口径", dataBasis, width, color)...)
+	if signal.OptionLike != "" {
+		lines = append(lines, labeledTechnicalLines("标签说明", "CALL/PUT-like仅作方向映射；PUT-like表示看跌或减仓，不代表普通A股账户可做空", width, color)...)
+	}
+	return lines
+}
+
+func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.BoardFlow, dragonTiger *domain.DragonTigerSnapshot, technical *domain.TechnicalSignal, options ViewOptions, terminalWidth int) string {
 	cardWidth := terminalWidth
 	if cardWidth > 100 {
 		cardWidth = 100
@@ -651,6 +841,11 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 		)
 	}
 	lines = append(lines, packMetrics(metrics, innerWidth, color)...)
+
+	if signalLines := technicalSignalLines(technical, flow, boards, dragonTiger, color, technicalBarIntraday(item, technical), innerWidth); len(signalLines) > 0 {
+		lines = append(lines, "\x00separator")
+		lines = append(lines, signalLines...)
+	}
 
 	if len(boards) > 0 {
 		lines = append(lines, "\x00separator")
@@ -720,7 +915,7 @@ func buildStandardView(quotes []domain.Quote, options ViewOptions, terminalWidth
 	builder.WriteString(brand)
 	builder.WriteString("\n\n")
 	for quoteIndex, item := range quotes {
-		builder.WriteString(dashboardCard(item, nil, nil, nil, options, terminalWidth))
+		builder.WriteString(dashboardCard(item, nil, nil, nil, nil, options, terminalWidth))
 		if quoteIndex < len(quotes)-1 {
 			builder.WriteString("\n\n")
 		}

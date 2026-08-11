@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func TestLiveMoyuFrameShowsMarketRefreshSelectionAndFundFlow(t *testing.T) {
 		MarketStatus: "已收盘",
 		Selected:     1,
 	}, ViewOptions{Moyu: true}, 79, 24)
-	for _, expected := range []string{"WORKMON", "UPDATE 08-07 15:01:02", "CLOSED", "MARKET", "SSE 3635.13 +0.24%", "INDEX FLOW", "SSE ↑ 223.50亿", "CHINEXT ↑ 43.32亿", "FLOW", "> ping an yin hang", "↓ 630万", "TOTAL AMT  --"} {
+	for _, expected := range []string{"WORKMON", "UPDATE 08-07 15:01:02", "CLOSED", "MARKET", "SSE", "3635.13", "+0.24%", "INDEX FLOW", "↑ 223.50亿", "↑ 43.32亿", "FLOW", "> ping an yin hang", "↓ 630万", "TOTAL AMT   --"} {
 		if !strings.Contains(frame, expected) {
 			t.Fatalf("live moyu frame missing %q:\n%s", expected, frame)
 		}
@@ -58,7 +59,7 @@ func TestLiveMoyuFrameShowsMarketRefreshSelectionAndFundFlow(t *testing.T) {
 
 func TestLiveFrameShowsNavigationFooter(t *testing.T) {
 	frame := BuildLiveFrame(LiveData{Quotes: []domain.Quote{dashboardQuote()}}, ViewOptions{}, 79, 24)
-	if !strings.Contains(frame, "↑/↓ 选择  Enter详情  a添加  d删除  i查看  e排序  f分组  q退出") {
+	if !strings.Contains(frame, "↑/↓ 选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  q退出") {
 		t.Fatalf("navigation footer missing:\n%s", frame)
 	}
 	commandFrame := BuildLiveFrame(LiveData{
@@ -68,6 +69,57 @@ func TestLiveFrameShowsNavigationFooter(t *testing.T) {
 	}, ViewOptions{}, 79, 24)
 	if !strings.Contains(commandFrame, "添加自选，请输入代码或完整名称：600519▌\nEnter确认  Esc取消") {
 		t.Fatalf("separate command status/footer missing:\n%s", commandFrame)
+	}
+	moyuFrame := BuildLiveFrame(LiveData{Quotes: []domain.Quote{dashboardQuote()}}, ViewOptions{Moyu: true}, 79, 24)
+	if !strings.Contains(moyuFrame, "H HISTORY") {
+		t.Fatalf("moyu navigation footer missing history shortcut:\n%s", moyuFrame)
+	}
+}
+
+func TestLiveMarketRankingShowsIndustryMetricsAndSecondControlLine(t *testing.T) {
+	items := make([]domain.MarketRankingItem, 20)
+	for index := range items {
+		items[index] = domain.MarketRankingItem{
+			Symbol: "sh688166", Name: fmt.Sprintf("医药股%d", index+1),
+			Price: 43.33, Percent: 15.82 - float64(index), Speed: 3.02,
+			Industry: "化学制药",
+		}
+	}
+	frame := BuildLiveFrame(LiveData{
+		RankingKind: domain.MarketRankingGainers, RankingItems: items, RankingSelected: 1,
+		GroupName: "默认", GroupCount: 3,
+	}, ViewOptions{}, 79, 50)
+	for _, expected := range []string{"涨幅榜 TOP 20", "排名", "代码", "名称", "涨幅", "涨速", "行业", "化学制药", "> 02", "1涨幅前20", "3快速涨幅前20"} {
+		if !strings.Contains(frame, expected) {
+			t.Fatalf("ranking frame missing %q:\n%s", expected, frame)
+		}
+	}
+	if strings.Contains(frame, "自选分组") {
+		t.Fatalf("ranking frame should not show the watchlist group header:\n%s", frame)
+	}
+	for _, line := range strings.Split(frame, "\n") {
+		if width := displayWidth(line); width > 79 {
+			t.Fatalf("ranking line width %d exceeds terminal:\n%s", width, line)
+		}
+	}
+}
+
+func TestLiveMarketRankingKeepsSelectedRowInHeightAwareWindow(t *testing.T) {
+	items := make([]domain.MarketRankingItem, 20)
+	for index := range items {
+		items[index] = domain.MarketRankingItem{
+			Symbol: fmt.Sprintf("sz%06d", 300000+index), Name: fmt.Sprintf("股票%d", index+1),
+			Percent: -float64(index), Speed: -0.1, Industry: "电子",
+		}
+	}
+	frame := BuildLiveFrame(LiveData{
+		RankingKind: domain.MarketRankingLosers, RankingItems: items, RankingSelected: 19,
+	}, ViewOptions{}, 79, 24)
+	if !strings.Contains(frame, "> 20") || !strings.Contains(frame, "10-20/20") || strings.Contains(frame, "  01") {
+		t.Fatalf("ranking viewport did not follow selection:\n%s", frame)
+	}
+	if rows := strings.Count(frame, "\n") + 1; rows > 24 {
+		t.Fatalf("ranking frame has %d rows for a 24-row terminal:\n%s", rows, frame)
 	}
 }
 
@@ -82,7 +134,7 @@ func TestLiveFrameShowsCurrentGroupAndDetailControls(t *testing.T) {
 	detail := BuildLiveFrame(LiveData{
 		Quotes: []domain.Quote{quote}, GroupName: "科技", GroupCount: 1, Detail: true,
 	}, ViewOptions{}, 99, 30)
-	if !strings.Contains(detail, "↑/↓ 滚动  PgUp/PgDn翻页  Esc返回  q退出") {
+	if !strings.Contains(detail, "↑/↓ 滚动  [/]翻页  Esc返回  q退出") {
 		t.Fatalf("detail controls missing:\n%s", detail)
 	}
 }
@@ -99,7 +151,7 @@ func TestLiveStandardFrameShowsStockAndIndexFundFlow(t *testing.T) {
 		RefreshedAt:  time.Date(2026, 8, 7, 15, 1, 2, 0, time.Local),
 		MarketStatus: "已收盘",
 	}, ViewOptions{}, 79, 24)
-	for _, expected := range []string{"指数资金", "上证 ↑ 223.50亿", "资金", "涨停", "跌停", "1439.41", "1177.70", "> 贵州茅台", "↓ 1.16亿"} {
+	for _, expected := range []string{"指数资金", "上证", "↑ 223.50亿", "资金", "涨停", "跌停", "1439.41", "1177.70", "> 贵州茅台", "↓ 1.16亿"} {
 		if !strings.Contains(frame, expected) {
 			t.Fatalf("live standard frame missing %q:\n%s", expected, frame)
 		}
@@ -155,6 +207,69 @@ func TestLiveDetailShowsOnlySelectedStockAndFlow(t *testing.T) {
 	}
 	if strings.Contains(frame, "贵州茅台") {
 		t.Fatalf("unselected stock leaked into detail:\n%s", frame)
+	}
+}
+
+func TestLiveDetailShowsConditionalTechnicalSignalAndMarketEvidence(t *testing.T) {
+	quote := dashboardQuote()
+	signal := &domain.TechnicalSignal{
+		Status: domain.TechnicalStatusReady, Symbol: quote.Symbol, DataSource: "腾讯", DataDate: "2026-08-07",
+		Bias: "看涨", Action: "买入触发", OptionLike: "CALL-like", Strength: 82,
+		Price: 1308, MA5: 1298, MA20: 1276, MA60: 1240, MACD: 4.216, RSI14: 62.4,
+		VolumeRatio: 1.38, High20: 1300, Low20: 1198,
+		Support: "MA20 1276.00", Resistance: "已突破既有关键位，等待新压力",
+		BuyTrigger:   "回踩MA20 1276.00缩量企稳，或收盘突破20日高点 1300.00，且成交量达到20日均量的1.20倍",
+		SellTrigger:  "收盘跌破20日低点 1198.00；放量时风险升级",
+		Invalidation: "收盘跌破MA20 1276.00，且不能快速收回；跌破 1198.00 时看涨结构失效",
+		PositionPlan: "可用10%–20%试错仓，回踩确认后再分批",
+		Evidence:     []string{"收盘位于MA20上方", "MA20高于MA60", "放量突破20日高点"},
+	}
+	frame := BuildLiveFrame(LiveData{
+		Quotes: []domain.Quote{quote}, Detail: true, Technical: signal,
+		Flows:       map[string]domain.FundFlow{quote.Symbol: {Symbol: quote.Symbol, MainNet: 125000000, MainRatio: 3.25}},
+		Boards:      []domain.BoardFlow{{Name: "白酒", MainNet: 3}, {Name: "食品饮料", MainNet: 2}, {Name: "消费", MainNet: -1}},
+		DragonTiger: &domain.DragonTigerSnapshot{Loaded: true, WindowDays: 30},
+	}, ViewOptions{}, 119, 50)
+	for _, expected := range []string{
+		"交易信号（日线波段）  看涨  ·  买入触发  ·  CALL-like  ·  强度 82/100",
+		"趋势指标  收盘 1308.00  ·  MA5 1298.00  ·  MA20 1276.00  ·  MA60 1240.00",
+		"MACD柱 +4.216  ·  RSI14 62.4  ·  量能 1.38x  ·  前20日 1198.00–1300.00",
+		"买入条件", "卖出条件", "失效条件", "仓位策略", "10%–20%试错仓", "支撑 MA20 1276.00",
+		"个股主力 ↑ 1.25亿 +3.25%", "关联板块多数净流入（2/3）", "近30日无龙虎榜",
+		"腾讯  ·  未复权日 K（当日 K 线未收盘）", "技术观察，不是自动交易指令", "PUT-like表示看跌或减仓",
+	} {
+		if !strings.Contains(frame, expected) {
+			t.Fatalf("technical detail missing %q:\n%s", expected, frame)
+		}
+	}
+	for _, line := range strings.Split(frame, "\n") {
+		if width := displayWidth(line); width > 119 {
+			t.Fatalf("technical detail line width %d exceeds terminal:\n%s", width, line)
+		}
+	}
+}
+
+func TestTechnicalSignalLoadingAndUnavailableStates(t *testing.T) {
+	loading := technicalSignalLines(&domain.TechnicalSignal{Status: domain.TechnicalStatusLoading}, nil, nil, nil, false, false, 80)
+	if len(loading) != 1 || !strings.Contains(loading[0], "正在加载未复权日 K") {
+		t.Fatalf("unexpected loading state: %#v", loading)
+	}
+	unavailable := technicalSignalLines(&domain.TechnicalSignal{Status: domain.TechnicalStatusUnavailable, Error: "历史数据不足"}, nil, nil, nil, false, false, 80)
+	if !strings.Contains(strings.Join(unavailable, "\n"), "历史日 K 暂不可用：历史数据不足") {
+		t.Fatalf("unexpected unavailable state: %#v", unavailable)
+	}
+}
+
+func TestTechnicalSignalWrappingKeepsIndicatorValuesTogether(t *testing.T) {
+	lines := labeledTechnicalLines("动量量价", "MACD柱 +1.326  ·  RSI14 61.8  ·  量能 1.23x  ·  前20日 1190.19–1363.35", 60, false)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "13\n") || !strings.Contains(joined, "1190.19–1363.35") {
+		t.Fatalf("numeric range was split:\n%s", joined)
+	}
+	for _, line := range lines {
+		if displayWidth(line) > 60 {
+			t.Fatalf("wrapped line exceeds width: %q", line)
+		}
 	}
 }
 
@@ -357,14 +472,86 @@ func TestMarketTotalAmountUsesShanghaiAndShenzhenOnly(t *testing.T) {
 
 func TestMarketAmountOverviewShowsChangeFromPreviousTradingDay(t *testing.T) {
 	indices := []domain.Quote{
-		{Symbol: "sh000001", Amount: 120954357},
+		{Symbol: "sh000001", Amount: 120954357, QuoteTime: "2026-08-07 15:00:00"},
 		{Symbol: "sz399001", Amount: 145487618},
+		{Symbol: "bj899050", Amount: 1000000},
 	}
-	previous := map[string]float64{"sh000001": 110000000, "sz399001": 140000000}
+	previous := domain.MarketAmountSnapshot{
+		TradeDate: "2026-08-06",
+		Shanghai:  110000000,
+		Shenzhen:  140000000,
+		Beijing:   1000000,
+	}
 	line := marketAmountOverview(indices, previous, false, 79)
-	for _, expected := range []string{"沪深总成交额", "2.66万亿", "↑", "1644.20亿元", "+6.58%"} {
+	for _, expected := range []string{"沪深成交额", "2.67万亿", "↑", "1644.20亿元", "+6.55%"} {
 		if !strings.Contains(line, expected) {
 			t.Fatalf("market amount line missing %q: %s", expected, line)
+		}
+	}
+}
+
+func TestMarketAmountOverviewShowsShanghaiShenzhenAndBeijingTotals(t *testing.T) {
+	indices := []domain.Quote{
+		{Symbol: "sh000001", Amount: 116689325.2608, QuoteTime: "2026-08-10 15:00:00"},
+		{Symbol: "sz399001", Amount: 135620953.5368},
+		{Symbol: "sz399106", Amount: 135620953.5368},
+		{Symbol: "bj899050", Amount: 1576946.9231, QuoteTime: "2026-08-10 15:00:00"},
+	}
+	previous := domain.MarketAmountSnapshot{
+		TradeDate: "2026-08-07",
+		Shanghai:  120954355.5712,
+		Shenzhen:  145487613.1328,
+		Beijing:   1915024.7936,
+	}
+	line := marketAmountOverview(indices, previous, false, 120)
+	for _, expected := range []string{"沪深成交额", "2.54万亿", "1446.98亿元"} {
+		if !strings.Contains(line, expected) {
+			t.Fatalf("market amount overview missing %q: %s", expected, line)
+		}
+	}
+	for _, unexpected := range []string{"沪深京A股成交额", "2.52万亿", "1413.17亿元", "\n"} {
+		if strings.Contains(line, unexpected) {
+			t.Fatalf("market amount overview should not contain %q: %s", unexpected, line)
+		}
+	}
+}
+
+func TestMarketAmountOverviewHidesChangeWhenQuoteDateHasNotAdvanced(t *testing.T) {
+	indices := []domain.Quote{
+		{Symbol: "sh000001", Amount: 100000000, QuoteTime: "2026-08-07 15:00:00"},
+		{Symbol: "sz399106", Amount: 100000000},
+		{Symbol: "bj899050", Amount: 1000000},
+	}
+	previous := domain.MarketAmountSnapshot{TradeDate: "2026-08-07", Shanghai: 90000000, Shenzhen: 90000000, Beijing: 900000}
+	line := marketAmountOverview(indices, previous, false, 120)
+	if strings.Contains(line, "较昨") {
+		t.Fatalf("should hide comparison for an unchanged pre-open quote: %s", line)
+	}
+}
+
+func TestMarketSummaryRowsAlignIndexColumns(t *testing.T) {
+	indices := []domain.Quote{
+		{Symbol: "sh000001", Current: "3966.59", Percent: 0.67},
+		{Symbol: "sz399001", Current: "14316.96", Percent: 0.04},
+		{Symbol: "sz399006", Current: "3537.21", Percent: -0.73},
+	}
+	flows := map[string]domain.FundFlow{
+		"sh000001": {Symbol: "sh000001", MainNet: -13649000000},
+		"sz399001": {Symbol: "sz399001", MainNet: -27818000000},
+		"sz399006": {Symbol: "sz399006", MainNet: -15342000000},
+	}
+	marketLine := marketOverview(indices, false, false, 120)
+	flowLine := marketFlowOverview(flows, false, false, 120)
+	for _, label := range []string{"上证", "深证", "创业板"} {
+		marketIndex := strings.Index(marketLine, label)
+		flowIndex := strings.Index(flowLine, label)
+		if marketIndex < 0 || flowIndex < 0 {
+			t.Fatalf("missing %s in market summaries:\n%s\n%s", label, marketLine, flowLine)
+		}
+		marketPosition := displayWidth(marketLine[:marketIndex])
+		flowPosition := displayWidth(flowLine[:flowIndex])
+		if marketPosition != flowPosition {
+			t.Fatalf("%s is not aligned: market=%d flow=%d\n%s\n%s", label, marketPosition, flowPosition, marketLine, flowLine)
 		}
 	}
 }

@@ -82,3 +82,19 @@ func TestParseQuotePayloadIncludesBroadMarketIndices(t *testing.T) {
 		t.Fatalf("unexpected index quote: %#v", quotes)
 	}
 }
+
+func TestParseQuotePayloadIncludesBeijingAmountIndex(t *testing.T) {
+	fields := make([]string, 53)
+	fields[1] = "北证50"
+	fields[2] = "899050"
+	fields[3] = "1122.88"
+	fields[30] = "20260810150000"
+	fields[33] = "1142.03"
+	fields[34] = "1121.77"
+	fields[37] = "1576946.9231"
+	payload := `v_bj899050="` + joinFields(fields) + `";`
+	quotes := ParseQuotePayload(payload)
+	if len(quotes) != 1 || quotes[0].Symbol != "bj899050" || quotes[0].Amount != 1576946.9231 {
+		t.Fatalf("unexpected Beijing quote: %#v", quotes)
+	}
+}

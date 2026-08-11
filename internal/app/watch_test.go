@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,30 @@ func TestDefaultRefreshIntervalIsOneSecond(t *testing.T) {
 	if result.Interval != 1 {
 		t.Fatalf("expected 1 second, got %d", result.Interval)
 	}
+}
+
+func TestQuoteRequestsIncludeAmountIndicesButFundFlowDoesNot(t *testing.T) {
+	quoteSymbols := quoteRequestSymbols([]string{"sh600519"})
+	for _, expected := range []string{"sh600519", "sh000001", "sz399001", "sz399006", "sz399106", "bj899050"} {
+		if !containsString(quoteSymbols, expected) {
+			t.Fatalf("quote request missing %s: %#v", expected, quoteSymbols)
+		}
+	}
+	flowSymbols := fundFlowRequestSymbols([]string{"sh600519"})
+	for _, excluded := range []string{"sz399106", "bj899050"} {
+		if containsString(flowSymbols, excluded) {
+			t.Fatalf("fund-flow request should exclude quote-only symbol %s: %#v", excluded, flowSymbols)
+		}
+	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTerminalWidthLeavesAutowrapGuardColumn(t *testing.T) {
@@ -98,6 +123,13 @@ func TestWatchViewStateSelectsAndOpensDetail(t *testing.T) {
 	}
 }
 
+func TestWatchViewStateKeepsSpaceAsPageDown(t *testing.T) {
+	state := watchViewState{}
+	if changed, _ := state.handle(terminalKeySpace, 30); !changed || state.Selected != 10 {
+		t.Fatalf("space should page down in list mode: %#v", state)
+	}
+}
+
 func TestWatchCommandFooterAndRuneEditing(t *testing.T) {
 	command := watchCommand{}
 	command.begin(watchCommandAdd)
@@ -147,6 +179,36 @@ func TestWatchCommandSelectsAmbiguousCandidate(t *testing.T) {
 	}
 	if got := command.controls(false); got != "↑/↓ 选择  Enter确认  Esc取消" {
 		t.Fatalf("unexpected candidate controls: %q", got)
+	}
+}
+
+func TestWatchCommandShowsRecentHistoryAndKeepsSelectionVisible(t *testing.T) {
+	command := watchCommand{}
+	command.begin(watchCommandHistory)
+	candidates := make([]domain.Candidate, 12)
+	for index := range candidates {
+		candidates[index] = domain.Candidate{
+			Symbol: fmt.Sprintf("sh%06d", 600000+index),
+			Name:   fmt.Sprintf("股票%d", index),
+		}
+	}
+	command.chooseCandidates("", candidates)
+	command.selectCandidate(11)
+	selected, ok := command.selectedCandidate()
+	if !ok || selected.Symbol != "sh600011" {
+		t.Fatalf("unexpected history candidate: %#v", selected)
+	}
+	status := command.status(false, false)
+	for _, expected := range []string{"最近查看（最新在前） 3-12/12：", "> 600011  股票11  沪市"} {
+		if !strings.Contains(status, expected) {
+			t.Fatalf("history status missing %q:\n%s", expected, status)
+		}
+	}
+	if strings.Contains(status, "600000") {
+		t.Fatalf("history status should render a bounded window:\n%s", status)
+	}
+	if got := command.controls(false); got != "↑/↓ 选择  [/]跳选  Enter打开  Esc取消" {
+		t.Fatalf("unexpected history controls: %q", got)
 	}
 }
 

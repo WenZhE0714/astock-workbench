@@ -16,6 +16,8 @@ const (
 	watchCommandAdd
 	watchCommandDelete
 	watchCommandJump
+	watchCommandHistory
+	watchCommandRanking
 	watchCommandGroupCreate
 	watchCommandGroupDelete
 )
@@ -95,6 +97,21 @@ func (command *watchCommand) selectedCandidate() (domain.Candidate, bool) {
 	return command.candidates[command.candidateSelected], true
 }
 
+func (command *watchCommand) candidateWindow() (int, int) {
+	const historyWindowSize = 10
+	if command.kind != watchCommandHistory || len(command.candidates) <= historyWindowSize {
+		return 0, len(command.candidates)
+	}
+	start := command.candidateSelected - historyWindowSize/2
+	if start < 0 {
+		start = 0
+	}
+	if start+historyWindowSize > len(command.candidates) {
+		start = len(command.candidates) - historyWindowSize
+	}
+	return start, start + historyWindowSize
+}
+
 func (command *watchCommand) status(moyu, cursorVisible bool) string {
 	if !command.active() {
 		return ""
@@ -116,12 +133,27 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 	}
 	if command.choosing() {
 		var builder strings.Builder
-		if moyu {
+		start, end := command.candidateWindow()
+		if command.kind == watchCommandHistory {
+			if moyu {
+				builder.WriteString("RECENTLY VIEWED (NEWEST FIRST):")
+				if len(command.candidates) > end-start {
+					fmt.Fprintf(&builder, " %d-%d/%d", start+1, end, len(command.candidates))
+				}
+			} else {
+				builder.WriteString("最近查看（最新在前）")
+				if len(command.candidates) > end-start {
+					fmt.Fprintf(&builder, " %d-%d/%d", start+1, end, len(command.candidates))
+				}
+				builder.WriteString("：")
+			}
+		} else if moyu {
 			fmt.Fprintf(&builder, "SELECT MATCH FOR %s:", command.buffer)
 		} else {
 			fmt.Fprintf(&builder, "名称“%s”匹配到多只沪深 A 股，请选择：", command.buffer)
 		}
-		for index, candidate := range command.candidates {
+		for index := start; index < end; index++ {
+			candidate := command.candidates[index]
 			marker := "  "
 			if index == command.candidateSelected {
 				marker = "> "
@@ -167,6 +199,12 @@ func (command *watchCommand) controls(moyu bool) string {
 		return "Enter/y确认  Esc/n取消"
 	}
 	if command.choosing() {
+		if command.kind == watchCommandHistory {
+			if moyu {
+				return "UP/DOWN SELECT  [/]/PGUP/PGDN JUMP  ENTER OPEN  ESC CANCEL"
+			}
+			return "↑/↓ 选择  [/]跳选  Enter打开  Esc取消"
+		}
 		if moyu {
 			return "↑/↓ SELECT  ENTER CONFIRM  ESC CANCEL"
 		}
