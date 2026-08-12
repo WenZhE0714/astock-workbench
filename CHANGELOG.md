@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.12.2
+
+- Preserve printable shortcut characters such as `g`, `j`, `k`, `b`, `q`,
+  `[` and `]` while a code/name command is active, so pinyin and group names
+  can be entered without navigation shortcuts swallowing individual keys.
+- Keep the same printable keys as navigation and quit shortcuts outside text
+  input, while control-key variants remain commands rather than input text.
+
+## 0.12.1
+
+- Retry transient Eastmoney/Tencent daily-K failures and cache successful
+  unadjusted series for up to 14 days, preserving evidence-based price levels
+  during temporary empty responses or HTTP 501 errors.
+- Keep optional Dragon-Tiger, news, board and announcement failures as scoped
+  warnings instead of appending them to the fatal daily-K error message.
+- Allow market scans outside continuous trading, or while Eastmoney main-flow
+  fields are unavailable, to build an explicitly low-confidence observation
+  pool from liquidity, board breadth, leadership and recent daily structure.
+- Preserve strict positive-price/positive-flow screening during continuous
+  trading when flow data is available, and never serialize missing flow as a
+  false flat or inflow conclusion.
+
+## 0.12.0
+
+- Add `c` background stock analysis and `o` latest-report viewing from the
+  watchlist, market rankings, stock detail and fund radar without stopping
+  live quotes.
+- Add `astock stock-report [--full] [--no-ai]` for the same pipeline outside
+  the interactive dashboard.
+- Combine Tencent quotes, unadjusted daily technical structure, Eastmoney
+  cumulative and rolling fund evidence, related-board breadth/ranks, recent
+  Dragon-Tiger records, announcement indexes and third-party news clues.
+- Require every bullish/bearish conclusion and observation point to reuse
+  deterministic MA/structure/volume evidence; announcement and news titles
+  remain unverified clues and cannot support invented facts.
+- Persist per-stock Markdown, structured snapshots and AI metadata under
+  `stock-reports/<code>/<timestamp>`, with a deterministic fallback when
+  Codex is unavailable.
+
+## 0.11.1
+
+- Warm the current watchlist's individual and industry fund samples in the
+  background as soon as the live dashboard starts.
+- Keep background sampling separate from radar visibility, so opening `v`
+  reuses accumulated 1/3/5-minute history instead of starting from zero.
+- Rebind the warm pool after watchlist group changes or additions/removals;
+  closed markets still wait for the next trading session unless manually
+  refreshed from the radar.
+
+## 0.11.0
+
+- Add non-blocking `s` market-report generation to the live dashboard, with
+  persistent progress while quotes, rankings and fund monitoring keep running.
+- Add `r` report viewing with arrow-key scrolling, `[`/`]` paging and Escape
+  return to the unchanged live view.
+- Scan broad-market turnover, index MA/volume structure, industry breadth and
+  main-fund flow, then preserve five hot-board leaders in a diversified
+  A/B/C observation pool with chase, weak-board and announcement risk flags.
+- Run Codex in ephemeral, read-only and non-interactive mode on structured
+  market facts only; automatically persist a deterministic report when Codex
+  is unavailable or times out.
+- Add `astock scan`, `--no-ai` and `--full`, with timestamped Markdown,
+  snapshot JSON and metadata archives under the application data directory.
+
+## 0.10.0
+
+- Add a `v` main-fund radar for the current watchlist group or active market
+  ranking, with detail navigation that returns to the radar without changing
+  recently viewed history.
+- Sample cumulative main-fund snapshots every 10 seconds during trading, keep
+  six minutes in memory, and derive rolling 1/3/5-minute net-flow changes.
+- Combine stock flow, current price movement and 60-second industry flow into
+  behavior labels such as reversal, acceleration, divergence and resonance;
+  labels remain observational and never become deterministic trade commands.
+- Keep ranking membership synchronized, prevent overlapping radar requests,
+  preserve the last successful samples on failure, and reject stale responses
+  after the radar source changes or closes.
+- Add a height-aware and width-responsive radar table with manual refresh
+  outside trading hours.
+
 ## 0.9.0
 
 - Add top-20 Shanghai/Shenzhen A-share gainers, losers and rapid-rise rankings

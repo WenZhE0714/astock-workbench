@@ -91,6 +91,44 @@ func TestKeyDecoderEventsPreserveCommandTextAndBackspace(t *testing.T) {
 	}
 }
 
+func TestKeyDecoderEventsPreservePrintableNavigationShortcuts(t *testing.T) {
+	decoder := keyDecoder{}
+	events := decoder.FeedEvents([]byte("gjkb[]qQ "))
+	wantKeys := []terminalKey{
+		terminalKeyHome,
+		terminalKeyDown,
+		terminalKeyUp,
+		terminalKeyPageUp,
+		terminalKeyPageUp,
+		terminalKeyPageDown,
+		terminalKeyQuit,
+		terminalKeyQuit,
+		terminalKeySpace,
+	}
+	wantText := []string{"g", "j", "k", "b", "[", "]", "q", "Q", " "}
+	if len(events) != len(wantKeys) {
+		t.Fatalf("unexpected event count: %#v", events)
+	}
+	for index := range events {
+		if events[index].Key != wantKeys[index] || events[index].Text != wantText[index] {
+			t.Fatalf("event %d: %#v", index, events[index])
+		}
+	}
+}
+
+func TestKeyDecoderControlShortcutsDoNotBecomeCommandText(t *testing.T) {
+	decoder := keyDecoder{}
+	events := decoder.FeedEvents([]byte{0x03, 0x04, 0x15})
+	if len(events) != 3 {
+		t.Fatalf("unexpected event count: %#v", events)
+	}
+	for index, event := range events {
+		if event.Text != "" {
+			t.Fatalf("control event %d became text: %#v", index, event)
+		}
+	}
+}
+
 func TestKeyDecoderEventsPreserveUTF8Bytes(t *testing.T) {
 	decoder := keyDecoder{}
 	events := decoder.FeedEvents([]byte("贵州茅台"))

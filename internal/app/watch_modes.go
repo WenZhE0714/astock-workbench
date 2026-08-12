@@ -382,9 +382,9 @@ func (ranking watchMarketRanking) controls(moyu bool) string {
 		return ""
 	}
 	if moyu {
-		return "UP/DOWN SELECT  [/]/PGUP/PGDN JUMP  ENTER DETAIL  ESC BACK  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE"
+		return "UP/DOWN SELECT  [/]/PGUP/PGDN JUMP  ENTER DETAIL  ESC BACK  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 	}
-	return "↑/↓选择  [/]跳选  Enter详情  Esc返回  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20"
+	return "↑/↓选择  [/]跳选  Enter详情  Esc返回  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达\nc个股研判  o查看  s市场报告  r查看"
 }
 
 func (ranking watchMarketRanking) status(moyu bool) string {
@@ -413,12 +413,12 @@ func marketRankingShortcut(value string) (domain.MarketRankingKind, bool) {
 func watchBaseControls(detail, moyu bool) string {
 	if moyu {
 		if detail {
-			return "UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT"
+			return "UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 		}
-		return "UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  M GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE"
+		return "UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  M GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 	}
 	if detail {
-		return "↑/↓ 滚动  [/]翻页  Esc返回  q退出"
+		return "↑/↓ 滚动  [/]翻页  Esc返回  q退出\nc个股研判  o查看  s市场报告  r查看"
 	}
-	return "↑/↓选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  m分配  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20"
+	return "↑/↓选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  m分配  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达\nc个股研判  o查看  s市场报告  r查看"
 }

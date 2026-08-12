@@ -10,28 +10,35 @@ import (
 )
 
 type LiveData struct {
-	Quotes             []domain.Quote
-	Symbols            []string
-	Indices            []domain.Quote
-	Flows              map[string]domain.FundFlow
-	Boards             []domain.BoardFlow
-	DragonTiger        *domain.DragonTigerSnapshot
-	Technical          *domain.TechnicalSignal
-	PreviousAmounts    domain.MarketAmountSnapshot
-	RefreshedAt        time.Time
-	MarketStatus       string
-	FetchError         string
-	FlowError          string
-	Status             string
-	Footer             string
-	GroupName          string
-	GroupCount         int
-	Selected           int
-	Detail             bool
-	RankingKind        domain.MarketRankingKind
-	RankingItems       []domain.MarketRankingItem
-	RankingSelected    int
-	RankingRefreshedAt time.Time
+	Quotes                  []domain.Quote
+	Symbols                 []string
+	Indices                 []domain.Quote
+	Flows                   map[string]domain.FundFlow
+	Boards                  []domain.BoardFlow
+	DragonTiger             *domain.DragonTigerSnapshot
+	Technical               *domain.TechnicalSignal
+	PreviousAmounts         domain.MarketAmountSnapshot
+	RefreshedAt             time.Time
+	MarketStatus            string
+	FetchError              string
+	FlowError               string
+	Status                  string
+	Footer                  string
+	GroupName               string
+	GroupCount              int
+	Selected                int
+	Detail                  bool
+	RankingKind             domain.MarketRankingKind
+	RankingItems            []domain.MarketRankingItem
+	RankingSelected         int
+	RankingRefreshedAt      time.Time
+	FundMonitorActive       bool
+	FundMonitorSource       string
+	FundMonitorCount        int
+	FundMovements           []domain.FundMovement
+	FundMonitorSelected     int
+	FundMonitorRefreshedAt  time.Time
+	FundIndustryRefreshedAt time.Time
 }
 
 func indexLabel(symbol string, moyu bool) string {
@@ -262,7 +269,7 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 	header := first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
 		"\n" + marketFlowOverview(data.Flows, options.Moyu, options.Color, width) +
 		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, width)
-	if data.GroupName != "" && data.RankingKind == "" {
+	if data.GroupName != "" && data.RankingKind == "" && !data.FundMonitorActive {
 		label := fmt.Sprintf("自选分组  %s  ·  %d只", data.GroupName, data.GroupCount)
 		if options.Moyu {
 			label = fmt.Sprintf("GROUP  %s  |  %d STOCKS", data.GroupName, data.GroupCount)
@@ -329,14 +336,14 @@ func liveFooter(data LiveData, options ViewOptions, width int) string {
 	}
 	if options.Moyu {
 		if data.Detail {
-			return truncateWidth("UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT", width)
+			return truncateLines("UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN")
 		}
-		return truncateLines("UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE")
+		return truncateLines("UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN")
 	}
 	if data.Detail {
-		return truncateWidth("↑/↓ 滚动  [/]翻页  Esc返回  q退出", width)
+		return truncateLines("↑/↓ 滚动  [/]翻页  Esc返回  q退出\nc个股研判  o查看  s市场报告  r查看")
 	}
-	return truncateLines("↑/↓ 选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20")
+	return truncateLines("↑/↓ 选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达\nc个股研判  o查看  s市场报告  r查看")
 }
 
 func liveStatus(data LiveData, width int) string {
@@ -376,6 +383,48 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		frame := header + "\n\n" + dashboardCard(quotes[data.Selected], flowPointer, data.Boards, data.DragonTiger, data.Technical, detailOptions, terminalWidth)
 		if message := liveError(data, options, terminalWidth); message != "" {
 			frame += "\n" + message
+		}
+		frame += "\n" + liveStatus(data, terminalWidth)
+		frame += "\n" + footer
+		return frame
+	}
+
+	if data.FundMonitorActive {
+		statusRows := liveStatusRows(data)
+		footerRows := strings.Count(footer, "\n") + 1
+		errorData := data
+		errorData.FlowError = ""
+		errorMessage := liveError(errorData, options, terminalWidth)
+		fixedRows := strings.Count(header, "\n") + 1 + 1 + 4 + statusRows + footerRows
+		if errorMessage != "" {
+			fixedRows++
+		}
+		limit := terminalHeight - fixedRows
+		if limit < 1 {
+			limit = 1
+		}
+		if len(data.FundMovements) > limit && limit > 1 {
+			limit--
+		}
+		start, end := visibleQuoteWindow(len(data.FundMovements), data.FundMonitorSelected, limit)
+		table := buildFundMonitorTable(
+			data.FundMovements[start:end], data.FundMonitorSelected-start,
+			terminalWidth, options.Moyu, options.Color,
+		)
+		monitorCount := data.FundMonitorCount
+		if monitorCount <= 0 {
+			monitorCount = len(data.FundMovements)
+		}
+		title := fundMonitorTitle(
+			data.FundMonitorSource, monitorCount, data.FundMonitorRefreshedAt,
+			data.FundIndustryRefreshedAt, options.Moyu,
+		)
+		frame := header + "\n" + truncateWidth(title, terminalWidth) + "\n" + table
+		if len(data.FundMovements) > end-start {
+			frame += fmt.Sprintf("\n%d-%d/%d", start+1, end, len(data.FundMovements))
+		}
+		if errorMessage != "" {
+			frame += "\n" + errorMessage
 		}
 		frame += "\n" + liveStatus(data, terminalWidth)
 		frame += "\n" + footer

@@ -115,7 +115,7 @@ func TestLiveMarketRankingKeepsSelectedRowInHeightAwareWindow(t *testing.T) {
 	frame := BuildLiveFrame(LiveData{
 		RankingKind: domain.MarketRankingLosers, RankingItems: items, RankingSelected: 19,
 	}, ViewOptions{}, 79, 24)
-	if !strings.Contains(frame, "> 20") || !strings.Contains(frame, "10-20/20") || strings.Contains(frame, "  01") {
+	if !strings.Contains(frame, "> 20") || !strings.Contains(frame, "11-20/20") || strings.Contains(frame, "  01") {
 		t.Fatalf("ranking viewport did not follow selection:\n%s", frame)
 	}
 	if rows := strings.Count(frame, "\n") + 1; rows > 24 {

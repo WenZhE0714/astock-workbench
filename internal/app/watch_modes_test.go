@@ -96,8 +96,14 @@ func TestWatchBaseControlsAdvertisesGroupAssignment(t *testing.T) {
 	if controls := watchBaseControls(false, true); !strings.Contains(controls, "H HISTORY") {
 		t.Fatalf("moyu controls missing history shortcut: %q", controls)
 	}
-	if controls := watchBaseControls(false, false); strings.Count(controls, "\n") != 1 || !strings.Contains(controls, "1涨幅前20  2跌幅前20  3快速涨幅前20") {
-		t.Fatalf("standard controls should put rankings on a second line: %q", controls)
+	if controls := watchBaseControls(false, false); strings.Count(controls, "\n") != 2 || !strings.Contains(controls, "1涨幅前20  2跌幅前20  3快速涨幅前20") {
+		t.Fatalf("standard controls should separate navigation, rankings and reports: %q", controls)
+	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "v资金雷达") {
+		t.Fatalf("standard controls missing fund radar shortcut: %q", controls)
+	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "c个股研判") || !strings.Contains(controls, "o查看") {
+		t.Fatalf("standard controls missing stock report shortcuts: %q", controls)
 	}
 }
 
@@ -118,7 +124,7 @@ func TestWatchMarketRankingNavigationAndShortcuts(t *testing.T) {
 	if ranking.selected != 0 {
 		t.Fatalf("ranking selection should clamp to first row: %#v", ranking)
 	}
-	if !strings.Contains(ranking.controls(false), "\n1涨幅前20") {
+	if !strings.Contains(ranking.controls(false), "\n1涨幅前20") || !strings.Contains(ranking.controls(false), "v资金雷达") {
 		t.Fatalf("ranking controls should use two lines: %q", ranking.controls(false))
 	}
 	ranking.selectIndex(2)

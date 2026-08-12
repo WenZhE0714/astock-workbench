@@ -129,8 +129,30 @@ type TechnicalSignal struct {
 // yuan; a positive value is a net inflow and a negative value a net outflow.
 type FundFlow struct {
 	Symbol    string  `json:"symbol"`
+	Name      string  `json:"name,omitempty"`
+	Industry  string  `json:"industry,omitempty"`
+	Price     float64 `json:"price"`
+	Percent   float64 `json:"percent"`
 	MainNet   float64 `json:"main_net_yuan"`
 	MainRatio float64 `json:"main_ratio_percent"`
+}
+
+// FundMovement is a short-line behavior observation derived from cumulative
+// main-fund snapshots. It is evidence for monitoring, not a trading order.
+type FundMovement struct {
+	Symbol          string  `json:"symbol"`
+	Name            string  `json:"name"`
+	Industry        string  `json:"industry"`
+	Price           float64 `json:"price"`
+	Percent         float64 `json:"percent"`
+	MainNet         float64 `json:"main_net_yuan"`
+	MainRatio       float64 `json:"main_ratio_percent"`
+	Delta1Minute    float64 `json:"delta_1m_yuan"`
+	Delta3Minutes   float64 `json:"delta_3m_yuan"`
+	Delta5Minutes   float64 `json:"delta_5m_yuan"`
+	IndustryNet     float64 `json:"industry_main_net_yuan"`
+	IndustryPercent float64 `json:"industry_percent"`
+	State           string  `json:"state"`
 }
 
 const (

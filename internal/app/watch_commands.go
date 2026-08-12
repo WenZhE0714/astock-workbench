@@ -18,6 +18,7 @@ const (
 	watchCommandJump
 	watchCommandHistory
 	watchCommandRanking
+	watchCommandFundMonitor
 	watchCommandGroupCreate
 	watchCommandGroupDelete
 )

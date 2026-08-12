@@ -14,6 +14,8 @@ type Paths struct {
 	DataDir          string
 	ViewHistoryFile  string
 	ReportsDir       string
+	MarketReportsDir string
+	StockReportsDir  string
 	TradingAgentsDir string
 	PaperFile        string
 }
@@ -46,6 +48,8 @@ func ResolvePaths() (Paths, error) {
 		DataDir:          dataDir,
 		ViewHistoryFile:  filepath.Join(dataDir, "view-history.tsv"),
 		ReportsDir:       filepath.Join(dataDir, "reports"),
+		MarketReportsDir: filepath.Join(dataDir, "market-reports"),
+		StockReportsDir:  filepath.Join(dataDir, "stock-reports"),
 		TradingAgentsDir: filepath.Join(dataDir, "tradingagents"),
 		PaperFile:        filepath.Join(dataDir, "paper", "account.json"),
 	}, nil

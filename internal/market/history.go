@@ -16,6 +16,7 @@ import (
 )
 
 const dailyHistoryLimit = 300
+const dailyHistoryFetchAttempts = 2
 
 const tencentDailyHistoryAPIURL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
@@ -166,17 +167,28 @@ func fetchTencentDailyBars(ctx context.Context, symbol string) ([]domain.DailyBa
 	if base == "" {
 		base = tencentDailyHistoryAPIURL
 	}
-	requestContext, cancel := context.WithTimeout(ctx, 5*time.Second)
-	raw, err := fetchDecoded(requestContext, tencentDailyHistoryAddress(base, symbol), nil)
-	cancel()
-	if err != nil {
-		return nil, err
+	var lastError error
+	for attempt := 0; attempt < dailyHistoryFetchAttempts; attempt++ {
+		requestContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+		raw, err := fetchDecoded(requestContext, tencentDailyHistoryAddress(base, symbol), nil)
+		cancel()
+		if err != nil {
+			lastError = err
+			continue
+		}
+		bars := ParseTencentDailyHistoryPayload(raw, symbol)
+		if len(bars) >= 60 {
+			return bars, nil
+		}
+		lastError = fmt.Errorf("%s 的腾讯日 K 仅返回 %d 根有效数据", symbol, len(bars))
 	}
-	bars := ParseTencentDailyHistoryPayload(raw, symbol)
-	if len(bars) < 60 {
-		return nil, fmt.Errorf("%s 的腾讯日 K 仅返回 %d 根有效数据", symbol, len(bars))
-	}
-	return bars, nil
+	return nil, lastError
+}
+
+// FetchDailyBars lets TencentClient serve as a direct, unadjusted history
+// source for latency-sensitive market scans without waiting on other fallbacks.
+func (TencentClient) FetchDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
+	return fetchTencentDailyBars(ctx, symbol)
 }
 
 func (EastmoneyClient) FetchDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
@@ -191,19 +203,21 @@ func (EastmoneyClient) FetchDailyBars(ctx context.Context, symbol string) ([]dom
 	}
 	var lastError error
 	for _, base := range bases {
-		requestContext, cancel := context.WithTimeout(ctx, 5*time.Second)
-		raw, err := fetchDecoded(requestContext, dailyHistoryAddress(base, securityID), nil)
-		cancel()
-		if err != nil {
-			lastError = err
-			continue
+		for attempt := 0; attempt < dailyHistoryFetchAttempts; attempt++ {
+			requestContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+			raw, err := fetchDecoded(requestContext, dailyHistoryAddress(base, securityID), nil)
+			cancel()
+			if err != nil {
+				lastError = err
+				continue
+			}
+			bars := ParseDailyHistoryPayload(raw, symbol)
+			if len(bars) < 60 {
+				lastError = fmt.Errorf("%s 仅返回 %d 根有效日 K，至少需要 60 根", symbol, len(bars))
+				continue
+			}
+			return bars, nil
 		}
-		bars := ParseDailyHistoryPayload(raw, symbol)
-		if len(bars) < 60 {
-			lastError = fmt.Errorf("%s 仅返回 %d 根有效日 K，至少需要 60 根", symbol, len(bars))
-			continue
-		}
-		return bars, nil
 	}
 	if bars, err := fetchTencentDailyBars(ctx, symbol); err == nil {
 		return bars, nil

@@ -400,6 +400,12 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	groupAssignment := watchGroupAssignment{}
 	marketRanking := watchMarketRanking{}
 	marketRankingEpoch := uint64(0)
+	fundMonitor := watchFundMonitor{}
+	fundMonitorEpoch := uint64(0)
+	marketReport := watchMarketReport{}
+	marketReportEpoch := uint64(0)
+	stockReport := watchStockReport{}
+	stockReportEpoch := uint64(0)
 	currentGroup := initialGroup
 	notice := ""
 	noticeExpires := time.Time{}
@@ -428,6 +434,19 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		return symbol, name
 	}
+	selectedStockReportTarget := func() (string, string) {
+		if fundMonitor.viewing && !viewState.Detail {
+			if item, ok := fundMonitor.selectedItem(); ok {
+				return item.Symbol, item.Name
+			}
+		}
+		if marketRanking.active && !viewState.Detail {
+			if item, ok := marketRanking.selectedItem(); ok {
+				return item.Symbol, item.Name
+			}
+		}
+		return selectedStock()
+	}
 	status := func() string {
 		if sortState.active {
 			symbol, name := selectedStock()
@@ -442,8 +461,17 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if command.active() {
 			return command.status(options.Moyu, inputCursorVisible)
 		}
+		if reportStatus := marketReport.status(options.Moyu); reportStatus != "" {
+			return reportStatus
+		}
+		if reportStatus := stockReport.status(options.Moyu); reportStatus != "" {
+			return reportStatus
+		}
 		if notice != "" {
 			return notice
+		}
+		if fundMonitor.viewing && !viewState.Detail {
+			return fundMonitor.status(options.Moyu)
 		}
 		if marketRanking.active && !viewState.Detail {
 			return marketRanking.status(options.Moyu)
@@ -463,6 +491,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if command.active() {
 			return command.controls(options.Moyu)
 		}
+		if fundMonitor.viewing && !viewState.Detail {
+			return fundMonitor.controls(options.Moyu)
+		}
 		if marketRanking.active && !viewState.Detail {
 			return marketRanking.controls(options.Moyu)
 		}
@@ -473,12 +504,29 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if !force && width == lastWidth && height == lastHeight {
 			return
 		}
+		if marketReport.viewing {
+			frame := ui.BuildMarketReportFrame(
+				marketReport.report, marketReportViewControls(options.Moyu), width, options.Moyu,
+			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
+		if stockReport.viewing {
+			frame := ui.BuildStockReportFrame(
+				stockReport.report, marketReportViewControls(options.Moyu), width, options.Moyu,
+			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
 		var selectedBoards []domain.BoardFlow
 		var selectedDragonTiger *domain.DragonTigerSnapshot
 		var selectedTechnical *domain.TechnicalSignal
 		var rankingKind domain.MarketRankingKind
 		var rankingItems []domain.MarketRankingItem
 		rankingSelected := 0
+		var fundMovements []domain.FundMovement
 		if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 			symbol := symbols[viewState.Selected]
 			selectedBoards = boardFlows[symbol]
@@ -489,10 +537,13 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				selectedTechnical = &signal
 			}
 		}
-		if marketRanking.active && !viewState.Detail {
+		if marketRanking.active && !viewState.Detail && !fundMonitor.viewing {
 			rankingKind = marketRanking.kind
 			rankingItems = marketRanking.items
 			rankingSelected = marketRanking.selected
+		}
+		if fundMonitor.viewing {
+			fundMovements = fundMonitor.displayRows(current, marketRanking.items)
 		}
 		frame := ui.BuildLiveFrame(ui.LiveData{
 			Quotes: current, Symbols: symbols, Indices: indices, Flows: flows,
@@ -507,6 +558,11 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			Selected: viewState.Selected, Detail: viewState.Detail,
 			RankingKind: rankingKind, RankingItems: rankingItems, RankingSelected: rankingSelected,
 			RankingRefreshedAt: marketRanking.refreshedAt,
+			FundMonitorActive:  fundMonitor.viewing, FundMonitorSource: fundMonitor.source,
+			FundMonitorCount: len(fundMonitor.symbols),
+			FundMovements:    fundMovements, FundMonitorSelected: fundMonitor.selected,
+			FundMonitorRefreshedAt:  fundMonitor.refreshedAt,
+			FundIndustryRefreshedAt: fundMonitor.industryRefreshedAt,
 		}, viewOptions, width, height)
 		renderer.Render(frame, width, height)
 		lastWidth, lastHeight = width, height
@@ -598,6 +654,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		return nil
 	}
+	var prewarmFundMonitor func()
 	switchGroup := func(groupName string) error {
 		groups, _, loadError := storage.LoadWatchlistGroups(app.paths.WatchlistFile)
 		if loadError != nil {
@@ -617,6 +674,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				viewState.Selected = index
 				break
 			}
+		}
+		if prewarmFundMonitor != nil {
+			prewarmFundMonitor()
 		}
 		renderer.ResetViewport()
 		return nil
@@ -651,12 +711,48 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		items []domain.MarketRankingItem
 		err   error
 	}
+	type fundMonitorResult struct {
+		epoch     uint64
+		requestID uint64
+		flows     map[string]domain.FundFlow
+		err       error
+	}
+	type industryFlowResult struct {
+		epoch      uint64
+		requestID  uint64
+		industries map[string]domain.BoardFlow
+		err        error
+	}
+	type marketReportResult struct {
+		epoch  uint64
+		report domain.GeneratedMarketReport
+		err    error
+	}
+	type marketReportProgressResult struct {
+		epoch   uint64
+		message string
+	}
+	type stockReportResult struct {
+		epoch  uint64
+		report domain.GeneratedStockReport
+		err    error
+	}
+	type stockReportProgressResult struct {
+		epoch   uint64
+		message string
+	}
 	flowResults := make(chan flowResult, 1)
 	amountResults := make(chan amountResult, 1)
 	boardResults := make(chan boardResult, 8)
 	dragonTigerResults := make(chan dragonTigerResult, 8)
 	technicalResults := make(chan technicalResult, 8)
 	marketRankingResults := make(chan marketRankingResult, 1)
+	fundMonitorResults := make(chan fundMonitorResult, 4)
+	industryFlowResults := make(chan industryFlowResult, 4)
+	marketReportResults := make(chan marketReportResult, 1)
+	marketReportProgressResults := make(chan marketReportProgressResult, 8)
+	stockReportResults := make(chan stockReportResult, 1)
+	stockReportProgressResults := make(chan stockReportProgressResult, 8)
 	flowRunning := false
 	amountRunning := false
 	boardRunning := make(map[string]bool)
@@ -666,6 +762,15 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	technicalRunning := make(map[string]bool)
 	technicalRefreshed := make(map[string]time.Time)
 	marketRankingRunning := false
+	fundMonitorRunning := false
+	fundMonitorRequestID := uint64(0)
+	activeFundMonitorRequestID := uint64(0)
+	fundMonitorLastStartedAt := time.Time{}
+	var cancelFundMonitorRequest context.CancelFunc
+	industryFlowRunning := false
+	industryFlowRequestID := uint64(0)
+	activeIndustryFlowRequestID := uint64(0)
+	var cancelIndustryFlowRequest context.CancelFunc
 	startFlowFetch := func() {
 		if app.flows == nil || flowRunning {
 			return
@@ -778,6 +883,269 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 		}()
 	}
+	cancelFundMonitorFetches := func() {
+		if cancelFundMonitorRequest != nil {
+			cancelFundMonitorRequest()
+			cancelFundMonitorRequest = nil
+		}
+		fundMonitorRunning = false
+		activeFundMonitorRequestID = 0
+		fundMonitorLastStartedAt = time.Time{}
+		if cancelIndustryFlowRequest != nil {
+			cancelIndustryFlowRequest()
+			cancelIndustryFlowRequest = nil
+		}
+		industryFlowRunning = false
+		activeIndustryFlowRequestID = 0
+	}
+	startFundMonitorFetch := func(force bool) bool {
+		if app.flows == nil || !fundMonitor.active || len(fundMonitor.symbols) == 0 || fundMonitorRunning {
+			return false
+		}
+		if !force && !session.Poll {
+			return false
+		}
+		if !force && !fundMonitorLastStartedAt.IsZero() && time.Since(fundMonitorLastStartedAt) < fundMonitorSampleInterval {
+			return false
+		}
+		request := append([]string(nil), fundMonitor.symbols...)
+		epoch := fundMonitorEpoch
+		fundMonitorRequestID++
+		requestID := fundMonitorRequestID
+		requestContext, cancel := context.WithTimeout(ctx, 8*time.Second)
+		cancelFundMonitorRequest = cancel
+		fundMonitorRunning = true
+		activeFundMonitorRequestID = requestID
+		fundMonitorLastStartedAt = time.Now()
+		go func() {
+			defer cancel()
+			result, fetchError := app.flows.Fetch(requestContext, request)
+			select {
+			case fundMonitorResults <- fundMonitorResult{
+				epoch: epoch, requestID: requestID, flows: result, err: fetchError,
+			}:
+			case <-ctx.Done():
+			}
+		}()
+		return true
+	}
+	startIndustryFlowFetch := func(force bool) bool {
+		if app.industryFlows == nil || !fundMonitor.active || industryFlowRunning {
+			return false
+		}
+		if !force {
+			if !session.Poll {
+				return false
+			}
+			if !fundMonitor.industryRefreshedAt.IsZero() && time.Since(fundMonitor.industryRefreshedAt) < fundMonitorIndustryInterval {
+				return false
+			}
+		}
+		epoch := fundMonitorEpoch
+		industryFlowRequestID++
+		requestID := industryFlowRequestID
+		requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		cancelIndustryFlowRequest = cancel
+		industryFlowRunning = true
+		activeIndustryFlowRequestID = requestID
+		go func() {
+			defer cancel()
+			result, fetchError := app.industryFlows.FetchIndustryFlows(requestContext)
+			select {
+			case industryFlowResults <- industryFlowResult{
+				epoch: epoch, requestID: requestID, industries: result, err: fetchError,
+			}:
+			case <-ctx.Done():
+			}
+		}()
+		return true
+	}
+	openFundMonitor := func(source string, rankingKind domain.MarketRankingKind, monitorSymbols []string) {
+		if len(monitorSymbols) == 0 {
+			setNotice("当前没有可监视的股票")
+			render(true)
+			return
+		}
+		if !fundMonitor.matches(rankingKind, source, monitorSymbols) {
+			cancelFundMonitorFetches()
+			fundMonitorEpoch++
+			if rankingKind == "" {
+				fundMonitor.begin(source, monitorSymbols)
+			} else {
+				fundMonitor.beginRanking(rankingKind, source, monitorSymbols)
+			}
+		} else {
+			fundMonitor.viewing = true
+		}
+		setNotice("")
+		if app.flows == nil {
+			fundMonitor.failRefresh(fmt.Errorf("个股资金接口暂不可用"))
+		} else {
+			startFundMonitorFetch(true)
+		}
+		if app.industryFlows == nil {
+			fundMonitor.failIndustryRefresh(fmt.Errorf("行业资金接口暂不可用"))
+		} else {
+			startIndustryFlowFetch(true)
+		}
+		renderer.ResetViewport()
+		render(true)
+	}
+	closeFundMonitor := func() {
+		fundMonitor.viewing = false
+		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
+	prewarmFundMonitor = func() {
+		if len(symbols) == 0 {
+			return
+		}
+		source := "自选 · " + currentGroup
+		if !fundMonitor.matches("", source, symbols) {
+			cancelFundMonitorFetches()
+			fundMonitorEpoch++
+			fundMonitor.beginHidden(source, symbols)
+		}
+		if app.flows == nil {
+			fundMonitor.failRefresh(fmt.Errorf("个股资金接口暂不可用"))
+		} else {
+			startFundMonitorFetch(false)
+		}
+		if app.industryFlows == nil {
+			fundMonitor.failIndustryRefresh(fmt.Errorf("行业资金接口暂不可用"))
+		} else {
+			startIndustryFlowFetch(false)
+		}
+	}
+	startMarketReport := func() {
+		if stockReport.generating {
+			setNotice("个股研判正在生成，请完成后再生成市场报告")
+			render(true)
+			return
+		}
+		if marketReport.generating {
+			setNotice("智能报告正在生成，无需重复启动")
+			render(true)
+			return
+		}
+		marketReportEpoch++
+		epoch := marketReportEpoch
+		stockReport.unread = false
+		stockReport.error = ""
+		marketReport.begin()
+		setNotice("")
+		render(true)
+		go func() {
+			report, reportError := app.generateMarketReport(ctx, func(message string) {
+				select {
+				case marketReportProgressResults <- marketReportProgressResult{epoch: epoch, message: message}:
+				default:
+				}
+			})
+			select {
+			case marketReportResults <- marketReportResult{epoch: epoch, report: report, err: reportError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	openMarketReport := func() {
+		if marketReport.generating {
+			return
+		}
+		report := marketReport.report
+		if strings.TrimSpace(report.Markdown) == "" {
+			if app.marketReports == nil {
+				setNotice("智能市场报告存储未初始化")
+				render(true)
+				return
+			}
+			loaded, loadError := app.marketReports.LoadLatest()
+			if loadError != nil {
+				setNotice(loadError.Error() + "；按 s 生成")
+				render(true)
+				return
+			}
+			report = loaded
+		}
+		marketReport.open(report)
+		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
+	startStockReport := func() {
+		if marketReport.generating {
+			setNotice("市场报告正在生成，请完成后再生成个股研判")
+			render(true)
+			return
+		}
+		if stockReport.generating {
+			setNotice("个股研判正在生成，无需重复启动")
+			render(true)
+			return
+		}
+		symbol, name := selectedStockReportTarget()
+		if symbol == "" {
+			setNotice("当前没有可研判的股票")
+			render(true)
+			return
+		}
+		var movement *domain.FundMovement
+		if item, ok := fundMonitor.movementFor(symbol); ok {
+			copyMovement := item
+			movement = &copyMovement
+		}
+		stockReportEpoch++
+		epoch := stockReportEpoch
+		marketReport.unread = false
+		marketReport.error = ""
+		stockReport.begin(symbol, name)
+		setNotice("")
+		render(true)
+		go func() {
+			report, reportError := app.generateStockReport(ctx, symbol, movement, func(message string) {
+				select {
+				case stockReportProgressResults <- stockReportProgressResult{epoch: epoch, message: message}:
+				default:
+				}
+			})
+			select {
+			case stockReportResults <- stockReportResult{epoch: epoch, report: report, err: reportError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	openStockReport := func() {
+		if stockReport.generating {
+			return
+		}
+		symbol, _ := selectedStockReportTarget()
+		if symbol == "" {
+			setNotice("当前没有可查看研判的股票")
+			render(true)
+			return
+		}
+		report := stockReport.report
+		if report.Symbol != symbol || strings.TrimSpace(report.Markdown) == "" {
+			if app.stockReports == nil {
+				setNotice("个股研判存储未初始化")
+				render(true)
+				return
+			}
+			loaded, loadError := app.stockReports.LoadLatest(symbol)
+			if loadError != nil {
+				setNotice(loadError.Error() + "；按 c 生成")
+				render(true)
+				return
+			}
+			report = loaded
+		}
+		stockReport.open(report)
+		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
+	prewarmFundMonitor()
 	startFlowFetch()
 	startAmountFetch()
 	executeWatchCommand := func(symbol string) {
@@ -823,11 +1191,14 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				if err := fetch(); err != nil && !errors.Is(err, context.Canceled) {
 					setNotice("已添加，但刷新失败: " + err.Error())
 				}
+				if fundMonitor.rankingKind == "" {
+					prewarmFundMonitor()
+				}
 			}
 			startFlowFetch()
 			render(true)
-		case watchCommandJump, watchCommandHistory, watchCommandRanking:
-			recordHistory := command.kind != watchCommandRanking
+		case watchCommandJump, watchCommandHistory, watchCommandRanking, watchCommandFundMonitor:
+			recordHistory := command.kind != watchCommandRanking && command.kind != watchCommandFundMonitor
 			opened := false
 			if temporarySymbol != "" && temporarySymbol != symbol {
 				for index, value := range symbols {
@@ -919,6 +1290,96 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				events = nil
 				continue
 			}
+			if marketReport.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					marketReport.close()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				navigateRenderer(renderer, event.Key)
+				continue
+			}
+			if stockReport.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					stockReport.close()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				navigateRenderer(renderer, event.Key)
+				continue
+			}
+			modalActive := sortState.active || groupAssignment.active || groupChooser.active || command.active()
+			if !modalActive && event.Key == terminalKeyNone {
+				switch event.Text {
+				case "s", "S":
+					startMarketReport()
+					continue
+				case "r", "R":
+					openMarketReport()
+					continue
+				case "c", "C":
+					startStockReport()
+					continue
+				case "o", "O":
+					openStockReport()
+					continue
+				}
+			}
+			if fundMonitor.viewing && !viewState.Detail {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					closeFundMonitor()
+					continue
+				}
+				if event.Key == terminalKeyNone && (event.Text == "v" || event.Text == "V") {
+					started := startFundMonitorFetch(true)
+					started = startIndustryFlowFetch(true) || started
+					if started {
+						setNotice("正在刷新资金雷达")
+					} else {
+						setNotice("资金刷新正在进行")
+					}
+					render(true)
+					continue
+				}
+				switch event.Key {
+				case terminalKeyUp:
+					fundMonitor.move(-1)
+				case terminalKeyDown:
+					fundMonitor.move(1)
+				case terminalKeyPageUp:
+					fundMonitor.move(-10)
+				case terminalKeyPageDown, terminalKeySpace:
+					fundMonitor.move(10)
+				case terminalKeyHome:
+					fundMonitor.selectIndex(0)
+				case terminalKeyEnd:
+					fundMonitor.selectIndex(len(fundMonitor.rows) - 1)
+				case terminalKeyEnter:
+					item, selected := fundMonitor.selectedItem()
+					if !selected {
+						continue
+					}
+					command.begin(watchCommandFundMonitor)
+					executeWatchCommand(item.Symbol)
+					continue
+				default:
+					continue
+				}
+				renderer.ResetViewport()
+				render(true)
+				continue
+			}
 			if marketRanking.active && !viewState.Detail {
 				if event.Key == terminalKeyQuit {
 					return nil
@@ -932,6 +1393,13 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					continue
 				}
 				if event.Key == terminalKeyNone {
+					if event.Text == "v" || event.Text == "V" {
+						openFundMonitor(
+							fundMonitorRankingSource(marketRanking.kind), marketRanking.kind,
+							marketRankingSymbols(marketRanking.items),
+						)
+						continue
+					}
 					if kind, ok := marketRankingShortcut(event.Text); ok {
 						openMarketRanking(kind)
 						continue
@@ -1147,7 +1615,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				continue
 			}
 			if command.active() {
-				if event.Key == terminalKeyBack || event.Key == terminalKeyQuit {
+				if event.Key == terminalKeyBack || (event.Key == terminalKeyQuit && event.Text == "") {
 					command.reset()
 					setNotice("")
 					render(true)
@@ -1231,6 +1699,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 							}
 							if err := fetch(); err != nil && !errors.Is(err, context.Canceled) {
 								setNotice("刷新失败: " + err.Error())
+							}
+							if fundMonitor.rankingKind == "" {
+								prewarmFundMonitor()
 							}
 						}
 						command.reset()
@@ -1337,6 +1808,25 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					}
 					kind, _ := marketRankingShortcut(event.Text)
 					openMarketRanking(kind)
+					continue
+				case "v", "V":
+					if fundMonitor.viewing {
+						started := startFundMonitorFetch(true)
+						started = startIndustryFlowFetch(true) || started
+						if started {
+							setNotice("正在刷新资金雷达")
+						} else {
+							setNotice("资金刷新正在进行")
+						}
+						render(true)
+						continue
+					}
+					if viewState.Detail {
+						setNotice("请先按 Esc 返回列表再打开资金雷达")
+						render(true)
+						continue
+					}
+					openFundMonitor("自选 · "+currentGroup, "", symbols)
 					continue
 				case "a", "A":
 					command.begin(watchCommandAdd)
@@ -1492,6 +1982,86 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				flowMessage = ""
 			}
 			render(true)
+		case result := <-fundMonitorResults:
+			if result.requestID != activeFundMonitorRequestID {
+				continue
+			}
+			fundMonitorRunning = false
+			activeFundMonitorRequestID = 0
+			cancelFundMonitorRequest = nil
+			if !fundMonitor.active || result.epoch != fundMonitorEpoch {
+				continue
+			}
+			if result.err == nil && !fundMonitor.hasValidSample(result.flows) {
+				result.err = fmt.Errorf("未返回当前股票的资金样本")
+			}
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					fundMonitor.failRefresh(result.err)
+				}
+			} else {
+				fundMonitor.record(time.Now(), result.flows)
+				for symbol, flow := range result.flows {
+					flows[symbol] = flow
+				}
+			}
+			if !industryFlowRunning && notice == "正在刷新资金雷达" {
+				setNotice("")
+			}
+			render(true)
+		case result := <-industryFlowResults:
+			if result.requestID != activeIndustryFlowRequestID {
+				continue
+			}
+			industryFlowRunning = false
+			activeIndustryFlowRequestID = 0
+			cancelIndustryFlowRequest = nil
+			if !fundMonitor.active || result.epoch != fundMonitorEpoch {
+				continue
+			}
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					fundMonitor.failIndustryRefresh(result.err)
+				}
+			} else {
+				fundMonitor.setIndustries(time.Now(), result.industries)
+			}
+			if !fundMonitorRunning && notice == "正在刷新资金雷达" {
+				setNotice("")
+			}
+			render(true)
+		case result := <-marketReportProgressResults:
+			if result.epoch != marketReportEpoch || !marketReport.generating {
+				continue
+			}
+			marketReport.progress = result.message
+			render(true)
+		case result := <-marketReportResults:
+			if result.epoch != marketReportEpoch {
+				continue
+			}
+			if result.err != nil {
+				marketReport.fail(result.err)
+			} else {
+				marketReport.complete(result.report)
+			}
+			render(true)
+		case result := <-stockReportProgressResults:
+			if result.epoch != stockReportEpoch || !stockReport.generating {
+				continue
+			}
+			stockReport.progress = result.message
+			render(true)
+		case result := <-stockReportResults:
+			if result.epoch != stockReportEpoch {
+				continue
+			}
+			if result.err != nil {
+				stockReport.fail(result.err)
+			} else {
+				stockReport.complete(result.report)
+			}
+			render(true)
 		case result := <-marketRankingResults:
 			marketRankingRunning = false
 			if !marketRanking.active || result.epoch != marketRankingEpoch || result.kind != marketRanking.kind {
@@ -1501,6 +2071,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				marketRanking.failRefresh(result.err)
 			} else {
 				marketRanking.refresh(result.items)
+				if fundMonitor.active && fundMonitor.rankingKind == result.kind {
+					fundMonitor.syncSymbols(marketRankingSymbols(result.items))
+				}
 			}
 			if !viewState.Detail {
 				render(true)
@@ -1564,6 +2137,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				render(true)
 				if !wasPolling && session.Poll {
 					startMarketRankingFetch()
+					startFundMonitorFetch(false)
+					startIndustryFlowFetch(false)
 					if err := fetch(); err != nil {
 						if errors.Is(err, context.Canceled) {
 							return nil
@@ -1580,6 +2155,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					}
 				}
 			}
+			startFundMonitorFetch(false)
 		case <-quoteTicker.C:
 			if !session.Poll {
 				continue
@@ -1594,6 +2170,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		case <-flowTicker.C:
 			if session.Poll {
 				startFlowFetch()
+				startIndustryFlowFetch(false)
 				if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 					startBoardFetch(symbols[viewState.Selected], true)
 					startTechnicalFetch(symbols[viewState.Selected], false)

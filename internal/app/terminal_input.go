@@ -144,7 +144,11 @@ func (decoder *keyDecoder) FeedEvents(input []byte) []terminalEvent {
 				}
 			}
 			if key := plainKey(value); key != terminalKeyNone {
-				result = append(result, terminalEvent{Key: key})
+				event := terminalEvent{Key: key}
+				if value >= 0x20 {
+					event.Text = string([]byte{value})
+				}
+				result = append(result, event)
 			} else if value == 0x08 || value == 0x7f {
 				result = append(result, terminalEvent{Key: terminalKeyBackspace})
 			} else if value >= 0x20 {
