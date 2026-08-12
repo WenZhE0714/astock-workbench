@@ -72,23 +72,27 @@ func TestTerminalHeightUsesVisibleRows(t *testing.T) {
 func TestMarketSessionAtStopsPollingOutsideTradingHours(t *testing.T) {
 	date := time.Date(2026, 8, 3, 0, 0, 0, 0, shanghaiLocation)
 	tests := []struct {
-		name   string
-		hour   int
-		minute int
-		label  string
-		poll   bool
+		name       string
+		hour       int
+		minute     int
+		label      string
+		poll       bool
+		continuous bool
 	}{
-		{name: "before open", hour: 9, minute: 29, label: "未开盘"},
-		{name: "morning", hour: 9, minute: 30, label: "交易中", poll: true},
+		{name: "before auction", hour: 9, minute: 14, label: "未开盘"},
+		{name: "call auction starts", hour: 9, minute: 15, label: "集合竞价", poll: true},
+		{name: "call auction", hour: 9, minute: 24, label: "集合竞价", poll: true},
+		{name: "waiting open", hour: 9, minute: 29, label: "开盘等待", poll: true},
+		{name: "morning", hour: 9, minute: 30, label: "交易中", poll: true, continuous: true},
 		{name: "lunch", hour: 11, minute: 30, label: "午间休市"},
-		{name: "afternoon", hour: 13, minute: 0, label: "交易中", poll: true},
+		{name: "afternoon", hour: 13, minute: 0, label: "交易中", poll: true, continuous: true},
 		{name: "closed", hour: 15, minute: 0, label: "已收盘"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			at := time.Date(date.Year(), date.Month(), date.Day(), test.hour, test.minute, 0, 0, shanghaiLocation)
 			got := marketSessionAt(at)
-			if got.Label != test.label || got.Poll != test.poll {
+			if got.Label != test.label || got.Poll != test.poll || got.Continuous != test.continuous {
 				t.Fatalf("unexpected session at %s: %#v", at, got)
 			}
 		})
@@ -152,6 +156,17 @@ func TestWatchCommandFooterAndRuneEditing(t *testing.T) {
 	}
 	if got := command.controls(false); got != "Enter/y确认  Esc/n取消" {
 		t.Fatalf("unexpected confirmation controls: %q", got)
+	}
+}
+
+func TestWatchAIChatCommandExplainsLiveContext(t *testing.T) {
+	command := watchCommand{}
+	command.begin(watchCommandAIChat)
+	status := command.status(false, true)
+	for _, expected := range []string{"咨询AI", "行情", "资金", "板块", "技术面", "▌"} {
+		if !strings.Contains(status, expected) {
+			t.Fatalf("AI chat command status missing %q: %s", expected, status)
+		}
 	}
 }
 

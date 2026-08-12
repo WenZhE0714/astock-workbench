@@ -190,10 +190,26 @@ func (app *App) collectStockReportFacts(ctx context.Context, symbol string, move
 	if facts.Fund.Symbol == "" {
 		facts.Fund.Symbol = symbol
 		facts.Warnings = append(facts.Warnings, "个股主力资金快照缺失")
+	} else {
+		if !finite(facts.Fund.MainNet) {
+			facts.Warnings = append(facts.Warnings, "个股当日累计主力净额缺失")
+		}
+		if !finite(facts.Fund.MainRatio) {
+			facts.Warnings = append(facts.Warnings, "个股当日主力净占比缺失")
+		}
 	}
 	if movement != nil && movement.Symbol == symbol {
 		copyMovement := *movement
 		facts.FundMovement = &copyMovement
+		if !finite(copyMovement.Delta1Minute) {
+			facts.Warnings = append(facts.Warnings, "1分钟主力资金增量样本不足")
+		}
+		if !finite(copyMovement.Delta3Minutes) {
+			facts.Warnings = append(facts.Warnings, "3分钟主力资金增量样本不足")
+		}
+		if !finite(copyMovement.Delta5Minutes) {
+			facts.Warnings = append(facts.Warnings, "5分钟主力资金增量样本不足")
+		}
 	}
 	if len(boards) > 6 {
 		boards = boards[:6]
@@ -239,6 +255,7 @@ func sanitizeStockReportFacts(facts *domain.StockReportFacts) {
 	}
 	facts.Fund.Price = zeroIfNotFinite(facts.Fund.Price)
 	facts.Fund.Percent = zeroIfNotFinite(facts.Fund.Percent)
+	facts.Fund.Speed = zeroIfNotFinite(facts.Fund.Speed)
 	facts.Fund.MainNet = zeroIfNotFinite(facts.Fund.MainNet)
 	facts.Fund.MainRatio = zeroIfNotFinite(facts.Fund.MainRatio)
 	for index := range facts.Boards {

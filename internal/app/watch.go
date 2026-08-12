@@ -28,8 +28,9 @@ type watchOptions struct {
 }
 
 type marketSession struct {
-	Label string
-	Poll  bool
+	Label      string
+	Poll       bool
+	Continuous bool
 }
 
 var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
@@ -41,14 +42,18 @@ func marketSessionAt(now time.Time) marketSession {
 	}
 	minutes := local.Hour()*60 + local.Minute()
 	switch {
-	case minutes < 9*60+30:
+	case minutes < 9*60+15:
 		return marketSession{Label: "未开盘"}
+	case minutes < 9*60+25:
+		return marketSession{Label: "集合竞价", Poll: true}
+	case minutes < 9*60+30:
+		return marketSession{Label: "开盘等待", Poll: true}
 	case minutes < 11*60+30:
-		return marketSession{Label: "交易中", Poll: true}
+		return marketSession{Label: "交易中", Poll: true, Continuous: true}
 	case minutes < 13*60:
 		return marketSession{Label: "午间休市"}
 	case minutes < 15*60:
-		return marketSession{Label: "交易中", Poll: true}
+		return marketSession{Label: "交易中", Poll: true, Continuous: true}
 	default:
 		return marketSession{Label: "已收盘"}
 	}
@@ -402,10 +407,13 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	marketRankingEpoch := uint64(0)
 	fundMonitor := watchFundMonitor{}
 	fundMonitorEpoch := uint64(0)
+	boardFunds := watchBoardFunds{}
 	marketReport := watchMarketReport{}
 	marketReportEpoch := uint64(0)
 	stockReport := watchStockReport{}
 	stockReportEpoch := uint64(0)
+	aiChat := watchAIChat{}
+	aiChatEpoch := uint64(0)
 	currentGroup := initialGroup
 	notice := ""
 	noticeExpires := time.Time{}
@@ -461,6 +469,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if command.active() {
 			return command.status(options.Moyu, inputCursorVisible)
 		}
+		if chatStatus := aiChat.status(options.Moyu); chatStatus != "" {
+			return chatStatus
+		}
 		if reportStatus := marketReport.status(options.Moyu); reportStatus != "" {
 			return reportStatus
 		}
@@ -469,6 +480,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		if notice != "" {
 			return notice
+		}
+		if boardFunds.viewing {
+			return boardFunds.status(options.Moyu)
 		}
 		if fundMonitor.viewing && !viewState.Detail {
 			return fundMonitor.status(options.Moyu)
@@ -491,6 +505,12 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if command.active() {
 			return command.controls(options.Moyu)
 		}
+		if aiChat.viewing {
+			return aiChatViewControls(options.Moyu)
+		}
+		if boardFunds.viewing {
+			return boardFunds.controls(options.Moyu)
+		}
 		if fundMonitor.viewing && !viewState.Detail {
 			return fundMonitor.controls(options.Moyu)
 		}
@@ -502,6 +522,23 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	render := func(force bool) {
 		width, height := terminalDimensions(app.out)
 		if !force && width == lastWidth && height == lastHeight {
+			return
+		}
+		if aiChat.viewing {
+			frame := ui.BuildAIChatFrame(
+				aiChat.symbol, aiChat.name, aiChat.turns, aiChatViewControls(options.Moyu), width, options.Moyu,
+			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
+		if boardFunds.viewing {
+			frame := ui.BuildBoardFundDashboardFrame(
+				boardFunds.dashboard(), boardFunds.loading, boardFunds.status(options.Moyu),
+				boardFunds.controls(options.Moyu), width, options.Moyu, options.Color,
+			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
 			return
 		}
 		if marketReport.viewing {
@@ -723,6 +760,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		industries map[string]domain.BoardFlow
 		err        error
 	}
+	type boardFundDashboardResult struct {
+		dashboard domain.BoardFundDashboard
+		err       error
+	}
 	type marketReportResult struct {
 		epoch  uint64
 		report domain.GeneratedMarketReport
@@ -741,6 +782,16 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		epoch   uint64
 		message string
 	}
+	type aiChatResult struct {
+		epoch  uint64
+		answer string
+		at     time.Time
+		err    error
+	}
+	type aiChatProgressResult struct {
+		epoch   uint64
+		message string
+	}
 	flowResults := make(chan flowResult, 1)
 	amountResults := make(chan amountResult, 1)
 	boardResults := make(chan boardResult, 8)
@@ -749,10 +800,13 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	marketRankingResults := make(chan marketRankingResult, 1)
 	fundMonitorResults := make(chan fundMonitorResult, 4)
 	industryFlowResults := make(chan industryFlowResult, 4)
+	boardFundDashboardResults := make(chan boardFundDashboardResult, 1)
 	marketReportResults := make(chan marketReportResult, 1)
 	marketReportProgressResults := make(chan marketReportProgressResult, 8)
 	stockReportResults := make(chan stockReportResult, 1)
 	stockReportProgressResults := make(chan stockReportProgressResult, 8)
+	aiChatResults := make(chan aiChatResult, 1)
+	aiChatProgressResults := make(chan aiChatProgressResult, 8)
 	flowRunning := false
 	amountRunning := false
 	boardRunning := make(map[string]bool)
@@ -771,6 +825,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	industryFlowRequestID := uint64(0)
 	activeIndustryFlowRequestID := uint64(0)
 	var cancelIndustryFlowRequest context.CancelFunc
+	boardFundDashboardRunning := false
 	startFlowFetch := func() {
 		if app.flows == nil || flowRunning {
 			return
@@ -960,6 +1015,39 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}()
 		return true
 	}
+	startBoardFundDashboardFetch := func(force bool) bool {
+		if boardFundDashboardRunning || !boardFunds.viewing {
+			return false
+		}
+		if !force && !boardFunds.refreshedAt.IsZero() && time.Since(boardFunds.refreshedAt) < boardFundRefreshInterval {
+			return false
+		}
+		boardFundDashboardRunning = true
+		boardFunds.beginRefresh()
+		go func() {
+			requestContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+			dashboard, fetchError := app.fetchBoardFundDashboard(requestContext)
+			cancel()
+			select {
+			case boardFundDashboardResults <- boardFundDashboardResult{dashboard: dashboard, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+		return true
+	}
+	openBoardFundDashboard := func() {
+		boardFunds.open()
+		setNotice("")
+		startBoardFundDashboardFetch(true)
+		renderer.ResetViewport()
+		render(true)
+	}
+	closeBoardFundDashboard := func() {
+		boardFunds.close()
+		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
 	openFundMonitor := func(source string, rankingKind domain.MarketRankingKind, monitorSymbols []string) {
 		if len(monitorSymbols) == 0 {
 			setNotice("当前没有可监视的股票")
@@ -1019,6 +1107,11 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 	}
 	startMarketReport := func() {
+		if aiChat.generating {
+			setNotice("AI问答正在处理，请完成后再生成市场报告")
+			render(true)
+			return
+		}
 		if stockReport.generating {
 			setNotice("个股研判正在生成，请完成后再生成市场报告")
 			render(true)
@@ -1074,6 +1167,11 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		render(true)
 	}
 	startStockReport := func() {
+		if aiChat.generating {
+			setNotice("AI问答正在处理，请完成后再生成个股研判")
+			render(true)
+			return
+		}
 		if marketReport.generating {
 			setNotice("市场报告正在生成，请完成后再生成个股研判")
 			render(true)
@@ -1143,6 +1241,74 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		stockReport.open(report)
 		setNotice("")
 		renderer.ResetViewport()
+		render(true)
+	}
+	startAIChatQuestion := func(question string) {
+		question = strings.TrimSpace(question)
+		if question == "" {
+			setNotice("请输入要咨询AI的问题")
+			render(true)
+			return
+		}
+		if marketReport.generating || stockReport.generating {
+			setNotice("报告正在生成，请完成后再咨询AI")
+			render(true)
+			return
+		}
+		if aiChat.generating {
+			setNotice("AI问答正在处理，无需重复提交")
+			render(true)
+			return
+		}
+		symbol, name := selectedStockReportTarget()
+		if symbol == "" {
+			setNotice("当前没有可咨询的股票")
+			render(true)
+			return
+		}
+		var movement *domain.FundMovement
+		if item, ok := fundMonitor.movementFor(symbol); ok {
+			copyMovement := item
+			movement = &copyMovement
+		}
+		aiChatEpoch++
+		epoch := aiChatEpoch
+		var history []domain.AIChatTurn
+		if aiChat.symbol == symbol {
+			history = aiChat.history()
+		}
+		aiChat.begin(symbol, name, question)
+		setNotice("")
+		render(true)
+		go func() {
+			answer, answerError := app.answerAIChatQuestion(ctx, symbol, movement, history, question, func(message string) {
+				select {
+				case aiChatProgressResults <- aiChatProgressResult{epoch: epoch, message: message}:
+				default:
+				}
+			})
+			select {
+			case aiChatResults <- aiChatResult{epoch: epoch, answer: answer, at: time.Now(), err: answerError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	openAIChatOrPrompt := func() {
+		if aiChat.generating {
+			setNotice("AI问答正在处理，行情继续刷新")
+			render(true)
+			return
+		}
+		symbol, _ := selectedStockReportTarget()
+		if aiChat.error == "" && symbol != "" && symbol == aiChat.symbol && aiChat.open() {
+			setNotice("")
+			renderer.ResetViewport()
+			render(true)
+			return
+		}
+		command.begin(watchCommandAIChat)
+		inputCursorVisible = true
+		setNotice("")
 		render(true)
 	}
 	prewarmFundMonitor()
@@ -1290,6 +1456,27 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				events = nil
 				continue
 			}
+			if aiChat.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					aiChat.close()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				if event.Key == terminalKeyNone && (event.Text == "x" || event.Text == "X") {
+					aiChat.close()
+					command.begin(watchCommandAIChat)
+					inputCursorVisible = true
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				navigateRenderer(renderer, event.Key)
+				continue
+			}
 			if marketReport.viewing {
 				if event.Key == terminalKeyQuit {
 					return nil
@@ -1313,6 +1500,32 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					render(true)
 					continue
 				}
+				if event.Key == terminalKeyNone && (event.Text == "x" || event.Text == "X") {
+					stockReport.close()
+					command.begin(watchCommandAIChat)
+					inputCursorVisible = true
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				navigateRenderer(renderer, event.Key)
+				continue
+			}
+			if boardFunds.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					closeBoardFundDashboard()
+					continue
+				}
+				if event.Key == terminalKeyNone && (event.Text == "y" || event.Text == "Y") {
+					if !startBoardFundDashboardFetch(true) {
+						setNotice("板块资金刷新正在进行")
+					}
+					render(true)
+					continue
+				}
 				navigateRenderer(renderer, event.Key)
 				continue
 			}
@@ -1330,6 +1543,12 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					continue
 				case "o", "O":
 					openStockReport()
+					continue
+				case "x", "X":
+					openAIChatOrPrompt()
+					continue
+				case "y", "Y":
+					openBoardFundDashboard()
 					continue
 				}
 			}
@@ -1747,13 +1966,20 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				case terminalKeyEnter:
 					input := commandText(command.buffer)
 					if input == "" {
-						if command.kind == watchCommandGroupCreate {
+						if command.kind == watchCommandAIChat {
+							setNotice("请输入要咨询AI的问题")
+						} else if command.kind == watchCommandGroupCreate {
 							setNotice("请输入分组名称")
 						} else {
 							setNotice("请输入代码或完整名称")
 						}
 						command.reset()
 						render(true)
+						continue
+					}
+					if command.kind == watchCommandAIChat {
+						command.reset()
+						startAIChatQuestion(input)
 						continue
 					}
 					if command.kind == watchCommandGroupCreate {
@@ -2030,6 +2256,16 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				setNotice("")
 			}
 			render(true)
+		case result := <-boardFundDashboardResults:
+			boardFundDashboardRunning = false
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					boardFunds.fail(result.err)
+				}
+			} else {
+				boardFunds.complete(result.dashboard)
+			}
+			render(true)
 		case result := <-marketReportProgressResults:
 			if result.epoch != marketReportEpoch || !marketReport.generating {
 				continue
@@ -2060,6 +2296,22 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				stockReport.fail(result.err)
 			} else {
 				stockReport.complete(result.report)
+			}
+			render(true)
+		case result := <-aiChatProgressResults:
+			if result.epoch != aiChatEpoch || !aiChat.generating {
+				continue
+			}
+			aiChat.progress = result.message
+			render(true)
+		case result := <-aiChatResults:
+			if result.epoch != aiChatEpoch {
+				continue
+			}
+			if result.err != nil {
+				aiChat.fail(result.err)
+			} else {
+				aiChat.complete(result.answer, result.at)
 			}
 			render(true)
 		case result := <-marketRankingResults:
@@ -2171,6 +2423,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if session.Poll {
 				startFlowFetch()
 				startIndustryFlowFetch(false)
+				startBoardFundDashboardFetch(false)
 				if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 					startBoardFetch(symbols[viewState.Selected], true)
 					startTechnicalFetch(symbols[viewState.Selected], false)

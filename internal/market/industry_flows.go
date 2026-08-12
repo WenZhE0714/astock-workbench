@@ -60,7 +60,7 @@ func industryFlowAddress(base string) string {
 		"np":     {"1"},
 		"pn":     {"1"},
 		"po":     {"1"},
-		"pz":     {"100"},
+		"pz":     {"500"},
 		"ut":     {"bd1d9ddb04089700cf9c27f6f7426281"},
 	}
 	separator := "?"

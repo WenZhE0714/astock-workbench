@@ -11,8 +11,11 @@ import (
 )
 
 func TestMoyuTableHasStableFrame(t *testing.T) {
-	frame := buildMoyuTable([]domain.Quote{{TaskName: "gui zhou mao tai", Current: "1418.00", Percent: 1.2, Low: "1398", High: "1420"}}, 80)
-	if !strings.Contains(frame, "+-") || !strings.Contains(frame, "TASK") || !strings.Contains(frame, "FLOW") || !strings.Contains(frame, "gui zhou mao tai") {
+	frame := buildQuoteTable(
+		[]domain.Quote{{Symbol: "sh600519", TaskName: "gui zhou mao tai", Current: "1418.00", Percent: 1.2, Low: "1398", High: "1420"}},
+		map[string]domain.FundFlow{"sh600519": {Symbol: "sh600519", Speed: 0.18}}, -1, 80, true, false,
+	)
+	if !strings.Contains(frame, "+-") || !strings.Contains(frame, "TASK") || !strings.Contains(frame, "SPEED") || !strings.Contains(frame, "+0.18%") || !strings.Contains(frame, "FLOW") || !strings.Contains(frame, "gui zhou mao tai") {
 		t.Fatalf("unexpected frame:\n%s", frame)
 	}
 }
@@ -35,8 +38,8 @@ func TestLiveMoyuFrameShowsMarketRefreshSelectionAndFundFlow(t *testing.T) {
 			{Symbol: "sz399006", Current: "2341.56", Percent: 0.58},
 		},
 		Flows: map[string]domain.FundFlow{
-			"sh600519": {Symbol: "sh600519", MainNet: 125000000, MainRatio: 3.25},
-			"sz000001": {Symbol: "sz000001", MainNet: -6300000, MainRatio: -0.81},
+			"sh600519": {Symbol: "sh600519", Speed: 0.18, MainNet: 125000000, MainRatio: 3.25},
+			"sz000001": {Symbol: "sz000001", Speed: -0.06, MainNet: -6300000, MainRatio: -0.81},
 			"sh000001": {Symbol: "sh000001", MainNet: 22349627392, MainRatio: 1.85},
 			"sz399001": {Symbol: "sz399001", MainNet: 14089814016, MainRatio: 0.97},
 			"sz399006": {Symbol: "sz399006", MainNet: 4331544576, MainRatio: 0.59},
@@ -45,7 +48,7 @@ func TestLiveMoyuFrameShowsMarketRefreshSelectionAndFundFlow(t *testing.T) {
 		MarketStatus: "已收盘",
 		Selected:     1,
 	}, ViewOptions{Moyu: true}, 79, 24)
-	for _, expected := range []string{"WORKMON", "UPDATE 08-07 15:01:02", "CLOSED", "MARKET", "SSE", "3635.13", "+0.24%", "INDEX FLOW", "↑ 223.50亿", "↑ 43.32亿", "FLOW", "> ping an yin hang", "↓ 630万", "TOTAL AMT   --"} {
+	for _, expected := range []string{"WORKMON", "UPDATE 08-07 15:01:02", "CLOSED", "MARKET", "SSE", "3635.13", "+0.24%", "INDEX FLOW", "↑ 223.50亿", "↑ 43.32亿", "SPEED", "-0.06%", "FLOW", "> ping an yin hang", "↓ 630万", "TOTAL AMT   --"} {
 		if !strings.Contains(frame, expected) {
 			t.Fatalf("live moyu frame missing %q:\n%s", expected, frame)
 		}

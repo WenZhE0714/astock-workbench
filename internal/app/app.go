@@ -15,32 +15,33 @@ import (
 
 const (
 	programName = "astock"
-	version     = "0.12.2"
+	version     = "0.14.0"
 	maxStocks   = 50
 )
 
 type App struct {
-	out            io.Writer
-	errOut         io.Writer
-	paths          storage.Paths
-	names          *storage.NameCache
-	resolver       *market.Resolver
-	quotes         market.QuoteClient
-	flows          market.FundFlowClient
-	industryFlows  market.IndustryFlowClient
-	boards         market.BoardFlowClient
-	dragonTiger    market.DragonTigerClient
-	amounts        market.MarketAmountClient
-	history        market.DailyHistoryClient
-	rankings       market.MarketRankingClient
-	marketScan     market.MarketScanClient
-	news           market.StockNewsClient
-	scanHistory    market.DailyHistoryClient
-	analyzer       *analysis.Runner
-	marketReportAI analysis.TextSynthesizer
-	reports        *storage.ReportStore
-	marketReports  *storage.MarketReportStore
-	stockReports   *storage.StockReportStore
+	out             io.Writer
+	errOut          io.Writer
+	paths           storage.Paths
+	names           *storage.NameCache
+	resolver        *market.Resolver
+	quotes          market.QuoteClient
+	flows           market.FundFlowClient
+	industryFlows   market.IndustryFlowClient
+	boards          market.BoardFlowClient
+	dragonTiger     market.DragonTigerClient
+	amounts         market.MarketAmountClient
+	history         market.DailyHistoryClient
+	rankings        market.MarketRankingClient
+	marketScan      market.MarketScanClient
+	industryLeaders market.IndustryLeaderClient
+	news            market.StockNewsClient
+	scanHistory     market.DailyHistoryClient
+	analyzer        *analysis.Runner
+	marketReportAI  analysis.TextSynthesizer
+	reports         *storage.ReportStore
+	marketReports   *storage.MarketReportStore
+	stockReports    *storage.StockReportStore
 }
 
 func New(output, errorOutput io.Writer) (*App, error) {
@@ -55,27 +56,28 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	primaryHistory := market.EastmoneyClient{}
 	primaryScanHistory := market.TencentClient{}
 	return &App{
-		out:            output,
-		errOut:         errorOutput,
-		paths:          paths,
-		names:          names,
-		resolver:       market.NewResolver(names),
-		quotes:         market.TencentClient{},
-		flows:          market.EastmoneyClient{},
-		industryFlows:  market.EastmoneyClient{},
-		boards:         market.EastmoneyClient{},
-		dragonTiger:    market.EastmoneyClient{},
-		amounts:        market.SinaAmountClient{},
-		history:        market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history")),
-		rankings:       market.EastmoneyClient{},
-		marketScan:     market.EastmoneyClient{},
-		news:           market.EastmoneyClient{},
-		scanHistory:    market.NewCachedDailyHistoryClient(primaryScanHistory, filepath.Join(paths.CacheDir, "daily-history")),
-		analyzer:       analysis.NewRunner(errorOutput),
-		marketReportAI: analysis.NewCodexRunner(""),
-		reports:        storage.NewReportStore(paths.ReportsDir),
-		marketReports:  storage.NewMarketReportStore(paths.MarketReportsDir),
-		stockReports:   storage.NewStockReportStore(paths.StockReportsDir),
+		out:             output,
+		errOut:          errorOutput,
+		paths:           paths,
+		names:           names,
+		resolver:        market.NewResolver(names),
+		quotes:          market.TencentClient{},
+		flows:           market.EastmoneyClient{},
+		industryFlows:   market.EastmoneyClient{},
+		boards:          market.EastmoneyClient{},
+		dragonTiger:     market.EastmoneyClient{},
+		amounts:         market.SinaAmountClient{},
+		history:         market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history")),
+		rankings:        market.EastmoneyClient{},
+		marketScan:      market.EastmoneyClient{},
+		industryLeaders: market.EastmoneyClient{},
+		news:            market.EastmoneyClient{},
+		scanHistory:     market.NewCachedDailyHistoryClient(primaryScanHistory, filepath.Join(paths.CacheDir, "daily-history")),
+		analyzer:        analysis.NewRunner(errorOutput),
+		marketReportAI:  analysis.NewCodexRunner(""),
+		reports:         storage.NewReportStore(paths.ReportsDir),
+		marketReports:   storage.NewMarketReportStore(paths.MarketReportsDir),
+		stockReports:    storage.NewStockReportStore(paths.StockReportsDir),
 	}, nil
 }
 
@@ -171,7 +173,9 @@ const usageText = `A 股实时行情与策略研究工作台
   i                       输入代码或名称查看股票详情
   h                       打开最近查看历史，选择后恢复股票详情
   1/2/3                   涨幅榜/跌幅榜/快速涨幅榜前 20（含行业板块）
-  v                       监视当前自选组或榜单的主力资金动向
+	  v                       监视当前自选组或榜单的主力资金动向
+	  y                       查看行业板块主力流入/流出 Top 5 及成交额龙头
+	  x                       咨询AI或打开回答，自动带入当前股票多维数据
   s                       后台生成大盘、板块与智能选股报告
   r                       查看最近生成的智能市场报告
   c                       后台生成所选股票的多维 AI 研判
@@ -205,5 +209,5 @@ const usageText = `A 股实时行情与策略研究工作台
   astock stock-report --full 600519
 
 基础看盘无需 Python 或模型。analyze 会调用独立的 TradingAgents Python 环境；scan 默认调用
-本机 Codex CLI，只读综合失败时自动保存确定性量价回退报告；stock-report 使用同一只读综合器
-生成个股多维研判。`
+本机 Codex CLI，只读综合失败时自动保存确定性量价回退报告；stock-report 和看盘内 x 咨询
+使用同一只读综合器生成个股研判或条件式回答，均不会触发自动交易。`

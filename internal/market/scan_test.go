@@ -1,6 +1,7 @@
 package market
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -47,6 +48,30 @@ func TestScanRankingAddressUsesBoundedMetricAndOrder(t *testing.T) {
 	for _, expected := range []string{"fid=f62", "po=0", "pz=100", "fs=universe"} {
 		if !strings.Contains(address, expected) {
 			t.Fatalf("scan address missing %q: %s", expected, address)
+		}
+	}
+}
+
+func TestIndustryLeaderAddressUsesBoardUniverseAndAmountRanking(t *testing.T) {
+	address, err := scanRankingAddress("https://example.com/api", "b:BK1320", domain.MarketScanByAmount, true, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	for key, expected := range map[string]string{
+		"fs": "b:BK1320", "fid": "f6", "po": "1", "pz": "3",
+	} {
+		if value := query.Get(key); value != expected {
+			t.Fatalf("unexpected %s: got %q want %q (%s)", key, value, expected, address)
+		}
+	}
+	for _, field := range []string{"f12", "f14", "f22", "f62"} {
+		if !strings.Contains(query.Get("fields"), field) {
+			t.Fatalf("leader fields missing %s: %s", field, query.Get("fields"))
 		}
 	}
 }

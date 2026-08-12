@@ -136,6 +136,9 @@ func fillFundFlowContext(current, previous domain.FundFlow) domain.FundFlow {
 	if math.IsNaN(current.Percent) {
 		current.Percent = previous.Percent
 	}
+	if math.IsNaN(current.Speed) {
+		current.Speed = previous.Speed
+	}
 	return current
 }
 
@@ -337,14 +340,20 @@ func (monitor watchFundMonitor) industryFlow(name string) domain.BoardFlow {
 	return domain.BoardFlow{MainNet: math.NaN(), Percent: math.NaN(), MainRatio: math.NaN()}
 }
 
-func movementScore(item domain.FundMovement) float64 {
-	if !math.IsNaN(item.Delta1Minute) {
-		return math.Abs(item.Delta1Minute)
-	}
-	if !math.IsNaN(item.Delta3Minutes) {
-		return math.Abs(item.Delta3Minutes) / 3
-	}
-	return -1
+func sortFundMovementsByOneMinuteFlow(rows []domain.FundMovement) {
+	sort.SliceStable(rows, func(left, right int) bool {
+		leftFlow := rows[left].Delta1Minute
+		rightFlow := rows[right].Delta1Minute
+		leftValid := !math.IsNaN(leftFlow) && !math.IsInf(leftFlow, 0)
+		rightValid := !math.IsNaN(rightFlow) && !math.IsInf(rightFlow, 0)
+		if leftValid != rightValid {
+			return leftValid
+		}
+		if leftValid && leftFlow != rightFlow {
+			return leftFlow > rightFlow
+		}
+		return false
+	})
 }
 
 func (monitor *watchFundMonitor) rebuildRows() {
@@ -375,9 +384,7 @@ func (monitor *watchFundMonitor) rebuildRows() {
 			),
 		})
 	}
-	sort.SliceStable(rows, func(left, right int) bool {
-		return movementScore(rows[left]) > movementScore(rows[right])
-	})
+	sortFundMovementsByOneMinuteFlow(rows)
 	monitor.rows = rows
 	monitor.selected = 0
 	for index, item := range rows {
@@ -388,7 +395,11 @@ func (monitor *watchFundMonitor) rebuildRows() {
 	}
 }
 
-func (monitor watchFundMonitor) displayRows(quotes []domain.Quote, rankings []domain.MarketRankingItem) []domain.FundMovement {
+func (monitor *watchFundMonitor) displayRows(quotes []domain.Quote, rankings []domain.MarketRankingItem) []domain.FundMovement {
+	selectedSymbol := ""
+	if item, ok := monitor.selectedItem(); ok {
+		selectedSymbol = item.Symbol
+	}
 	result := append([]domain.FundMovement(nil), monitor.rows...)
 	quoteBySymbol := make(map[string]domain.Quote, len(quotes))
 	for _, quote := range quotes {
@@ -418,6 +429,15 @@ func (monitor watchFundMonitor) displayRows(quotes []domain.Quote, rankings []do
 			if result[index].Industry == "" {
 				result[index].Industry = item.Industry
 			}
+		}
+	}
+	sortFundMovementsByOneMinuteFlow(result)
+	monitor.rows = append([]domain.FundMovement(nil), result...)
+	monitor.selected = 0
+	for index, item := range monitor.rows {
+		if item.Symbol == selectedSymbol {
+			monitor.selected = index
+			break
 		}
 	}
 	return result
@@ -462,9 +482,9 @@ func (monitor watchFundMonitor) movementFor(symbol string) (domain.FundMovement,
 
 func (monitor watchFundMonitor) controls(moyu bool) string {
 	if moyu {
-		return "UP/DOWN SELECT  [/] JUMP  ENTER DETAIL  V REFRESH  ESC BACK  Q QUIT\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
+		return "UP/DOWN SELECT  [/] JUMP  ENTER DETAIL  V REFRESH  ESC BACK  Q QUIT\nY BOARD FUNDS  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 	}
-	return "↑/↓选择  [/]跳选  Enter详情  v刷新  Esc返回  q退出\nc个股研判  o查看  s市场报告  r查看"
+	return "↑/↓选择  [/]跳选  Enter详情  v刷新  Esc返回  q退出\ny板块资金  x咨询AI  c个股研判  o查看  s市场报告  r查看"
 }
 
 func (monitor watchFundMonitor) status(moyu bool) string {

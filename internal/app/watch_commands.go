@@ -21,6 +21,7 @@ const (
 	watchCommandFundMonitor
 	watchCommandGroupCreate
 	watchCommandGroupDelete
+	watchCommandAIChat
 )
 
 type watchCommand struct {
@@ -171,6 +172,8 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 		prefix = "查看详情，请输入代码或完整名称："
 	case watchCommandGroupCreate:
 		prefix = "新建分组，请输入名称："
+	case watchCommandAIChat:
+		prefix = "咨询AI（自动带入当前股票行情、资金、板块与技术面）："
 	}
 	if moyu {
 		switch command.kind {
@@ -180,6 +183,8 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 			prefix = "VIEW CODE/NAME: "
 		case watchCommandGroupCreate:
 			prefix = "NEW GROUP NAME: "
+		case watchCommandAIChat:
+			prefix = "ASK AI WITH LIVE STOCK CONTEXT: "
 		}
 	}
 	cursor := " "

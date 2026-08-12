@@ -22,6 +22,10 @@ type MarketScanClient interface {
 	FetchAnnouncements(context.Context, []string, int) ([]domain.MarketAnnouncement, error)
 }
 
+type IndustryLeaderClient interface {
+	FetchIndustryLeaders(context.Context, string, int) ([]domain.MarketStockSnapshot, error)
+}
+
 type scanPayload struct {
 	Data *struct {
 		Diff []struct {
@@ -210,6 +214,28 @@ func (EastmoneyClient) FetchStockRanking(ctx context.Context, metric domain.Mark
 		return nil, err
 	}
 	return ParseMarketStockScanPayload(raw), nil
+}
+
+func (EastmoneyClient) FetchIndustryLeaders(ctx context.Context, boardCode string, limit int) ([]domain.MarketStockSnapshot, error) {
+	code := normalizeBoardCode(boardCode)
+	if code == "" {
+		return nil, fmt.Errorf("无效行业板块代码 %q", boardCode)
+	}
+	bases := marketRankingBases()
+	if configured := os.Getenv("ASTOCK_INDUSTRY_LEADER_API_URL"); configured != "" {
+		bases = []string{configured}
+	}
+	raw, err := fetchScanRanking(ctx, bases, "b:"+code, domain.MarketScanByAmount, true, limit, func(value string) int {
+		return len(ParseMarketStockScanPayload(value))
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := ParseMarketStockScanPayload(raw)
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
 }
 
 func marketScanUListAddress(base string, symbols []string) string {

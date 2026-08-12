@@ -33,6 +33,11 @@
                                                        v
                                              per-stock report archive
 
+当前股票 StockReportFacts + 本轮内存对话 ─> ephemeral read-only Codex
+                                             │
+                                             v
+                                  background AI answer + terminal UI
+
 TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
                                              │
                          ┌───────────────────┼──────────────────┐
@@ -47,10 +52,10 @@ TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
 
 ## 模块边界
 
-- `internal/market`：个股/指数行情、沪深个股涨跌幅/涨速榜、未复权日 K、沪深京历史成交额、个股与全行业主力资金流、关联板块排行、龙虎榜和名称解析适配器，不包含策略逻辑。个股榜单直接携带东方财富行业分类；日 K 先使用东方财富，自动回退腾讯未复权序列，再回退14天内本地有效缓存；上一交易日成交额使用新浪上证指数、深证综指和北证 50 的 5 分钟精确成交额按日汇总。
-- `internal/app`：持有交互状态与异步轮询。看盘启动后先在后台预热当前自选池；资金雷达按 10 秒记录累计主力净额，保留 6 分钟内存样本并派生 1/3/5 分钟 `FundMovement`，行业快照按 60 秒刷新。采样状态与雷达可见状态分离，按 `v` 只显示并立即复用已有历史；分组或自选变化会重新绑定采样池。智能市场扫描在独立 goroutine 中采集、评分、调用综合器和存档，进度通过有界 channel 回到看盘事件循环，不阻塞行情刷新。
+- `internal/market`：个股/指数行情、沪深个股涨跌幅/涨速榜、未复权日 K、沪深京历史成交额、个股与全行业主力资金流、行业板块成份股成交额排行、关联板块排行、龙虎榜和名称解析适配器，不包含策略逻辑。个股榜单直接携带东方财富行业分类；日 K 先使用东方财富，自动回退腾讯未复权序列，再回退14天内本地有效缓存；上一交易日成交额使用新浪上证指数、深证综指和北证 50 的 5 分钟精确成交额按日汇总。
+- `internal/app`：持有交互状态与异步轮询。9:15 集合竞价开始行情轮询，连续交易与可轮询时段分开建模，避免竞价数据进入盘中严格筛选。看盘启动后先在后台预热当前自选池；资金雷达按 10 秒记录累计主力净额，保留 6 分钟内存样本并派生 1/3/5 分钟 `FundMovement`，默认按 1 分钟净流入降序展示，行业快照按 60 秒刷新。采样状态与雷达可见状态分离，按 `v` 只显示并立即复用已有历史；分组或自选变化会重新绑定采样池。`y` 板块资金看板以独立 goroutine 获取双向 Top 5，并用最多 4 个 worker 查询 10 个板块的成交额前三成份股；看板可见时自动刷新间隔不低于 60 秒，局部成份股失败保留其他板块，整轮失败保留旧快照。智能市场扫描和 `x` 个股 AI 问答均在独立 goroutine 中采集、调用综合器并通过有界 channel 回到看盘事件循环，不阻塞行情刷新；问答历史仅驻留当前进程内存。
 - `internal/ui`：纯终端渲染，输入是标准 `Quote`、`DailyBar` 派生信号、`FundFlow`、`FundMovement`、`BoardFlow`、`DragonTigerSnapshot` 或已生成的报告；热门和资金行为标签只基于已采集数据，不产生确定性交易指令。
-- `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents；市场与个股报告综合器以临时会话、只读沙箱和非交互模式调用 Codex，只接收已采集的结构化 JSON。
+- `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents；市场、个股报告和看盘问答以临时会话、只读沙箱和非交互模式调用 Codex，只接收已采集的结构化 JSON 与当前内存对话，不读取仓库、不搜索网络、不调用交易接口。
 - `internal/domain`：跨模块稳定对象，包括带交易日和沪深京分项的 `MarketAmountSnapshot`、`MarketScanFacts`、`StockReportFacts` 以及 `AnalysisResult`。
 - `internal/storage`：自选、最近查看历史、缓存和报告归档；采用原子写入。智能市场报告按时间戳保存，个股研判再按股票代码分目录保存 Markdown、结构化快照和元数据。
 - 自选文件在原有逐行代码格式上增加 `[分组名]` 标题；无标题旧数据归入“默认”，加载“全部”时按分组顺序去重汇总，组内顺序独立持久化。

@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseFundFlowPayload(t *testing.T) {
-	raw := `{"rc":0,"data":{"diff":[{"f2":1341.41,"f3":-0.55,"f12":"600519","f13":1,"f14":"贵州茅台","f62":125000000.5,"f100":"白酒Ⅱ","f184":3.25},{"f12":"000001","f13":0,"f62":"-6300000","f184":"-0.81"},{"f12":"000001","f13":1,"f62":22349627392,"f184":1.85},{"f12":"399006","f13":0,"f62":4331544576,"f184":0.59}]}}`
+	raw := `{"rc":0,"data":{"diff":[{"f2":1341.41,"f3":-0.55,"f22":0.18,"f12":"600519","f13":1,"f14":"贵州茅台","f62":125000000.5,"f100":"白酒Ⅱ","f184":3.25},{"f12":"000001","f13":0,"f62":"-6300000","f184":"-0.81"},{"f12":"000001","f13":1,"f62":22349627392,"f184":1.85},{"f12":"399006","f13":0,"f62":4331544576,"f184":0.59}]}}`
 	flows := ParseFundFlowPayload(raw)
 	if len(flows) != 4 {
 		t.Fatalf("expected four fund-flow rows, got %d", len(flows))
@@ -14,7 +14,7 @@ func TestParseFundFlowPayload(t *testing.T) {
 	if flows["sh600519"].MainNet != 125000000.5 || flows["sh600519"].MainRatio != 3.25 {
 		t.Fatalf("unexpected Shanghai flow: %#v", flows["sh600519"])
 	}
-	if flows["sh600519"].Name != "贵州茅台" || flows["sh600519"].Industry != "白酒Ⅱ" || flows["sh600519"].Price != 1341.41 || flows["sh600519"].Percent != -0.55 {
+	if flows["sh600519"].Name != "贵州茅台" || flows["sh600519"].Industry != "白酒Ⅱ" || flows["sh600519"].Price != 1341.41 || flows["sh600519"].Percent != -0.55 || flows["sh600519"].Speed != 0.18 {
 		t.Fatalf("fund-flow context fields missing: %#v", flows["sh600519"])
 	}
 	if flows["sz000001"].MainNet != -6300000 || flows["sz000001"].MainRatio != -0.81 {
@@ -29,8 +29,8 @@ func TestParseFundFlowPayload(t *testing.T) {
 }
 
 func TestParseFundFlowPayloadKeepsUnavailableNumber(t *testing.T) {
-	flows := ParseFundFlowPayload(`{"data":{"diff":[{"f12":"600519","f13":1,"f62":null,"f184":"-"}]}}`)
-	if !math.IsNaN(flows["sh600519"].MainNet) || !math.IsNaN(flows["sh600519"].MainRatio) {
+	flows := ParseFundFlowPayload(`{"data":{"diff":[{"f12":"600519","f13":1,"f22":"-","f62":null,"f184":"-"}]}}`)
+	if !math.IsNaN(flows["sh600519"].Speed) || !math.IsNaN(flows["sh600519"].MainNet) || !math.IsNaN(flows["sh600519"].MainRatio) {
 		t.Fatalf("unavailable values should be NaN: %#v", flows["sh600519"])
 	}
 }

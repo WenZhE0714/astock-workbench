@@ -19,9 +19,9 @@ func fundMonitorTitle(source string, count int, refreshedAt, industryRefreshedAt
 		industryTime = industryRefreshedAt.Format("15:04:05")
 	}
 	if moyu {
-		return fmt.Sprintf("FUND RADAR  %s  %d STOCKS  SAMPLE %s  INDUSTRY %s", source, count, sampleTime, industryTime)
+		return fmt.Sprintf("FUND RADAR  %s  %d STOCKS  1M↓  SAMPLE %s  INDUSTRY %s", source, count, sampleTime, industryTime)
 	}
-	return fmt.Sprintf("资金雷达  ·  %s  ·  %d只  ·  样本 %s  ·  行业 %s", source, count, sampleTime, industryTime)
+	return fmt.Sprintf("资金雷达  ·  %s  ·  %d只  ·  1分钟↓  ·  样本 %s  ·  行业 %s", source, count, sampleTime, industryTime)
 }
 
 func humanFundMovementAmount(value float64) string {
@@ -32,7 +32,7 @@ func humanFundMovementAmount(value float64) string {
 }
 
 func fundMonitorIndustry(item domain.FundMovement) string {
-	direction := "--"
+	direction := ""
 	switch {
 	case !math.IsNaN(item.IndustryNet) && item.IndustryNet > 0:
 		direction = "↑"
@@ -46,17 +46,13 @@ func fundMonitorIndustry(item domain.FundMovement) string {
 		direction = "→"
 	}
 	name := item.Industry
-	if name == "" {
+	if name == "" || name == "--" {
 		name = "未分类"
 	}
-	result := direction + " " + name
-	if value := humanFundMovementAmount(item.IndustryNet); value != "--" {
-		result += " " + value
+	if direction == "" {
+		return name
 	}
-	if !math.IsNaN(item.IndustryPercent) && !math.IsInf(item.IndustryPercent, 0) {
-		result += " " + signedPercent(item.IndustryPercent)
-	}
-	return result
+	return direction + " " + name
 }
 
 func compactFundMovementState(value string, moyu bool) string {
@@ -140,6 +136,9 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 	if terminalWidth >= 68 {
 		kinds = append(kinds, "industry")
 	}
+	if terminalWidth >= 92 {
+		kinds = append(kinds, "industry_net")
+	}
 	if terminalWidth >= 76 {
 		kinds = append(kinds, "percent")
 	}
@@ -156,7 +155,7 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 		kinds = append(kinds, "price")
 	}
 
-	order := []string{"code", "name", "industry", "price", "percent", "main", "ratio", "delta1", "delta3", "delta5", "state"}
+	order := []string{"code", "name", "industry", "industry_net", "price", "percent", "main", "ratio", "delta1", "delta3", "delta5", "state"}
 	present := make(map[string]bool, len(kinds))
 	for _, kind := range kinds {
 		present[kind] = true
@@ -176,7 +175,9 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 			case "name":
 				return "NAME"
 			case "industry":
-				return "INDUSTRY/FLOW"
+				return "INDUSTRY"
+			case "industry_net":
+				return "BOARD NET"
 			case "price":
 				return "PRICE"
 			case "percent":
@@ -202,6 +203,8 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 			return "名称"
 		case "industry":
 			return "行业/板块"
+		case "industry_net":
+			return "板块资金"
 		case "price":
 			return "最新"
 		case "percent":
@@ -253,6 +256,9 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 					value = item.IndustryPercent
 				}
 				codes = append(codes, fundMovementTrendCode(value))
+			case "industry_net":
+				row = append(row, humanFundMovementAmount(item.IndustryNet))
+				codes = append(codes, fundMovementTrendCode(item.IndustryNet))
 			case "price":
 				row = append(row, marketRankingNumber(item.Price))
 				codes = append(codes, fundMovementTrendCode(item.Percent))
@@ -301,7 +307,7 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 				minimums[column] = min(widths[column], 8)
 			}
 		case "industry":
-			widths[column] = min(widths[column], 18)
+			widths[column] = min(widths[column], 22)
 			minimums[column] = min(widths[column], displayWidth(heading))
 		case "state":
 			widths[column] = min(widths[column], 14)

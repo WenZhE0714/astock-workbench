@@ -71,6 +71,10 @@ func marketStatusText(value string, moyu bool) string {
 	switch value {
 	case "交易中":
 		return "OPEN"
+	case "集合竞价":
+		return "CALL AUCTION"
+	case "开盘等待":
+		return "PRE-OPEN"
 	case "午间休市":
 		return "LUNCH BREAK"
 	case "已收盘":
@@ -338,12 +342,12 @@ func liveFooter(data LiveData, options ViewOptions, width int) string {
 		if data.Detail {
 			return truncateLines("UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN")
 		}
-		return truncateLines("UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN")
+		return truncateLines("UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR  Y BOARD FUNDS\nC STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN")
 	}
 	if data.Detail {
 		return truncateLines("↑/↓ 滚动  [/]翻页  Esc返回  q退出\nc个股研判  o查看  s市场报告  r查看")
 	}
-	return truncateLines("↑/↓ 选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达\nc个股研判  o查看  s市场报告  r查看")
+	return truncateLines("↑/↓ 选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达  y板块资金\nc个股研判  o查看  s市场报告  r查看")
 }
 
 func liveStatus(data LiveData, width int) string {

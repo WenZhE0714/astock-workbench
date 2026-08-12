@@ -105,6 +105,12 @@ func TestWatchBaseControlsAdvertisesGroupAssignment(t *testing.T) {
 	if controls := watchBaseControls(false, false); !strings.Contains(controls, "c个股研判") || !strings.Contains(controls, "o查看") {
 		t.Fatalf("standard controls missing stock report shortcuts: %q", controls)
 	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "x咨询AI") {
+		t.Fatalf("standard controls missing AI chat shortcut: %q", controls)
+	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "y板块资金") {
+		t.Fatalf("standard controls missing board fund shortcut: %q", controls)
+	}
 }
 
 func TestWatchMarketRankingNavigationAndShortcuts(t *testing.T) {

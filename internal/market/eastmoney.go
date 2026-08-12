@@ -33,6 +33,7 @@ type fundFlowPayload struct {
 		Diff []struct {
 			Price     json.RawMessage `json:"f2"`
 			Percent   json.RawMessage `json:"f3"`
+			Speed     json.RawMessage `json:"f22"`
 			Code      string          `json:"f12"`
 			Market    json.RawMessage `json:"f13"`
 			Name      string          `json:"f14"`
@@ -84,7 +85,7 @@ func ParseFundFlowPayload(raw string) map[string]domain.FundFlow {
 		symbol := prefix + item.Code
 		result[symbol] = domain.FundFlow{
 			Symbol: symbol, Name: strings.TrimSpace(item.Name), Industry: strings.TrimSpace(item.Industry),
-			Price: rawNumber(item.Price), Percent: rawNumber(item.Percent),
+			Price: rawNumber(item.Price), Percent: rawNumber(item.Percent), Speed: rawNumber(item.Speed),
 			MainNet: rawNumber(item.MainNet), MainRatio: rawNumber(item.MainRatio),
 		}
 	}
@@ -121,7 +122,7 @@ func (EastmoneyClient) Fetch(ctx context.Context, symbols []string) (map[string]
 	values := url.Values{
 		"fltt":   {"2"},
 		"invt":   {"2"},
-		"fields": {"f2,f3,f12,f13,f14,f62,f100,f184"},
+		"fields": {"f2,f3,f12,f13,f14,f22,f62,f100,f184"},
 		"secids": {strings.Join(securityIDs, ",")},
 		"ut":     {"b2884a393a59ad64002292a3e90d46a5"},
 	}

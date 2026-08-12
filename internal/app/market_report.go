@@ -555,7 +555,7 @@ func (app *App) collectMarketScanFacts(ctx context.Context, progress marketRepor
 		SchemaVersion: 1, GeneratedAt: time.Now(), MarketStatus: marketSessionAt(time.Now()).Label,
 		HotBoards: selectHotBoards(boardsUp, boardsFlow), WeakBoards: selectWeakBoards(boardsDown), Warnings: warnings,
 	}
-	strictIntraday := marketSessionAt(facts.GeneratedAt).Poll
+	strictIntraday := marketSessionAt(facts.GeneratedAt).Continuous
 	if len(facts.HotBoards) == 0 {
 		facts.HotBoards = selectMomentumBoards(boardsUp)
 		if len(facts.HotBoards) > 0 {

@@ -151,16 +151,16 @@ func buildMoyuTable(quotes []domain.Quote, terminalWidth int) string {
 }
 
 func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, selected, terminalWidth int, moyu, color bool) string {
-	header := []string{"个股", "现价", "涨跌", "资金"}
+	header := []string{"个股", "现价", "涨跌", "涨速", "资金"}
 	if moyu {
-		header = []string{"TASK", "VALUE", "DRIFT", "FLOW"}
+		header = []string{"TASK", "VALUE", "DRIFT", "SPEED", "FLOW"}
 		if terminalWidth < 44 {
-			header = []string{"TASK", "VAL", "%", "FLOW"}
+			header = []string{"TASK", "VAL", "%", "SPD", "FLOW"}
 		}
 	} else {
-		header = []string{"个股", "现价", "涨跌", "资金", "涨停", "跌停"}
+		header = []string{"个股", "现价", "涨跌", "涨速", "资金", "涨停", "跌停"}
 	}
-	showRange := (moyu && terminalWidth >= 72) || (!moyu && terminalWidth >= 100)
+	showRange := (moyu && terminalWidth >= 96) || (!moyu && terminalWidth >= 116)
 	if showRange {
 		if moyu {
 			header = append(header, "FLOOR", "CEILING")
@@ -185,15 +185,23 @@ func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, se
 			}
 			task = marker + task
 		}
-		flow := flows[item.Symbol]
-		row := []string{task, item.Current, signedPercent(item.Percent), directionalFundFlow(&flow)}
-		codes := []string{"", trendCode(item.Delta, true), trendCode(item.Percent, false), ""}
-		if !math.IsNaN(flow.MainNet) {
-			codes[3] = trendCode(flow.MainNet, false)
+		flow, hasFlow := flows[item.Symbol]
+		speed := "--"
+		flowText := "--"
+		speedCode := ""
+		flowCode := ""
+		if hasFlow {
+			speed = signedPercent(flow.Speed)
+			flowText = directionalFundFlow(&flow)
+			if !math.IsNaN(flow.Speed) {
+				speedCode = trendCode(flow.Speed, false)
+			}
+			if !math.IsNaN(flow.MainNet) {
+				flowCode = trendCode(flow.MainNet, false)
+			}
 		}
-		if _, ok := flows[item.Symbol]; !ok {
-			row[3] = "--"
-		}
+		row := []string{task, item.Current, signedPercent(item.Percent), speed, flowText}
+		codes := []string{"", trendCode(item.Delta, true), trendCode(item.Percent, false), speedCode, flowCode}
 		if !moyu {
 			row = append(row, item.LimitUp, item.LimitDown)
 			codes = append(codes, "31", "32")

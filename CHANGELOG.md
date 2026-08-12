@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.14.0
+
+- Add a `y` industry-fund dashboard with the five largest main-fund inflows
+  and five largest outflows in one scrollable view.
+- Show three high-liquidity core stocks for every board, explicitly defined as
+  the board constituents with the highest turnover amount; display code,
+  change, price speed and individual main-fund net amount.
+- Load the dashboard in a background goroutine so quotes keep refreshing, cap
+  automatic refreshes at once per minute while visible, and bound constituent
+  lookups to four concurrent requests.
+- Preserve the last successful dashboard when a refresh fails, and retain the
+  other nine board blocks when one constituent lookup is unavailable.
+
+## 0.13.0
+
+- Add `x` live AI consultation for the selected stock, automatically passing
+  current quotes, unadjusted daily technicals, cumulative and 1/3/5-minute
+  fund evidence, industry/board flow, announcements and news clues to a
+  read-only ephemeral Codex Agent.
+- Keep AI collection and synthesis in a background goroutine so live quotes,
+  rankings and fund sampling continue; notify on completion and provide a
+  scrollable in-memory conversation with `x` follow-up questions.
+- Require conditional buy/sell answers with cited evidence, existing technical
+  levels, invalidation and risk; the Agent cannot place orders, read files or
+  search the network.
+- Poll quotes and rankings from 09:15 during call auction, label 09:15-09:25 as
+  `集合竞价` and 09:25-09:30 as `开盘等待`, while keeping strict intraday
+  screening limited to continuous trading.
+- Show Eastmoney `f22` price speed after the quote change column in standard
+  and compact watchlists, without substituting the daily change percentage.
+
+## 0.12.3
+
+- Sort fund-radar rows by one-minute main-fund change descending, placing
+  stocks without a complete one-minute sample after sampled stocks.
+- Keep the selected stock stable while the fund radar is dynamically sorted.
+- Show industry direction and the full industry name without squeezing fund
+  summaries into the same column or prefixing missing data with a misleading
+  `--` marker; show the board net amount in a separate wide-terminal column.
+- Expand the industry-flow request from 100 to 500 rows to reduce unmatched
+  stock industries.
+
 ## 0.12.2
 
 - Preserve printable shortcut characters such as `g`, `j`, `k`, `b`, `q`,

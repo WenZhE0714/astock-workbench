@@ -133,6 +133,7 @@ type FundFlow struct {
 	Industry  string  `json:"industry,omitempty"`
 	Price     float64 `json:"price"`
 	Percent   float64 `json:"percent"`
+	Speed     float64 `json:"speed_percent"`
 	MainNet   float64 `json:"main_net_yuan"`
 	MainRatio float64 `json:"main_ratio_percent"`
 }

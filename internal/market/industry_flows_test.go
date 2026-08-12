@@ -26,7 +26,7 @@ func TestIndustryFlowAddressRequestsAllIndustryBoards(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := parsed.Query()
-	if query.Get("fs") != "m:90+t:2+f:!50" || query.Get("pz") != "100" || query.Get("fid") != "f3" {
+	if query.Get("fs") != "m:90+t:2+f:!50" || query.Get("pz") != "500" || query.Get("fid") != "f3" {
 		t.Fatalf("unexpected industry-flow query: %s", parsed.RawQuery)
 	}
 }

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestFundMonitorFrameFits79ColumnsAndShowsCoreEvidence(t *testing.T) {
 		Footer:                  "↑/↓选择  [/]跳选  Enter详情  v刷新  Esc返回  q退出",
 	}, ViewOptions{}, 79, 24)
 	for _, expected := range []string{
-		"资金雷达", "自选 · 科技", "样本 10:08:30", "行业 10:08:00",
+		"资金雷达", "自选 · 科技", "1分钟↓", "样本 10:08:30", "行业 10:08:00",
 		"代码", "名称", "行业/板块", "涨幅", "主力净额", "1分钟", "状态",
 		"> 300001", "测试股2", "↑ 半导体", "+2.14%", "+3.29亿", "+7250万", "共振流入", "v刷新",
 	} {
@@ -44,6 +45,46 @@ func TestFundMonitorFrameFits79ColumnsAndShowsCoreEvidence(t *testing.T) {
 	for _, line := range strings.Split(frame, "\n") {
 		if width := displayWidth(line); width > 79 {
 			t.Fatalf("fund monitor line width %d exceeds terminal:\n%s", width, line)
+		}
+	}
+}
+
+func TestFundMonitorIndustryShowsFullNameWithoutMissingFlowPrefix(t *testing.T) {
+	missing := domain.FundMovement{
+		Industry: "工程咨询服务Ⅱ", IndustryNet: math.NaN(), IndustryPercent: math.NaN(),
+	}
+	if got := fundMonitorIndustry(missing); got != "工程咨询服务Ⅱ" {
+		t.Fatalf("missing industry flow should not add a placeholder prefix: %q", got)
+	}
+	available := missing
+	available.IndustryNet = 1e8
+	if got := fundMonitorIndustry(available); got != "↑ 工程咨询服务Ⅱ" {
+		t.Fatalf("available industry direction should keep the full name: %q", got)
+	}
+}
+
+func TestFundMonitorWideTableKeepsFullIndustryName(t *testing.T) {
+	rows := fundMonitorTestRows(1)
+	rows[0].Industry = "工程咨询服务Ⅱ"
+	rows[0].IndustryNet = math.NaN()
+	rows[0].IndustryPercent = math.NaN()
+	table := buildFundMonitorTable(rows, 0, 136, false, false)
+	if !strings.Contains(table, "工程咨询服务Ⅱ") || strings.Contains(table, "工程咨询服…") {
+		t.Fatalf("wide fund monitor truncated the industry name:\n%s", table)
+	}
+	if !strings.Contains(table, "板块资金") || !strings.Contains(table, "--") {
+		t.Fatalf("wide fund monitor did not keep the independent board-flow column:\n%s", table)
+	}
+}
+
+func TestFundMonitorWideTableShowsIndustryAmountSeparately(t *testing.T) {
+	rows := fundMonitorTestRows(1)
+	rows[0].Industry = "电池"
+	rows[0].IndustryNet = 567000000
+	table := buildFundMonitorTable(rows, 0, 136, false, false)
+	for _, expected := range []string{"↑ 电池", "板块资金", "+5.67亿"} {
+		if !strings.Contains(table, expected) {
+			t.Fatalf("wide fund monitor missing %q:\n%s", expected, table)
 		}
 	}
 }

@@ -43,6 +43,22 @@ func TestWatchFundMonitorCalculatesMinuteDeltasAndPreservesSelection(t *testing.
 	}
 }
 
+func TestSortFundMovementsByOneMinuteFlowDescending(t *testing.T) {
+	rows := []domain.FundMovement{
+		{Symbol: "sh600519", Delta1Minute: 1e7},
+		{Symbol: "sz000001", Delta1Minute: -3e7},
+		{Symbol: "sz300750", Delta1Minute: 5e7},
+		{Symbol: "sh600000", Delta1Minute: math.NaN()},
+	}
+	sortFundMovementsByOneMinuteFlow(rows)
+	want := []string{"sz300750", "sh600519", "sz000001", "sh600000"}
+	for index, symbol := range want {
+		if rows[index].Symbol != symbol {
+			t.Fatalf("rows are not sorted by one-minute flow descending: %#v", rows)
+		}
+	}
+}
+
 func TestClassifyFundMovementUsesReversalPriceAndIndustryEvidence(t *testing.T) {
 	current := domain.FundFlow{Percent: 1.2}
 	positiveIndustry := domain.BoardFlow{MainNet: 2e9, Percent: 1.5}
