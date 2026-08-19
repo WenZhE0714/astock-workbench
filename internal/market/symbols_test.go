@@ -82,3 +82,20 @@ func TestChooseCandidateRequiresSelectionWhenSourcesReturnMultipleMatches(t *tes
 		t.Fatalf("duplicate source result should resolve uniquely, got %q/%v", symbol, err)
 	}
 }
+
+func TestChooseCandidatePrefersExactNameOverSubstringMatches(t *testing.T) {
+	items := []domain.Candidate{
+		{Symbol: "sh601186", Name: "中国铁建"},
+		{Symbol: "sh601669", Name: "中国电建"},
+		{Symbol: "sh601868", Name: "中国能建"},
+		{Symbol: "sh601611", Name: "中国核建"},
+		{Symbol: "sh601800", Name: "中国交建"},
+		{Symbol: "sz000927", Name: "中国铁物"},
+	}
+	if symbol, err := chooseCandidate("中国铁建", items); err != nil || symbol != "sh601186" {
+		t.Fatalf("exact stock name should beat substring matches, got %q/%v", symbol, err)
+	}
+	if symbol, err := chooseCandidate("中国", items); err == nil || symbol != "" {
+		t.Fatalf("broad partial name should remain ambiguous, got %q/%v", symbol, err)
+	}
+}

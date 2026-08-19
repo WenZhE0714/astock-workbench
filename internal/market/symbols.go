@@ -280,6 +280,19 @@ func candidatePriority(item domain.Candidate) int {
 
 func chooseCandidate(input string, items []domain.Candidate) (string, error) {
 	items = uniqueCandidates(items)
+	// A complete stock or bond name is stronger evidence than a provider's
+	// substring matches (for example, 中国铁建 vs 中国电建/中国能建). Exact
+	// board names remain in the chooser when fuzzy security matches also exist,
+	// so a generic input such as 银行 still offers the board and bank stocks.
+	exact := make([]domain.Candidate, 0, len(items))
+	for _, item := range items {
+		if AssetKindOf(item.Symbol) != domain.AssetKindSector && strings.TrimSpace(item.Name) == strings.TrimSpace(input) {
+			exact = append(exact, item)
+		}
+	}
+	if len(exact) > 0 {
+		items = exact
+	}
 	if len(items) == 1 {
 		return items[0].Symbol, nil
 	}
