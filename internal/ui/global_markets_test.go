@@ -20,7 +20,7 @@ func TestGlobalMarketsFrameShowsRegionsIndicesAndSourceTimes(t *testing.T) {
 			Extended: &domain.GlobalExtendedQuote{Session: "盘后", Symbol: "SPY", Price: 767.08, Delta: -.37, Percent: -.05, QuoteTime: "Aug 18 07:59PM EDT"},
 		},
 	}
-	frame := BuildGlobalMarketsFrame(items, time.Date(2026, 8, 19, 15, 30, 0, 0, time.Local), false, "", "w刷新  Esc返回", 118, false, true)
+	frame := BuildGlobalMarketsFrame(items, time.Date(2026, 8, 19, 15, 30, 0, 0, time.Local), false, "", "w刷新  Esc返回", 118, false, true, false)
 	for _, expected := range []string{"ASTOCK 外盘指数", "港股", "恒生指数", "日本", "日经225", "韩国", "KOSPI", "美国", "标普500", "2026-08-19 04:38:44", "盘后·SPY代理", "767.08", "Aug 18 07:59PM EDT", "ETF代理", "w刷新"} {
 		if !strings.Contains(frame, expected) {
 			t.Fatalf("global markets frame missing %q:\n%s", expected, frame)
@@ -40,13 +40,43 @@ func TestGlobalMarketsFrameUsesCompactColumns(t *testing.T) {
 	frame := BuildGlobalMarketsFrame([]domain.GlobalIndex{{
 		Region: "美国", Name: "纳斯达克", Current: 26289.71, Delta: -355.2, Percent: -1.33,
 		QuoteTime: "2026-08-19 05:30:00",
-	}}, time.Time{}, false, "", "Esc返回", 52, false, false)
+	}}, time.Time{}, false, "", "Esc返回", 52, false, false, false)
 	if !strings.Contains(frame, "纳斯达克") || !strings.Contains(frame, "05:30:00") || strings.Contains(frame, "今开") {
 		t.Fatalf("unexpected compact global frame:\n%s", frame)
 	}
 	for _, line := range strings.Split(frame, "\n") {
 		if displayWidth(line) > 52 {
 			t.Fatalf("compact line exceeds terminal width: %d %q", displayWidth(line), line)
+		}
+	}
+}
+
+func TestGlobalMarketsFrameSupportsPinyin(t *testing.T) {
+	items := []domain.GlobalIndex{
+		{Region: "港股", Name: "恒生指数", Current: 25479.139, Delta: 7.99, Percent: .03, QuoteTime: "2026-08-19 15:24:10"},
+		{Region: "日本", Name: "日经225", Current: 65326.2, Delta: -2134.53, Percent: -3.16, QuoteTime: "2026-08-19 14:12:00"},
+		{
+			Region: "美国", Name: "标普500", Current: 7691.76, Delta: -53.3, Percent: -.69, QuoteTime: "2026-08-19 04:38:44",
+			Extended: &domain.GlobalExtendedQuote{Session: "盘后", Symbol: "SPY", Price: 767.08, Delta: -.37, Percent: -.05, QuoteTime: "Aug 18 07:59PM EDT"},
+		},
+	}
+	frame := BuildGlobalMarketsFrame(items, time.Time{}, false, "", "W REFRESH  ESC BACK", 118, true, false, true)
+	for _, expected := range []string{
+		"MARKET", "INDEX", "gang gu", "heng sheng zhi shu", "ri ben", "ri jing 225",
+		"mei guo", "biao pu 500", "pan hou SPY proxy",
+	} {
+		if !strings.Contains(frame, expected) {
+			t.Fatalf("pinyin global frame missing %q:\n%s", expected, frame)
+		}
+	}
+	for _, unexpected := range []string{"港股", "恒生指数", "日本", "日经225", "美国", "标普500", "盘后", "代理"} {
+		if strings.Contains(frame, unexpected) {
+			t.Fatalf("pinyin global frame contains %q:\n%s", unexpected, frame)
+		}
+	}
+	for _, line := range strings.Split(frame, "\n") {
+		if displayWidth(line) > 118 {
+			t.Fatalf("pinyin line exceeds terminal width: %d %q", displayWidth(line), line)
 		}
 	}
 }
@@ -60,7 +90,7 @@ func TestGlobalMarketTableSeparatesRegionsAndDoesNotRepeatMarketLabel(t *testing
 		{Region: "韩国", Name: "KOSPI", Current: 6471.17, Delta: -398.66, Percent: -5.8},
 		{Region: "美国", Name: "道琼斯", Current: 53343.4, Delta: -116.38, Percent: -.22},
 	}
-	lines := globalMarketTable(items, 118, false, true)
+	lines := globalMarketTable(items, 118, false, true, false)
 	plain := ansiPattern.ReplaceAllString(strings.Join(lines, "\n"), "")
 	for _, region := range []string{"港股", "日本", "韩国", "美国"} {
 		if strings.Count(plain, region) != 1 {

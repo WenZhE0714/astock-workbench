@@ -147,11 +147,11 @@ func directionalFundFlow(flow *domain.FundFlow) string {
 	return "→ " + fundFlowMagnitude(flow)
 }
 
-func buildMoyuTable(quotes []domain.Quote, terminalWidth int) string {
-	return buildQuoteTable(quotes, nil, -1, terminalWidth, true, false)
+func buildMoyuTable(quotes []domain.Quote, terminalWidth int, pinyin bool) string {
+	return buildQuoteTable(quotes, nil, -1, terminalWidth, true, false, pinyin)
 }
 
-func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, selected, terminalWidth int, moyu, color bool) string {
+func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, selected, terminalWidth int, moyu, color, pinyin bool) string {
 	header := []string{"个股", "现价", "涨跌", "涨速", "资金"}
 	if moyu {
 		header = []string{"TASK", "VALUE", "DRIFT", "SPEED", "FLOW"}
@@ -180,7 +180,11 @@ func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, se
 			task = item.Symbol
 		}
 		if market.AssetKindOf(item.Symbol) == domain.AssetKindSector {
-			task = "板块·" + task
+			if pinyin {
+				task = "BOARD·" + task
+			} else {
+				task = "板块·" + task
+			}
 		}
 		if selected >= 0 {
 			marker := "  "

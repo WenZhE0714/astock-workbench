@@ -486,7 +486,7 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 	start, end := visibleQuoteWindow(len(quotes), data.Selected, limit)
 	visible := quotes[start:end]
 	selected := data.Selected - start
-	table := buildQuoteTable(visible, data.Flows, selected, terminalWidth, options.Moyu, options.Color)
+	table := buildQuoteTable(visible, data.Flows, selected, terminalWidth, options.Moyu, options.Color, options.Pinyin)
 	frame := header + "\n" + table
 	if len(quotes) > len(visible) {
 		frame += fmt.Sprintf("\n%d-%d/%d", start+1, end, len(quotes))
@@ -505,7 +505,7 @@ func BuildSnapshotFrame(data LiveData, options ViewOptions, terminalWidth int) s
 	quotes := liveQuotes(data)
 	header := liveHeader(data, options, terminalWidth)
 	if options.Moyu {
-		frame := header + "\n" + buildQuoteTable(quotes, data.Flows, -1, terminalWidth, true, false)
+		frame := header + "\n" + buildQuoteTable(quotes, data.Flows, -1, terminalWidth, true, false, options.Pinyin)
 		if message := liveError(data, options, terminalWidth); message != "" {
 			frame += "\n" + message
 		}

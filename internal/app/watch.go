@@ -308,11 +308,14 @@ func splitMarketQuotes(quotes []domain.Quote, symbols []string) (stocks, indices
 	return stocks, indices
 }
 
-func boardAssetQuote(symbol string, flow domain.BoardFlow) domain.Quote {
+func boardAssetQuote(symbol string, flow domain.BoardFlow, pinyin bool) domain.Quote {
 	item := emptyAssetQuote(symbol)
 	item.Source = "同花顺行业"
 	item.Name = flow.Name
 	item.TaskName = flow.Name
+	if pinyin {
+		item.TaskName = storage.ToPinyin(flow.Name)
+	}
 	item.Percent = flow.Percent
 	item.Delta = math.NaN()
 	item.Amount = math.NaN()
@@ -353,11 +356,11 @@ func mergeBoardAssetFundFlows(flows map[string]domain.FundFlow, boards map[strin
 	return flows
 }
 
-func mergeBoardAssetQuotes(quotes []domain.Quote, symbols []string, boards map[string]domain.BoardFlow) []domain.Quote {
+func mergeBoardAssetQuotes(quotes []domain.Quote, symbols []string, boards map[string]domain.BoardFlow, pinyin bool) []domain.Quote {
 	result := reorderQuotes(quotes, symbols)
 	for index := range result {
 		if flow, ok := boards[result[index].Symbol]; ok {
-			result[index] = boardAssetQuote(result[index].Symbol, flow)
+			result[index] = boardAssetQuote(result[index].Symbol, flow, pinyin)
 		}
 	}
 	return result
@@ -449,7 +452,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			return err
 		}
 	}
-	viewOptions := ui.ViewOptions{Depth: options.Depth, Moyu: options.Moyu, Color: options.Color}
+	viewOptions := ui.ViewOptions{Depth: options.Depth, Moyu: options.Moyu, Pinyin: options.Pinyin, Color: options.Color}
 	requestSymbols := quoteRequestSymbols(symbols)
 	if options.Once {
 		quotes, fetchError := app.quotes.Fetch(ctx, requestSymbols)
@@ -668,7 +671,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			frame := ui.BuildGlobalMarketsFrame(
 				globalMarkets.indices, globalMarkets.refreshedAt, globalMarkets.loading,
 				globalMarkets.status(options.Moyu), globalMarkets.controls(options.Moyu),
-				width, options.Moyu, options.Color,
+				width, options.Moyu, options.Color, options.Pinyin,
 			)
 			renderer.Render(frame, width, height)
 			lastWidth, lastHeight = width, height
@@ -788,7 +791,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				if err := app.decorateQuotes(stocks, pinyins); err != nil {
 					return err
 				}
-				current = mergeBoardAssetQuotes(stocks, symbols, boardAssets)
+				current = mergeBoardAssetQuotes(stocks, symbols, boardAssets, options.Pinyin)
 				if len(marketIndices) > 0 {
 					indices = marketIndices
 				}
@@ -3049,7 +3052,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 			boardAssets[result.symbol] = result.flow
 			boardAssetRefreshed[result.symbol] = time.Now()
-			current = mergeBoardAssetQuotes(current, symbols, boardAssets)
+			current = mergeBoardAssetQuotes(current, symbols, boardAssets, options.Pinyin)
 			if result.flow.Name != "" {
 				_ = app.names.Remember([]domain.Candidate{{Symbol: result.symbol, Name: result.flow.Name}})
 			}

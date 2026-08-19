@@ -145,6 +145,19 @@ func ToPinyin(name string) string {
 			continue
 		}
 		character, size := utf8.DecodeRuneInString(name)
+		if character <= unicode.MaxASCII && (unicode.IsLetter(character) || unicode.IsDigit(character)) {
+			end := size
+			for end < len(name) {
+				next, nextSize := utf8.DecodeRuneInString(name[end:])
+				if next > unicode.MaxASCII || (!unicode.IsLetter(next) && !unicode.IsDigit(next)) {
+					break
+				}
+				end += nextSize
+			}
+			parts = append(parts, name[:end])
+			name = name[end:]
+			continue
+		}
 		parts = append(parts, pinyinlib.LazyPinyin(string(character), arguments)...)
 		name = name[size:]
 	}

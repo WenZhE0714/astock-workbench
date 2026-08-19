@@ -206,7 +206,7 @@ const usageText = `A 股实时行情与策略研究工作台
 	    --source http|tdx    行情源；CLI 默认 tdx，失败时自动回退 HTTP
   -d, --depth             显示买卖五档盘口
   -m, --moyu              无色带框摸鱼表格
-  -p, --pinyin            股票名称显示无声调拼音，自动开启 --moyu
+  -p, --pinyin            股票、板块和外盘指数显示无声调拼音，自动开启 --moyu
       --no-color          禁用红涨绿跌颜色
 
 终端导航（持续模式）:

@@ -11,9 +11,10 @@ import (
 )
 
 type ViewOptions struct {
-	Depth bool
-	Moyu  bool
-	Color bool
+	Depth  bool
+	Moyu   bool
+	Pinyin bool
+	Color  bool
 }
 
 type metric struct {
@@ -952,7 +953,7 @@ func BuildFrame(quotes []domain.Quote, symbols []string, options ViewOptions, te
 		visible = placeholderQuotes(symbols)
 	}
 	if options.Moyu {
-		frame := buildMoyuTable(visible, terminalWidth)
+		frame := buildMoyuTable(visible, terminalWidth, options.Pinyin)
 		if fetchError != "" && len(quotes) == 0 {
 			frame += "\n数据暂不可用：" + fetchError
 		}

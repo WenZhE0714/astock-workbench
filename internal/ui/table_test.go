@@ -13,7 +13,7 @@ import (
 func TestMoyuTableHasStableFrame(t *testing.T) {
 	frame := buildQuoteTable(
 		[]domain.Quote{{Symbol: "sh600519", TaskName: "gui zhou mao tai", Current: "1418.00", Percent: 1.2, Low: "1398", High: "1420"}},
-		map[string]domain.FundFlow{"sh600519": {Symbol: "sh600519", Speed: 0.18}}, -1, 80, true, false,
+		map[string]domain.FundFlow{"sh600519": {Symbol: "sh600519", Speed: 0.18}}, -1, 80, true, false, false,
 	)
 	if !strings.Contains(frame, "+-") || !strings.Contains(frame, "TASK") || !strings.Contains(frame, "SPEED") || !strings.Contains(frame, "+0.18%") || !strings.Contains(frame, "FLOW") || !strings.Contains(frame, "gui zhou mao tai") {
 		t.Fatalf("unexpected frame:\n%s", frame)
@@ -28,13 +28,28 @@ func TestQuoteTableLabelsBoardAndShowsItsFundFlow(t *testing.T) {
 		},
 		map[string]domain.FundFlow{
 			"th881155": {Symbol: "th881155", Speed: math.NaN(), MainNet: 64.42e8},
-		}, -1, 100, false, false,
+		}, -1, 100, false, false, false,
 	)
 	if !strings.Contains(frame, "板块·银行") || !strings.Contains(frame, "↑ 64.42亿") {
 		t.Fatalf("board label or fund flow missing:\n%s", frame)
 	}
 	if strings.Contains(frame, "板块·贵州茅台") {
 		t.Fatalf("stock was incorrectly labeled as a board:\n%s", frame)
+	}
+}
+
+func TestLivePinyinFrameLabelsBoardInPinyin(t *testing.T) {
+	frame := BuildLiveFrame(LiveData{
+		Quotes: []domain.Quote{{
+			Symbol: "th881155", Name: "银行", TaskName: "yin hang", Current: "1333.50", Percent: 1.2,
+		}},
+		Selected: 0,
+	}, ViewOptions{Moyu: true, Pinyin: true}, 79, 24)
+	if !strings.Contains(frame, "> BOARD·yin hang") {
+		t.Fatalf("pinyin board label missing:\n%s", frame)
+	}
+	if strings.Contains(frame, "板块·") || strings.Contains(frame, "BOARD·银行") {
+		t.Fatalf("pinyin board label contains Chinese text:\n%s", frame)
 	}
 }
 

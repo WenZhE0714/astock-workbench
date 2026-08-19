@@ -5,8 +5,10 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
 func globalIndexNumber(value float64) string {
@@ -42,7 +44,58 @@ type globalMarketColumn struct {
 	value  func(domain.GlobalIndex) string
 }
 
-func globalMarketColumns(width int) []globalMarketColumn {
+func globalMarketDisplayName(value string, pinyin bool) string {
+	if !pinyin {
+		return value
+	}
+	for _, character := range value {
+		if unicode.Is(unicode.Han, character) {
+			return storage.ToPinyin(value)
+		}
+	}
+	return value
+}
+
+func globalMarketColumns(width int, pinyin bool) []globalMarketColumn {
+	regionValue := func(item domain.GlobalIndex) string { return globalMarketDisplayName(item.Region, pinyin) }
+	nameValue := func(item domain.GlobalIndex) string { return globalMarketDisplayName(item.Name, pinyin) }
+	if pinyin && width >= 118 {
+		return []globalMarketColumn{
+			{title: "MARKET", width: 7, region: true, value: regionValue},
+			{title: "INDEX", width: 18, name: true, value: nameValue},
+			{title: "LAST", width: 9, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.Current) }},
+			{title: "CHANGE", width: 9, right: true, value: func(item domain.GlobalIndex) string { return globalIndexDelta(item.Delta) }},
+			{title: "%", width: 8, right: true, value: func(item domain.GlobalIndex) string { return signedPercent(item.Percent) }},
+			{title: "OPEN", width: 9, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.Open) }},
+			{title: "HIGH", width: 9, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.High) }},
+			{title: "LOW", width: 9, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.Low) }},
+			{title: "TIME", width: 19, value: func(item domain.GlobalIndex) string { return globalIndexTime(item.QuoteTime, true) }},
+		}
+	}
+	if pinyin && width >= 79 {
+		return []globalMarketColumn{
+			{title: "MARKET", width: 7, region: true, value: regionValue},
+			{title: "INDEX", width: 18, name: true, value: nameValue},
+			{title: "LAST", width: 10, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.Current) }},
+			{title: "%", width: 9, right: true, value: func(item domain.GlobalIndex) string { return signedPercent(item.Percent) }},
+			{title: "TIME", width: 19, value: func(item domain.GlobalIndex) string { return globalIndexTime(item.QuoteTime, true) }},
+		}
+	}
+	if pinyin && width >= 52 {
+		return []globalMarketColumn{
+			{title: "INDEX", width: 18, name: true, value: nameValue},
+			{title: "LAST", width: 10, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.Current) }},
+			{title: "%", width: 9, right: true, value: func(item domain.GlobalIndex) string { return signedPercent(item.Percent) }},
+			{title: "TIME", width: 8, value: func(item domain.GlobalIndex) string { return globalIndexTime(item.QuoteTime, false) }},
+		}
+	}
+	if pinyin {
+		return []globalMarketColumn{
+			{title: "INDEX", width: 10, name: true, value: nameValue},
+			{title: "LAST", width: 9, right: true, value: func(item domain.GlobalIndex) string { return globalIndexNumber(item.Current) }},
+			{title: "%", width: 8, right: true, value: func(item domain.GlobalIndex) string { return signedPercent(item.Percent) }},
+		}
+	}
 	if width >= 118 {
 		return []globalMarketColumn{
 			{title: "市场", width: 6, region: true, value: func(item domain.GlobalIndex) string { return item.Region }},
@@ -97,21 +150,25 @@ func globalMarketRegionCode(region string) string {
 	}
 }
 
-func globalExtendedIndex(item domain.GlobalIndex) (domain.GlobalIndex, bool) {
+func globalExtendedIndex(item domain.GlobalIndex, pinyin bool) (domain.GlobalIndex, bool) {
 	if item.Extended == nil {
 		return domain.GlobalIndex{}, false
 	}
 	extended := item.Extended
+	name := extended.Session + "·" + extended.Symbol + "代理"
+	if pinyin {
+		name = storage.ToPinyin(extended.Session) + " " + extended.Symbol + " proxy"
+	}
 	return domain.GlobalIndex{
-		Region: item.Region, Name: extended.Session + "·" + extended.Symbol + "代理",
+		Region: item.Region, Name: name,
 		Current: extended.Price, Delta: extended.Delta, Percent: extended.Percent,
 		Open: math.NaN(), PreviousClose: math.NaN(), High: math.NaN(), Low: math.NaN(),
 		QuoteTime: extended.QuoteTime, Source: extended.Source,
 	}, true
 }
 
-func globalMarketTable(items []domain.GlobalIndex, width int, moyu, color bool) []string {
-	columns := globalMarketColumns(width)
+func globalMarketTable(items []domain.GlobalIndex, width int, moyu, color, pinyin bool) []string {
+	columns := globalMarketColumns(width, pinyin)
 	showsRegion := false
 	for _, column := range columns {
 		if column.region {
@@ -158,10 +215,11 @@ func globalMarketTable(items []domain.GlobalIndex, width int, moyu, color bool) 
 			lines = append(lines, "")
 		}
 		if newRegion && !showsRegion {
-			lines = append(lines, style(item.Region, globalMarketRegionCode(item.Region), color && !moyu))
+			region := globalMarketDisplayName(item.Region, pinyin)
+			lines = append(lines, style(region, globalMarketRegionCode(item.Region), color && !moyu))
 		}
 		lines = append(lines, row(item, newRegion, false))
-		if extended, ok := globalExtendedIndex(*item); ok {
+		if extended, ok := globalExtendedIndex(*item, pinyin); ok {
 			lines = append(lines, row(&extended, false, true))
 		}
 		previousRegion = item.Region
@@ -169,7 +227,7 @@ func globalMarketTable(items []domain.GlobalIndex, width int, moyu, color bool) 
 	return lines
 }
 
-func BuildGlobalMarketsFrame(items []domain.GlobalIndex, refreshedAt time.Time, loading bool, status, controls string, terminalWidth int, moyu, color bool) string {
+func BuildGlobalMarketsFrame(items []domain.GlobalIndex, refreshedAt time.Time, loading bool, status, controls string, terminalWidth int, moyu, color, pinyin bool) string {
 	if terminalWidth < 32 {
 		terminalWidth = 32
 	}
@@ -196,7 +254,7 @@ func BuildGlobalMarketsFrame(items []domain.GlobalIndex, refreshedAt time.Time, 
 		}
 		lines = append(lines, style(message, "33", color && !moyu))
 	} else {
-		lines = append(lines, globalMarketTable(items, terminalWidth, moyu, color)...)
+		lines = append(lines, globalMarketTable(items, terminalWidth, moyu, color, pinyin)...)
 	}
 	if status != "" {
 		lines = append(lines, "", style(truncateWidth(status, terminalWidth), "33", color && !moyu))

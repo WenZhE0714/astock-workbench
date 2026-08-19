@@ -33,9 +33,13 @@ func TestReorderQuotesKeepsBoardPlaceholderInMixedWatchlist(t *testing.T) {
 		t.Fatalf("mixed watchlist lost board position: %#v", ordered)
 	}
 	flow := domain.BoardFlow{Code: "th881155", Name: "银行", Percent: 1.2, MainNet: 3e9, Quote: &domain.BoardQuoteSnapshot{Price: 1333.5}}
-	merged := mergeBoardAssetQuotes(ordered, symbols, map[string]domain.BoardFlow{"th881155": flow})
+	merged := mergeBoardAssetQuotes(ordered, symbols, map[string]domain.BoardFlow{"th881155": flow}, false)
 	if merged[1].Name != "银行" || merged[1].Current != "1333.50" || merged[1].Percent != 1.2 {
 		t.Fatalf("board row was not decorated: %#v", merged[1])
+	}
+	pinyinMerged := mergeBoardAssetQuotes(ordered, symbols, map[string]domain.BoardFlow{"th881155": flow}, true)
+	if pinyinMerged[1].TaskName != "yin hang" {
+		t.Fatalf("board pinyin was not preserved after merge: %#v", pinyinMerged[1])
 	}
 }
 
