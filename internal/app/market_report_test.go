@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -194,31 +196,74 @@ func (marketReportHistoryMock) FetchDailyBars(_ context.Context, symbol string) 
 	return risingBars(symbol), nil
 }
 
+type countingResearchMock struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (mock *countingResearchMock) FetchBrokerResearch(_ context.Context, symbol string, _ time.Time, _ time.Time, _ int) ([]domain.BrokerResearchItem, error) {
+	mock.mu.Lock()
+	mock.calls = append(mock.calls, symbol)
+	mock.mu.Unlock()
+	return []domain.BrokerResearchItem{{
+		Symbol: symbol, Name: "测试股份", Title: "测试研报", Organization: "测试证券",
+		PublishedAt: "2026-08-11", SourceID: "R-" + symbol, Rating: "增持",
+	}}, nil
+}
+
+func (mock *countingResearchMock) symbols() []string {
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	result := append([]string(nil), mock.calls...)
+	sort.Strings(result)
+	return result
+}
+
+func TestMarketCandidateResearchIsBoundedToFiveFinalCandidates(t *testing.T) {
+	mock := &countingResearchMock{}
+	candidates := make([]domain.MarketCandidateAssessment, 8)
+	for index := range candidates {
+		candidates[index].Stock.Symbol = fmt.Sprintf("sh6000%02d", index)
+	}
+	items := (&App{research: mock}).collectMarketCandidateResearch(
+		context.Background(), candidates, time.Date(2026, 8, 13, 12, 0, 0, 0, shanghaiLocation), nil, &[]string{},
+	)
+	if len(items) != 5 || len(mock.symbols()) != 5 {
+		t.Fatalf("research collection exceeded final-candidate cap: items=%d calls=%#v", len(items), mock.symbols())
+	}
+	for index, symbol := range mock.symbols() {
+		if symbol != fmt.Sprintf("sh6000%02d", index) {
+			t.Fatalf("unexpected candidate set: %#v", mock.symbols())
+		}
+	}
+}
+
 type marketReportAIMock struct{}
 
 func (marketReportAIMock) Synthesize(_ context.Context, prompt string) (string, error) {
 	if !strings.Contains(prompt, "结构化事实JSON") || !strings.Contains(prompt, "测试股份") {
 		return "", fmt.Errorf("prompt missing structured facts")
 	}
-	return "# Codex市场报告\n", nil
+	return "# Codex市场报告\n\n候选公告与研报只按来源等级观察 [E01]。\n", nil
 }
 
 func TestGenerateMarketReportBuildsScoresRunsAIAndPersists(t *testing.T) {
+	research := &countingResearchMock{}
 	app := &App{
 		marketScan: marketReportScanMock{}, quotes: marketReportQuoteMock{}, flows: marketReportFlowMock{},
 		amounts: marketReportAmountMock{}, scanHistory: marketReportHistoryMock{}, marketReportAI: marketReportAIMock{},
-		marketReports: storage.NewMarketReportStore(t.TempDir()),
+		marketReports: storage.NewMarketReportStore(t.TempDir()), research: research,
 	}
 	var progress []string
 	report, err := app.generateMarketReport(context.Background(), func(value string) { progress = append(progress, value) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.AIUsed || !strings.Contains(report.Markdown, "Codex市场报告") || len(report.Facts.Candidates) != 1 {
+	if !report.AIUsed || !strings.Contains(report.Markdown, "Codex市场报告") || len(report.Facts.Candidates) != 1 || !strings.Contains(report.Markdown, "## 信息凭证") {
 		t.Fatalf("unexpected generated report: %#v", report)
 	}
 	candidate := report.Facts.Candidates[0]
-	if !candidate.BoardLeader || candidate.Technical.Trend != "多头排列" || len(candidate.Announcements) != 1 || report.MarkdownPath == "" {
+	if !candidate.BoardLeader || candidate.Technical.Trend != "多头排列" || len(candidate.Announcements) != 1 || report.MarkdownPath == "" || report.EvidencePath == "" || len(candidate.EvidenceIDs) == 0 || len(research.symbols()) != 1 {
 		t.Fatalf("unexpected candidate/report artifact: %#v", candidate)
 	}
 	if len(progress) < 4 || !strings.Contains(strings.Join(progress, "|"), "Codex") {

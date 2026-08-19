@@ -292,18 +292,22 @@ func AnalyzeTechnical(symbol string, input []domain.DailyBar) (domain.TechnicalS
 		{name: "20日结构高点", value: high20},
 	}
 	support, resistance := nearestLevels(latest.Close, levels)
-	buyTrigger := fmt.Sprintf("收盘突破20日高点 %.2f，且成交量达到20日均量的1.20倍", high20)
-	if bias == "看涨" && latest.Close >= ma20 {
-		buyTrigger = fmt.Sprintf("回踩MA20 %.2f缩量企稳，或%s", ma20, buyTrigger)
-	} else if bias == "看跌" {
-		buyTrigger = fmt.Sprintf("先收复MA20 %.2f，再%s", ma20, buyTrigger)
+	secondaryBreakout := fmt.Sprintf("突破20日高点 %.2f且成交量达到20日均量的1.20倍仅作二级结构确认", high20)
+	buyTrigger := fmt.Sprintf("先收复MA5 %.2f；进一步收复MA60 %.2f时观察趋势修复，%s", ma5, ma60, secondaryBreakout)
+	if latest.Close >= ma5 {
+		buyTrigger = fmt.Sprintf("回踩MA5 %.2f不破并缩量企稳；进一步收复MA60 %.2f，%s", ma5, ma60, secondaryBreakout)
 	}
-	sellTrigger := fmt.Sprintf("收盘跌破20日低点 %.2f；放量时风险升级", low20)
-	invalidation := fmt.Sprintf("突破 %.2f 转强 / 跌破 %.2f 转弱", high20, low20)
-	if bias == "看涨" {
-		invalidation = fmt.Sprintf("收盘跌破MA20 %.2f，且不能快速收回；跌破 %.2f 时看涨结构失效", ma20, low20)
+	if bias == "看涨" && latest.Close >= ma20 {
+		buyTrigger = fmt.Sprintf("回踩MA20 %.2f缩量企稳，或收复MA5 %.2f；%s", ma20, ma5, secondaryBreakout)
 	} else if bias == "看跌" {
-		invalidation = fmt.Sprintf("收盘收复MA20 %.2f；突破 %.2f 时看跌结构失效", ma20, high20)
+		buyTrigger = fmt.Sprintf("先收复MA20 %.2f与MA5 %.2f；%s", ma20, ma5, secondaryBreakout)
+	}
+	sellTrigger := fmt.Sprintf("收盘跌破MA20 %.2f且次日不能快速收回时优先控制风险；跌破20日低点 %.2f仅作二级结构恶化确认", ma20, low20)
+	invalidation := fmt.Sprintf("收复MA5 %.2f后短线转强观察 / 跌破MA20 %.2f后转弱观察；突破 %.2f 或跌破 %.2f仅作二级结构确认", ma5, ma20, high20, low20)
+	if bias == "看涨" {
+		invalidation = fmt.Sprintf("收盘跌破MA20 %.2f且不能快速收回时看涨结构失效；跌破20日低点 %.2f确认结构恶化", ma20, low20)
+	} else if bias == "看跌" {
+		invalidation = fmt.Sprintf("收盘收复MA20 %.2f与MA5 %.2f时看跌结构失效；突破20日高点 %.2f确认结构转强", ma20, ma5, high20)
 	}
 
 	return domain.TechnicalSignal{

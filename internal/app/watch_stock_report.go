@@ -85,7 +85,7 @@ func (state watchStockReport) status(moyu bool) string {
 			return "AI STOCK REPORT READY " + label + " | PRESS O TO OPEN"
 		}
 		if state.report.AIUsed {
-			return label + " 个股研判已生成，按 o 查看"
+			return fmt.Sprintf("%s 多Agent个股研判已生成（%d/%d），按 o 查看", label, successfulAgentCount(state.report.Agents), len(state.report.Agents))
 		}
 		return label + " 量化研判已生成（Codex综合未完成），按 o 查看"
 	}

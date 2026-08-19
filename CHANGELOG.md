@@ -1,5 +1,152 @@
 # Changelog
 
+## 0.21.0
+
+- 个股研判与市场扫描新增冻结信息凭证快照：近30日公告索引、近7日财经新闻和近90日券商研报统一分级、去重、过滤未来数据并编号为 `[E##]`。
+- 报告严格区分 A 级已核验官方披露正文、B 级专业观点、C 级公告/新闻待核线索和 D 级市场情绪；东方财富公告索引不会冒充 A 级事实，券商评级和媒体内容不能单独支撑买卖结论。
+- 多角色 Agent 共用同一份带哈希的证据快照，外部事件或观点必须引用快照内的凭证编号；无引用或引用未知编号时自动回退到确定性报告。
+- 市场扫描只为最终观察池前5只候选采集券商观点，避免对全市场逐股请求；报告与快照同时保存独立的 `evidence.json`，正文追加来源、作者、时间和原文入口。
+
+## 0.20.0
+
+- 将 `x`、`c`、`s` 接入共享事实快照的多角色 Agent 工作流：角色并行、独立十分钟超时、失败隔离，再由主 Agent 依据不可变事实综合。
+- 个股研判增加技术量价、资金板块、事件风险和反方审计角色；AI 咨询增加技术、资金板块和事件风险角色；市场报告增加指数承接、板块轮动、候选筛选和风险审计角色。
+- 报告与 AI 咨询保存角色状态、耗时、成功数和事实快照哈希；旧归档可兼容读取，报告页显示多Agent成功比例。
+- 增加行情时间、日K截止日、缓存来源、盘中未完成日K和缺失字段警告；盘中技术分析自动排除尚未收盘的当日K线。
+- 1/3/5分钟资金增量增加采样时间，超过两分钟的旧样本不再进入新报告；AI咨询在Agent或主综合失败时仍保存本轮事实与角色状态，并返回明确的确定性降级答复。
+- 市场扫描没有满足条件的候选时保留大盘与板块报告并明确观察池为空，不为凑数降低量价和资金门槛。
+- 持续策略优化继续由3个提案Agent与确定性Go引擎协作，并收紧重复滚动窗口、非有限门禁和弱参数邻域的晋级检查。
+- AI咨询历史改为最新一轮置顶显示，持久化和发送给Agent的上下文仍保持时间正序。
+
+## 0.19.1
+
+- Pre-qualify out-of-range technical levels in the structured facts sent to
+  stock-report and AI-consultation agents, so cross-session levels cannot be
+  mistaken for same-day triggers.
+- Preserve an AI report when its second draft still misses a price-boundary
+  label by deterministically annotating only the offending actionable levels
+  and validating the corrected text again.
+- Validate a complete semantic sentence before splitting it into clauses, so
+  one trailing cross-session declaration can cover multiple levels without
+  misclassifying a historical holding cost as a sell trigger.
+- Replace internal price-validator details in deterministic fallback headers
+  with a concise user-facing boundary-correction status.
+
+## 0.19.0
+
+- Add reproducible continuous-research manifests with canonical candidate-set
+  and configuration SHA-256 fingerprints, persisted as `manifest.json`.
+- Add deterministic data-quality gates for rolling coverage, no-future-data,
+  adjustment consistency and holdout data-source completeness, while reporting
+  point-in-time pool and benchmark limitations as explicit warnings.
+- Score independent Agent consensus and nearby parameter stability, and keep an
+  isolated optimum in research even when its single backtest score is highest.
+- Require a completely new, non-overlapping three-month holdout before another
+  cycle can inherit the previous locked parameters and bounded reflection.
+- Expose quality checks, fingerprints, consensus, parameter neighborhoods,
+  holdout/stress facts and prior lessons in the CLI, strategy center, reports
+  and immutable supervisor review context.
+- Make candidate stability scoring independent of iteration order, isolate
+  individual candidate failures, and retain legacy holdout protection by
+  falling back to archived data cutoffs.
+- Document the adopted experiment discipline from TradingAgents-Astock, Qlib,
+  RQAlpha, vn.py and FinRL without adding them as runtime dependencies.
+
+## 0.18.0
+
+- Add a Go-supervised multi-agent continuous optimization workflow: three
+  isolated Codex sub-agents propose bounded, structured candidates while the
+  deterministic engine exclusively owns validation, ranking and promotion.
+- Add breakout, trend-reclaim and moving-average pullback entry modes within
+  the existing auditable daily technical strategy family.
+- Evaluate candidates across multiple rolling train/validation folds, lock one
+  candidate before a final unseen holdout, then run doubled-cost and profit
+  concentration stress checks.
+- Classify results conservatively as research candidates or shadow-observation
+  candidates; no result automatically changes live signals or submits trades.
+- Persist continuous experiments separately under `backtests/continuous`,
+  including agent runs, candidates, holdout/stress artifacts and supervisor
+  review, and expose them through both `backtest continuous` and the `t` center.
+
+## 0.17.3
+
+- Increase the default Codex timeout from five to ten minutes, give stock
+  report generation and its automatic price-boundary correction independent
+  timeout budgets, and report timeouts explicitly without UTF-8 corruption or
+  leaking partial generated prose into the error message.
+- Allow market reports, stock reports, AI consultation and strategy research
+  to run independently in the background; only duplicate starts of the same
+  task are rejected.
+- Show every active, completed or failed background task on its own status
+  line so one failure no longer hides the progress of other tasks.
+- Add report history pages grouped by date and then generation time for both
+  market and per-stock reports; `r` and `o` still open the latest report, while
+  `h` inside a report opens its historical archive.
+
+## 0.17.2
+
+- Persist the latest 100 AI consultation turns per stock and restore them from
+  the `x` consultation page after switching stocks or restarting the program;
+  only the latest six turns are sent back to the Agent as context.
+- Add the quote-date limit-up and limit-down interval to stock analysis facts
+  and make it a hard boundary for both live consultation and stock reports.
+- Automatically retry an AI draft that describes an out-of-range structural
+  level as a same-day trigger, then reject it if the corrected draft still
+  violates the boundary; deterministic fallback reports label such levels as
+  cross-session observations.
+
+## 0.17.1
+
+- Add semantic color hierarchy to the strategy research center while keeping
+  `--no-color` and `--moyu` strictly ANSI-free.
+- Highlight the title, context, date splits, settings, statuses and selected
+  action with distinct restrained colors instead of a flat text-only page.
+- Keep `t` strategy research on the same operation-bar row as `x/c/o/s/r`
+  across the main watchlist, rankings and fund-radar pages.
+
+## 0.17.0
+
+- Add `t` as a strategy-research entry from the live watchlist, stock detail,
+  market rankings, fund radar, board funds, AI chat and report pages.
+- Add an in-dashboard strategy center for running a backtest or a bounded
+  train/validation/out-of-sample optimization without leaving live quotes.
+- Add page settings for current-stock/current-list scope, backtest length,
+  optimization split, candidate count, validation trade gate and read-only AI.
+- Show persisted backtest and optimization history inside the dashboard,
+  including metrics, parameters, candidate ranking, OOS results and trades.
+- Let users drill from a backtest into every entry/exit signal, next-open fill,
+  fee, return, MFE/MAE and exit reason without using a shell subcommand.
+- Report candidate and OOS progress through the dashboard event loop while
+  keeping strategy facts immutable and all market quote polling responsive.
+
+## 0.16.0
+
+- Add bounded deterministic strategy optimization across strictly ordered,
+  non-overlapping training, validation and one-time out-of-sample periods.
+- Rank candidates only from training and validation metrics with hard gates for
+  trade count, drawdown, validation return, finite values and performance gaps;
+  never use out-of-sample results to reselect parameters.
+- Reuse historical ranges in memory while evaluating candidates so a 30-item
+  parameter search does not become 30 duplicate HTTP requests per period.
+- Add `backtest optimize/optimize-list/optimize-show`, persist candidate ranks,
+  selected parameters and full trade/equity artifacts for all selected splits
+  under a separate `backtests/optimizations` archive.
+- Add an optional ephemeral read-only Codex review after deterministic
+  selection and out-of-sample evaluation; AI failures preserve the experiment,
+  and AI cannot change fills, metrics, gates or parameter ranking.
+
+## 0.15.0
+
+- Add an auditable daily A-share backtest engine with next-open execution,
+  T+1, 100-share lots, commissions, stamp duty, transfer fees and slippage.
+- Add a deterministic volume-breakout/trend strategy with persisted parameters,
+  signal evidence, entry/exit fills, MFE/MAE and exit reasons for every trade.
+- Add `backtest run/list/show/trades/trade` commands and archive each run as
+  Markdown, JSON, JSONL trade records and a CSV equity/drawdown curve.
+- Fix the data basis to unadjusted daily bars for the first engine, explicitly
+  warning about corporate actions, static-pool survivor bias and daily-bar
+  limit-up fill limitations instead of overstating backtest accuracy.
+
 ## 0.14.0
 
 - Add a `y` industry-fund dashboard with the five largest main-fund inflows

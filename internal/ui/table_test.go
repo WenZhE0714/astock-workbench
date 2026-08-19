@@ -20,6 +20,24 @@ func TestMoyuTableHasStableFrame(t *testing.T) {
 	}
 }
 
+func TestQuoteTableLabelsBoardAndShowsItsFundFlow(t *testing.T) {
+	frame := buildQuoteTable(
+		[]domain.Quote{
+			{Symbol: "th881155", Name: "银行", Current: "1333.50", Percent: 1.2},
+			{Symbol: "sh600519", Name: "贵州茅台", Current: "1418.00", Percent: .3},
+		},
+		map[string]domain.FundFlow{
+			"th881155": {Symbol: "th881155", Speed: math.NaN(), MainNet: 64.42e8},
+		}, -1, 100, false, false,
+	)
+	if !strings.Contains(frame, "板块·银行") || !strings.Contains(frame, "↑ 64.42亿") {
+		t.Fatalf("board label or fund flow missing:\n%s", frame)
+	}
+	if strings.Contains(frame, "板块·贵州茅台") {
+		t.Fatalf("stock was incorrectly labeled as a board:\n%s", frame)
+	}
+}
+
 func TestLiveMoyuFrameShowsMarketRefreshSelectionAndFundFlow(t *testing.T) {
 	first := dashboardQuote()
 	first.TaskName = "gui zhou mao tai"
@@ -485,7 +503,7 @@ func TestMarketAmountOverviewShowsChangeFromPreviousTradingDay(t *testing.T) {
 		Shenzhen:  140000000,
 		Beijing:   1000000,
 	}
-	line := marketAmountOverview(indices, previous, false, 79)
+	line := marketAmountOverview(indices, previous, false, false, 79)
 	for _, expected := range []string{"沪深成交额", "2.67万亿", "↑", "1644.20亿元", "+6.55%"} {
 		if !strings.Contains(line, expected) {
 			t.Fatalf("market amount line missing %q: %s", expected, line)
@@ -506,7 +524,7 @@ func TestMarketAmountOverviewShowsShanghaiShenzhenAndBeijingTotals(t *testing.T)
 		Shenzhen:  145487613.1328,
 		Beijing:   1915024.7936,
 	}
-	line := marketAmountOverview(indices, previous, false, 120)
+	line := marketAmountOverview(indices, previous, false, false, 120)
 	for _, expected := range []string{"沪深成交额", "2.54万亿", "1446.98亿元"} {
 		if !strings.Contains(line, expected) {
 			t.Fatalf("market amount overview missing %q: %s", expected, line)
@@ -526,9 +544,24 @@ func TestMarketAmountOverviewHidesChangeWhenQuoteDateHasNotAdvanced(t *testing.T
 		{Symbol: "bj899050", Amount: 1000000},
 	}
 	previous := domain.MarketAmountSnapshot{TradeDate: "2026-08-07", Shanghai: 90000000, Shenzhen: 90000000, Beijing: 900000}
-	line := marketAmountOverview(indices, previous, false, 120)
+	line := marketAmountOverview(indices, previous, false, false, 120)
 	if strings.Contains(line, "较昨") {
 		t.Fatalf("should hide comparison for an unchanged pre-open quote: %s", line)
+	}
+}
+
+func TestMarketAmountOverviewColorsChangeDirection(t *testing.T) {
+	indices := []domain.Quote{
+		{Symbol: "sh000001", Amount: 120000000, QuoteTime: "2026-08-19 15:00:00"},
+		{Symbol: "sz399106", Amount: 133000000},
+		{Symbol: "bj899050", Amount: 1000000},
+	}
+	previous := domain.MarketAmountSnapshot{
+		TradeDate: "2026-08-18", Shanghai: 110000000, Shenzhen: 130000000, Beijing: 1000000,
+	}
+	line := marketAmountOverview(indices, previous, false, true, 100)
+	if !strings.Contains(line, "\x1b[31m 较昨 ↑") || !strings.Contains(line, "\x1b[0m") {
+		t.Fatalf("positive market amount change should be red:\n%q", line)
 	}
 }
 

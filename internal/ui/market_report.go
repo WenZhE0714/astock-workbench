@@ -79,10 +79,15 @@ func BuildMarketReportFrame(report domain.GeneratedMarketReport, controls string
 	engine := "CODEX"
 	if !report.AIUsed {
 		engine = "RULE-BASED FALLBACK"
+	} else if len(report.Agents) > 0 {
+		engine = fmt.Sprintf("MULTI-AGENT %d/%d", successfulAgentRuns(report.Agents), len(report.Agents))
 	}
 	title := fmt.Sprintf("ASTOCK MARKET REPORT  %s  %s", report.GeneratedAt.Format("01-02 15:04:05"), engine)
 	if !moyu {
 		engine = "Codex综合"
+		if report.AIUsed && len(report.Agents) > 0 {
+			engine = fmt.Sprintf("多Agent综合 %d/%d", successfulAgentRuns(report.Agents), len(report.Agents))
+		}
 		if !report.AIUsed {
 			engine = "量化回退版"
 		}

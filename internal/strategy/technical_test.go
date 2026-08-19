@@ -70,6 +70,22 @@ func TestAnalyzeTechnicalUsesPriorTwentyBarsForStructure(t *testing.T) {
 	}
 }
 
+func TestNeutralTechnicalPlanUsesNearbyMovingAveragesBeforeRemoteExtremes(t *testing.T) {
+	bars := trendBars(0.2)
+	latest := len(bars) - 1
+	for index := latest - 20; index < latest; index++ {
+		bars[index].High += 4
+		bars[index].Low -= 4
+	}
+	signal, err := AnalyzeTechnical("sz000001", bars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(signal.BuyTrigger, "MA5") || !strings.Contains(signal.SellTrigger, "MA20") || !strings.Contains(signal.BuyTrigger, "二级结构确认") || !strings.Contains(signal.SellTrigger, "二级结构") {
+		t.Fatalf("nearby execution levels were not prioritized: %#v", signal)
+	}
+}
+
 func TestAnalyzeTechnicalRejectsInsufficientHistory(t *testing.T) {
 	_, err := AnalyzeTechnical("sz000001", trendBars(1)[:60])
 	if err == nil || !strings.Contains(err.Error(), "至少 65 根") {

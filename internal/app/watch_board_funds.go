@@ -90,9 +90,9 @@ func (state watchBoardFunds) status(moyu bool) string {
 
 func (state watchBoardFunds) controls(moyu bool) string {
 	if moyu {
-		return "UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  G/G ENDPOINTS  Y REFRESH  ESC BACK  Q QUIT"
+		return "UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  G/G ENDPOINTS  Y REFRESH  T STRATEGY  ESC BACK  Q QUIT"
 	}
-	return "↑/↓滚动  [/]翻页  g/G首尾  y刷新  Esc返回  q退出"
+	return "↑/↓滚动  [/]翻页  g/G首尾  y刷新  t策略研究  Esc返回  q退出"
 }
 
 type boardFundRankResult struct {

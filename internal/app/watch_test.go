@@ -12,16 +12,17 @@ import (
 )
 
 func TestParseWatchOptions(t *testing.T) {
-	result, err := parseWatchOptions([]string{"--pinyin", "--depth", "--interval", "5", "贵州茅台,000001"}, true)
+	result, err := parseWatchOptions([]string{"--pinyin", "--depth", "--interval", "5", "--source", "tdx", "贵州茅台,000001"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Pinyin || !result.Moyu || result.Depth || result.Color || result.Interval != 5 || len(result.Inputs) != 2 {
+	if !result.Pinyin || !result.Moyu || result.Depth || result.Color || result.Interval != 5 || result.Source != "tdx" || len(result.Inputs) != 2 {
 		t.Fatalf("unexpected options: %#v", result)
 	}
 }
 
 func TestDefaultRefreshIntervalIsOneSecond(t *testing.T) {
+	t.Setenv("ASTOCK_MARKET_SOURCE", "")
 	result, err := parseWatchOptions([]string{"600519"}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -29,17 +30,36 @@ func TestDefaultRefreshIntervalIsOneSecond(t *testing.T) {
 	if result.Interval != 1 {
 		t.Fatalf("expected 1 second, got %d", result.Interval)
 	}
+	if result.Source != marketSourceTDX {
+		t.Fatalf("expected default TDX source, got %q", result.Source)
+	}
+}
+
+func TestWatchMarketSourceEnvironmentOverridesTDXDefault(t *testing.T) {
+	t.Setenv("ASTOCK_MARKET_SOURCE", marketSourceHTTP)
+	result, err := parseWatchOptions([]string{"600519"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != marketSourceHTTP {
+		t.Fatalf("expected HTTP environment override, got %q", result.Source)
+	}
 }
 
 func TestQuoteRequestsIncludeAmountIndicesButFundFlowDoesNot(t *testing.T) {
-	quoteSymbols := quoteRequestSymbols([]string{"sh600519"})
+	quoteSymbols := quoteRequestSymbols([]string{"sh600519", "th881155", "BK0438"})
 	for _, expected := range []string{"sh600519", "sh000001", "sz399001", "sz399006", "sz399106", "bj899050"} {
 		if !containsString(quoteSymbols, expected) {
 			t.Fatalf("quote request missing %s: %#v", expected, quoteSymbols)
 		}
 	}
-	flowSymbols := fundFlowRequestSymbols([]string{"sh600519"})
-	for _, excluded := range []string{"sz399106", "bj899050"} {
+	for _, excluded := range []string{"th881155", "BK0438"} {
+		if containsString(quoteSymbols, excluded) {
+			t.Fatalf("quote request should exclude board symbol %s: %#v", excluded, quoteSymbols)
+		}
+	}
+	flowSymbols := fundFlowRequestSymbols([]string{"sh600519", "th881155", "BK0438"})
+	for _, excluded := range []string{"sz399106", "bj899050", "th881155", "BK0438"} {
 		if containsString(flowSymbols, excluded) {
 			t.Fatalf("fund-flow request should exclude quote-only symbol %s: %#v", excluded, flowSymbols)
 		}
@@ -187,13 +207,35 @@ func TestWatchCommandSelectsAmbiguousCandidate(t *testing.T) {
 		t.Fatalf("unexpected selected candidate: %#v", selected)
 	}
 	status := command.status(false, false)
-	for _, expected := range []string{"名称“石化”匹配到多只沪深 A 股，请选择：", "  600028  中国石化  沪市", "> 000703  恒逸石化  深市"} {
+	for _, expected := range []string{"名称“石化”匹配到多个证券或板块，请选择：", "  600028  中国石化  沪市", "> 000703  恒逸石化  深市"} {
 		if !strings.Contains(status, expected) {
 			t.Fatalf("candidate status missing %q:\n%s", expected, status)
 		}
 	}
-	if got := command.controls(false); got != "↑/↓ 选择  Enter确认  Esc取消" {
+	if got := command.controls(false); got != "↑/↓ 选择  [/]翻页  Enter确认  Esc取消" {
 		t.Fatalf("unexpected candidate controls: %q", got)
+	}
+}
+
+func TestWatchCommandCandidateWindowScrollsLargeMatches(t *testing.T) {
+	command := watchCommand{}
+	command.begin(watchCommandJump)
+	candidates := make([]domain.Candidate, 25)
+	for index := range candidates {
+		candidates[index] = domain.Candidate{Symbol: fmt.Sprintf("sh%06d", 600000+index), Name: fmt.Sprintf("候选%d", index)}
+	}
+	command.chooseCandidates("银行", candidates)
+	start, end := command.candidateWindow()
+	if start != 0 || end != 10 {
+		t.Fatalf("unexpected initial candidate window: %d-%d", start, end)
+	}
+	command.selectCandidate(24)
+	start, end = command.candidateWindow()
+	if start != 15 || end != 25 {
+		t.Fatalf("candidate window did not follow end selection: %d-%d", start, end)
+	}
+	if !strings.Contains(command.status(false, false), "候选24") || strings.Contains(command.status(false, false), "候选0") {
+		t.Fatalf("large candidate list did not scroll to selected item:\n%s", command.status(false, false))
 	}
 }
 

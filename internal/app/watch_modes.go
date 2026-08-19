@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -90,9 +91,23 @@ func reorderQuotes(quotes []domain.Quote, symbols []string) []domain.Quote {
 	for _, symbol := range symbols {
 		if quote, ok := bySymbol[symbol]; ok {
 			result = append(result, quote)
+		} else {
+			result = append(result, emptyAssetQuote(symbol))
 		}
 	}
 	return result
+}
+
+func emptyAssetQuote(symbol string) domain.Quote {
+	code := candidateDisplayCode(symbol)
+	return domain.Quote{
+		Symbol: symbol, Name: code, TaskName: code, Code: code,
+		Current: "--", PreviousClose: "--", Open: "--", High: "--", Low: "--",
+		QuoteTime: "--", Turnover: "--", Amplitude: "--", PETTM: "--", PEStatic: "--",
+		PB: "--", LimitUp: "--", LimitDown: "--", VolumeRatio: "--", AveragePrice: "--",
+		Delta: math.NaN(), Percent: math.NaN(), Volume: math.NaN(), Amount: math.NaN(),
+		MarketCap: math.NaN(), FloatMarketCap: math.NaN(),
+	}
 }
 
 type watchGroupChooser struct {
@@ -382,9 +397,9 @@ func (ranking watchMarketRanking) controls(moyu bool) string {
 		return ""
 	}
 	if moyu {
-		return "UP/DOWN SELECT  [/]/PGUP/PGDN JUMP  ENTER DETAIL  ESC BACK  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR  Y BOARD FUNDS\nX ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
+		return "UP/DOWN SELECT  [/]/PGUP/PGDN JUMP  ENTER DETAIL  ESC BACK  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR  Y BOARD FUNDS  W GLOBAL\nT STRATEGY  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 	}
-	return "↑/↓选择  [/]跳选  Enter详情  Esc返回  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达  y板块资金\nx咨询AI  c个股研判  o查看  s市场报告  r查看"
+	return "↑/↓选择  [/]跳选  Enter详情  Esc返回  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达  y板块资金  w外盘指数\nt策略研究  x咨询AI  c个股研判  o查看  s市场报告  r查看"
 }
 
 func (ranking watchMarketRanking) status(moyu bool) string {
@@ -413,12 +428,12 @@ func marketRankingShortcut(value string) (domain.MarketRankingKind, bool) {
 func watchBaseControls(detail, moyu bool) string {
 	if moyu {
 		if detail {
-			return "UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT\nY BOARD FUNDS  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
+			return "UP/DOWN SCROLL  [/]/PGUP/PGDN PAGE  ESC BACK  Q QUIT\nY BOARD FUNDS  W GLOBAL MARKETS\nT STRATEGY  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 		}
-		return "UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  M GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR  Y BOARD FUNDS\nX ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
+		return "UP/DN  ENTER  A ADD  D DEL  I VIEW  H HISTORY  E SORT  F GROUP  M GROUP  Q QUIT\n1 GAINERS  2 LOSERS  3 RAPID RISE  V FUND RADAR  Y BOARD FUNDS  W GLOBAL\nT STRATEGY  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 	}
 	if detail {
-		return "↑/↓ 滚动  [/]翻页  Esc返回  q退出\ny板块资金  x咨询AI  c个股研判  o查看  s市场报告  r查看"
+		return "↑/↓ 滚动  [/]翻页  Esc返回  q退出\ny板块资金  w外盘指数\nt策略研究  x咨询AI  c个股研判  o查看  s市场报告  r查看"
 	}
-	return "↑/↓选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  m分配  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达  y板块资金\nx咨询AI  c个股研判  o查看  s市场报告  r查看"
+	return "↑/↓选择  Enter详情  a添加  d删除  i查看  h历史  e排序  f分组  m分配  q退出\n1涨幅前20  2跌幅前20  3快速涨幅前20  v资金雷达  y板块资金  w外盘指数\nt策略研究  x咨询AI  c个股研判  o查看  s市场报告  r查看"
 }

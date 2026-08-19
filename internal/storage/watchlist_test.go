@@ -24,6 +24,21 @@ func TestWatchlistLifecycle(t *testing.T) {
 	}
 }
 
+func TestWatchlistPersistsConvertibleBondsAndBoards(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "watchlist")
+	if err := SaveWatchlist(file, []string{"113001", "123001", "bk0423", "881155"}); err != nil {
+		t.Fatal(err)
+	}
+	items, warnings, err := LoadWatchlist(file)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("load failed: %v %#v", err, warnings)
+	}
+	want := []string{"sh113001", "sz123001", "BK0423", "th881155"}
+	if !reflect.DeepEqual(items, want) {
+		t.Fatalf("unexpected mixed watchlist: got %#v want %#v", items, want)
+	}
+}
+
 func TestLegacyWatchlistLoadsIntoDefaultGroup(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "watchlist")
 	if err := os.WriteFile(file, []byte("sh600519\nsz000001\n"), 0o600); err != nil {

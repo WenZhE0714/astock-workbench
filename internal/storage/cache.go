@@ -37,7 +37,7 @@ func LoadNameCache(file string) (*NameCache, error) {
 			continue
 		}
 		timestamp, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil || !market.ValidPrefixedSymbol(fields[0]) || fields[1] == "" {
+		if err != nil || !market.ValidAssetSymbol(fields[0]) || fields[1] == "" {
 			continue
 		}
 		result.records[fields[0]] = nameRecord{Symbol: fields[0], Name: fields[1], Timestamp: timestamp}
@@ -63,7 +63,7 @@ func (cache *NameCache) Remember(candidates []domain.Candidate) error {
 	now := time.Now().Unix()
 	changed := false
 	for _, item := range candidates {
-		if !market.ValidPrefixedSymbol(item.Symbol) || item.Name == "" {
+		if !market.ValidAssetSymbol(item.Symbol) || item.Name == "" {
 			continue
 		}
 		previous, exists := cache.records[item.Symbol]

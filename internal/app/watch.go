@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
@@ -20,6 +22,7 @@ import (
 type watchOptions struct {
 	Inputs   []string
 	Interval int
+	Source   string
 	Once     bool
 	Depth    bool
 	Moyu     bool
@@ -170,6 +173,7 @@ func terminalDimensions(output io.Writer) (width, height int) {
 func parseWatchOptions(arguments []string, terminal bool) (watchOptions, error) {
 	result := watchOptions{
 		Interval: 1,
+		Source:   defaultWatchMarketSource(),
 		Color:    terminal && os.Getenv("NO_COLOR") == "",
 		Moyu:     envEnabled(os.Getenv("ASTOCK_MOYU")),
 		Pinyin:   envEnabled(os.Getenv("ASTOCK_PINYIN")),
@@ -192,6 +196,12 @@ func parseWatchOptions(arguments []string, terminal bool) (watchOptions, error) 
 				return result, fmt.Errorf("刷新间隔必须是 1–3600 的整数秒")
 			}
 			result.Interval = value
+			index++
+		case "--source", "--market-source":
+			if index+1 >= len(arguments) {
+				return result, fmt.Errorf("%s 需要 http 或 tdx", argument)
+			}
+			result.Source = arguments[index+1]
 			index++
 		case "-d", "--depth":
 			result.Depth = true
@@ -230,6 +240,9 @@ func parseWatchOptions(arguments []string, terminal bool) (watchOptions, error) 
 func quoteCandidates(quotes []domain.Quote) []domain.Candidate {
 	result := make([]domain.Candidate, 0, len(quotes))
 	for _, item := range quotes {
+		if market.AssetKindOf(item.Symbol) == domain.AssetKindSector {
+			continue
+		}
 		result = append(result, domain.Candidate{Symbol: item.Symbol, Name: item.Name})
 	}
 	return result
@@ -244,7 +257,12 @@ func fundFlowRequestSymbols(symbols []string) []string {
 }
 
 func requestSymbolsWith(symbols, additional []string) []string {
-	result := append([]string(nil), symbols...)
+	result := make([]string, 0, len(symbols)+len(additional))
+	for _, symbol := range symbols {
+		if market.AssetKindOf(symbol) != domain.AssetKindSector {
+			result = append(result, symbol)
+		}
+	}
 	for _, indexSymbol := range additional {
 		found := false
 		for _, symbol := range result {
@@ -260,6 +278,16 @@ func requestSymbolsWith(symbols, additional []string) []string {
 	return result
 }
 
+func stockAssetSymbols(symbols []string) []string {
+	result := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		if market.AssetKindOf(symbol) != domain.AssetKindSector {
+			result = append(result, symbol)
+		}
+	}
+	return result
+}
+
 func splitMarketQuotes(quotes []domain.Quote, symbols []string) (stocks, indices []domain.Quote) {
 	bySymbol := make(map[string]domain.Quote, len(quotes))
 	for _, item := range quotes {
@@ -268,6 +296,8 @@ func splitMarketQuotes(quotes []domain.Quote, symbols []string) (stocks, indices
 	for _, symbol := range symbols {
 		if item, ok := bySymbol[symbol]; ok {
 			stocks = append(stocks, item)
+		} else {
+			stocks = append(stocks, emptyAssetQuote(symbol))
 		}
 	}
 	for _, symbol := range market.QuoteMarketSymbols {
@@ -276,6 +306,72 @@ func splitMarketQuotes(quotes []domain.Quote, symbols []string) (stocks, indices
 		}
 	}
 	return stocks, indices
+}
+
+func boardAssetQuote(symbol string, flow domain.BoardFlow) domain.Quote {
+	item := emptyAssetQuote(symbol)
+	item.Source = "同花顺行业"
+	item.Name = flow.Name
+	item.TaskName = flow.Name
+	item.Percent = flow.Percent
+	item.Delta = math.NaN()
+	item.Amount = math.NaN()
+	if flow.Quote != nil {
+		item.Current = boardMetric(flow.Quote.Price, "")
+		item.Open = boardMetric(flow.Quote.Open, "")
+		item.PreviousClose = boardMetric(flow.Quote.PreviousClose, "")
+		item.High = boardMetric(flow.Quote.High, "")
+		item.Low = boardMetric(flow.Quote.Low, "")
+		item.Delta = flow.Quote.Delta
+		item.Amount = flow.Quote.Amount / 1e4
+	}
+	return item
+}
+
+func boardQuotePrice(flow domain.BoardFlow) float64 {
+	if flow.Quote == nil {
+		return math.NaN()
+	}
+	return flow.Quote.Price
+}
+
+func boardAssetFundFlow(symbol string, flow domain.BoardFlow) domain.FundFlow {
+	return domain.FundFlow{
+		Symbol: symbol, Name: flow.Name, Industry: flow.Name,
+		Price: boardQuotePrice(flow), Percent: flow.Percent,
+		Speed: math.NaN(), MainNet: flow.MainNet, MainRatio: flow.MainRatio,
+	}
+}
+
+func mergeBoardAssetFundFlows(flows map[string]domain.FundFlow, boards map[string]domain.BoardFlow) map[string]domain.FundFlow {
+	if flows == nil {
+		flows = make(map[string]domain.FundFlow, len(boards))
+	}
+	for symbol, flow := range boards {
+		flows[symbol] = boardAssetFundFlow(symbol, flow)
+	}
+	return flows
+}
+
+func mergeBoardAssetQuotes(quotes []domain.Quote, symbols []string, boards map[string]domain.BoardFlow) []domain.Quote {
+	result := reorderQuotes(quotes, symbols)
+	for index := range result {
+		if flow, ok := boards[result[index].Symbol]; ok {
+			result[index] = boardAssetQuote(result[index].Symbol, flow)
+		}
+	}
+	return result
+}
+
+func joinWatchStatuses(statuses ...string) string {
+	lines := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		status = strings.TrimSpace(status)
+		if status != "" {
+			lines = append(lines, status)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (app *App) decorateQuotes(quotes []domain.Quote, pinyins *storage.PinyinCache) error {
@@ -294,6 +390,9 @@ func (app *App) decorateQuotes(quotes []domain.Quote, pinyins *storage.PinyinCac
 func (app *App) runWatch(ctx context.Context, arguments []string) error {
 	options, err := parseWatchOptions(arguments, isTerminal(app.out))
 	if err != nil {
+		return err
+	}
+	if err := app.configureMarketSource(options.Source); err != nil {
 		return err
 	}
 	var symbols []string
@@ -316,8 +415,24 @@ func (app *App) runWatch(ctx context.Context, arguments []string) error {
 	if err != nil {
 		return err
 	}
+	marketSymbols := make([]string, 0, len(symbols))
+	boardSymbols := make([]string, 0)
+	for _, symbol := range symbols {
+		if market.AssetKindOf(symbol) == domain.AssetKindSector {
+			boardSymbols = append(boardSymbols, symbol)
+			continue
+		}
+		marketSymbols = append(marketSymbols, symbol)
+	}
+	if len(options.Inputs) > 0 && len(boardSymbols) > 0 && len(marketSymbols) == 0 {
+		return app.runBoardSnapshots(ctx, boardSymbols)
+	}
+	if options.Once && len(boardSymbols) > 0 {
+		fmt.Fprintf(app.errOut, "%s: CLI 实时看盘已跳过 %d 个板块；可在 Web 自选中查看板块资金和龙头\n", programName, len(boardSymbols))
+		symbols = marketSymbols
+	}
 	if len(symbols) == 0 && len(options.Inputs) > 0 {
-		return fmt.Errorf("没有要显示的股票。直接查看: astock 600519；保存自选: astock add 贵州茅台")
+		return fmt.Errorf("没有要显示的证券。直接查看: astock 600519；保存自选: astock add 贵州茅台")
 	}
 	if len(symbols) > maxStocks {
 		return fmt.Errorf("一次最多显示 %d 只股票", maxStocks)
@@ -391,6 +506,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	var indices []domain.Quote
 	flows := map[string]domain.FundFlow{}
 	boardFlows := map[string][]domain.BoardFlow{}
+	boardAssets := map[string]domain.BoardFlow{}
 	dragonTigers := map[string]domain.DragonTigerSnapshot{}
 	technicalSignals := map[string]domain.TechnicalSignal{}
 	previousAmounts := domain.MarketAmountSnapshot{}
@@ -408,12 +524,16 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	fundMonitor := watchFundMonitor{}
 	fundMonitorEpoch := uint64(0)
 	boardFunds := watchBoardFunds{}
+	globalMarkets := watchGlobalMarkets{}
+	boardDetail := watchBoardDetail{}
 	marketReport := watchMarketReport{}
 	marketReportEpoch := uint64(0)
 	stockReport := watchStockReport{}
 	stockReportEpoch := uint64(0)
+	reportHistory := watchReportHistory{}
 	aiChat := watchAIChat{}
 	aiChatEpoch := uint64(0)
+	strategyLab := newWatchStrategyLab()
 	currentGroup := initialGroup
 	notice := ""
 	noticeExpires := time.Time{}
@@ -453,44 +573,58 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				return item.Symbol, item.Name
 			}
 		}
-		return selectedStock()
+		symbol, name := selectedStock()
+		if market.AssetKindOf(symbol) == domain.AssetKindSector {
+			return "", ""
+		}
+		return symbol, name
+	}
+	strategyLabNames := func() map[string]string {
+		result := make(map[string]string, len(symbols))
+		for _, symbol := range symbols {
+			result[symbol] = app.names.LookupName(symbol)
+		}
+		for _, quote := range current {
+			if quote.Name != "" {
+				result[quote.Symbol] = quote.Name
+			}
+		}
+		return result
+	}
+	refreshStrategyLabContext := func() {
+		symbol, name := selectedStockReportTarget()
+		if market.AssetKindOf(symbol) == domain.AssetKindSector {
+			symbol, name = "", ""
+		}
+		strategyLab.updateContext(symbol, name, currentGroup, stockAssetSymbols(symbols), strategyLabNames())
 	}
 	status := func() string {
+		backgroundStatus := joinWatchStatuses(
+			strategyLab.status(options.Moyu),
+			aiChat.status(options.Moyu),
+			marketReport.status(options.Moyu),
+			stockReport.status(options.Moyu),
+		)
+		foregroundStatus := ""
 		if sortState.active {
 			symbol, name := selectedStock()
-			return sortState.status(symbol, name, options.Moyu)
+			foregroundStatus = sortState.status(symbol, name, options.Moyu)
+		} else if groupAssignment.active {
+			foregroundStatus = groupAssignment.status(options.Moyu)
+		} else if groupChooser.active {
+			foregroundStatus = groupChooser.status(options.Moyu)
+		} else if command.active() {
+			foregroundStatus = command.status(options.Moyu, inputCursorVisible)
+		} else if notice != "" {
+			foregroundStatus = notice
+		} else if boardFunds.viewing {
+			foregroundStatus = boardFunds.status(options.Moyu)
+		} else if fundMonitor.viewing && !viewState.Detail {
+			foregroundStatus = fundMonitor.status(options.Moyu)
+		} else if marketRanking.active && !viewState.Detail {
+			foregroundStatus = marketRanking.status(options.Moyu)
 		}
-		if groupAssignment.active {
-			return groupAssignment.status(options.Moyu)
-		}
-		if groupChooser.active {
-			return groupChooser.status(options.Moyu)
-		}
-		if command.active() {
-			return command.status(options.Moyu, inputCursorVisible)
-		}
-		if chatStatus := aiChat.status(options.Moyu); chatStatus != "" {
-			return chatStatus
-		}
-		if reportStatus := marketReport.status(options.Moyu); reportStatus != "" {
-			return reportStatus
-		}
-		if reportStatus := stockReport.status(options.Moyu); reportStatus != "" {
-			return reportStatus
-		}
-		if notice != "" {
-			return notice
-		}
-		if boardFunds.viewing {
-			return boardFunds.status(options.Moyu)
-		}
-		if fundMonitor.viewing && !viewState.Detail {
-			return fundMonitor.status(options.Moyu)
-		}
-		if marketRanking.active && !viewState.Detail {
-			return marketRanking.status(options.Moyu)
-		}
-		return ""
+		return joinWatchStatuses(foregroundStatus, backgroundStatus)
 	}
 	controls := func() string {
 		if sortState.active {
@@ -504,6 +638,12 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		if command.active() {
 			return command.controls(options.Moyu)
+		}
+		if globalMarkets.viewing {
+			return globalMarkets.controls(options.Moyu)
+		}
+		if strategyLab.viewing {
+			return strategyLab.controls(options.Moyu)
 		}
 		if aiChat.viewing {
 			return aiChatViewControls(options.Moyu)
@@ -524,6 +664,32 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if !force && width == lastWidth && height == lastHeight {
 			return
 		}
+		if globalMarkets.viewing {
+			frame := ui.BuildGlobalMarketsFrame(
+				globalMarkets.indices, globalMarkets.refreshedAt, globalMarkets.loading,
+				globalMarkets.status(options.Moyu), globalMarkets.controls(options.Moyu),
+				width, options.Moyu, options.Color,
+			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
+		if strategyLab.viewing {
+			frame := strategyLab.frame(time.Now(), width, options.Moyu, options.Color)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
+		if boardDetail.viewing {
+			frame := ui.BuildBoardDetailFrame(
+				boardDetail.flow, boardDetail.leaders, boardDetail.symbol,
+				boardDetail.status(options.Moyu), boardDetail.controls(options.Moyu),
+				width, options.Moyu, options.Color,
+			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
 		if aiChat.viewing {
 			frame := ui.BuildAIChatFrame(
 				aiChat.symbol, aiChat.name, aiChat.turns, aiChatViewControls(options.Moyu), width, options.Moyu,
@@ -537,6 +703,12 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				boardFunds.dashboard(), boardFunds.loading, boardFunds.status(options.Moyu),
 				boardFunds.controls(options.Moyu), width, options.Moyu, options.Color,
 			)
+			renderer.Render(frame, width, height)
+			lastWidth, lastHeight = width, height
+			return
+		}
+		if reportHistory.viewing {
+			frame := reportHistory.frame(width, options.Moyu, options.Color)
 			renderer.Render(frame, width, height)
 			lastWidth, lastHeight = width, height
 			return
@@ -616,7 +788,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				if err := app.decorateQuotes(stocks, pinyins); err != nil {
 					return err
 				}
-				current = stocks
+				current = mergeBoardAssetQuotes(stocks, symbols, boardAssets)
 				if len(marketIndices) > 0 {
 					indices = marketIndices
 				}
@@ -692,6 +864,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		return nil
 	}
 	var prewarmFundMonitor func()
+	var prewarmBoardAssets func()
 	switchGroup := func(groupName string) error {
 		groups, _, loadError := storage.LoadWatchlistGroups(app.paths.WatchlistFile)
 		if loadError != nil {
@@ -715,6 +888,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if prewarmFundMonitor != nil {
 			prewarmFundMonitor()
 		}
+		if prewarmBoardAssets != nil {
+			prewarmBoardAssets()
+		}
 		renderer.ResetViewport()
 		return nil
 	}
@@ -725,6 +901,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	}
 	type amountResult struct {
 		amounts domain.MarketAmountSnapshot
+		err     error
+	}
+	type globalMarketResult struct {
+		indices []domain.GlobalIndex
 		err     error
 	}
 	type boardResult struct {
@@ -764,6 +944,17 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		dashboard domain.BoardFundDashboard
 		err       error
 	}
+	type boardDetailResult struct {
+		symbol  string
+		flow    domain.BoardFlow
+		leaders []domain.MarketStockSnapshot
+		err     error
+	}
+	type boardAssetResult struct {
+		symbol string
+		flow   domain.BoardFlow
+		err    error
+	}
 	type marketReportResult struct {
 		epoch  uint64
 		report domain.GeneratedMarketReport
@@ -784,7 +975,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	}
 	type aiChatResult struct {
 		epoch  uint64
-		answer string
+		result aiChatAnswer
 		at     time.Time
 		err    error
 	}
@@ -792,8 +983,19 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		epoch   uint64
 		message string
 	}
+	type strategyLabResult struct {
+		kind         string
+		run          backtest.Result
+		optimization backtest.OptimizationResult
+		continuous   backtest.ContinuousOptimizationResult
+		err          error
+	}
+	type strategyLabProgressResult struct {
+		message string
+	}
 	flowResults := make(chan flowResult, 1)
 	amountResults := make(chan amountResult, 1)
+	globalMarketResults := make(chan globalMarketResult, 1)
 	boardResults := make(chan boardResult, 8)
 	dragonTigerResults := make(chan dragonTigerResult, 8)
 	technicalResults := make(chan technicalResult, 8)
@@ -801,14 +1003,19 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	fundMonitorResults := make(chan fundMonitorResult, 4)
 	industryFlowResults := make(chan industryFlowResult, 4)
 	boardFundDashboardResults := make(chan boardFundDashboardResult, 1)
+	boardDetailResults := make(chan boardDetailResult, 1)
+	boardAssetResults := make(chan boardAssetResult, maxStocks)
 	marketReportResults := make(chan marketReportResult, 1)
 	marketReportProgressResults := make(chan marketReportProgressResult, 8)
 	stockReportResults := make(chan stockReportResult, 1)
 	stockReportProgressResults := make(chan stockReportProgressResult, 8)
 	aiChatResults := make(chan aiChatResult, 1)
 	aiChatProgressResults := make(chan aiChatProgressResult, 8)
+	strategyLabResults := make(chan strategyLabResult, 1)
+	strategyLabProgressResults := make(chan strategyLabProgressResult, 8)
 	flowRunning := false
 	amountRunning := false
+	globalMarketRunning := false
 	boardRunning := make(map[string]bool)
 	boardRefreshed := make(map[string]time.Time)
 	dragonTigerRunning := make(map[string]bool)
@@ -826,6 +1033,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	activeIndustryFlowRequestID := uint64(0)
 	var cancelIndustryFlowRequest context.CancelFunc
 	boardFundDashboardRunning := false
+	boardDetailRunning := false
+	boardAssetRunning := make(map[string]bool)
+	boardAssetRefreshed := make(map[string]time.Time)
 	startFlowFetch := func() {
 		if app.flows == nil || flowRunning {
 			return
@@ -853,6 +1063,34 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 		}()
 	}
+	startGlobalMarketFetch := func() bool {
+		if app.globalMarkets == nil || globalMarketRunning {
+			return false
+		}
+		globalMarketRunning = true
+		globalMarkets.beginRefresh()
+		go func() {
+			requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+			result, fetchError := app.globalMarkets.FetchGlobalIndices(requestContext)
+			cancel()
+			select {
+			case globalMarketResults <- globalMarketResult{indices: result, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+		return true
+	}
+	openGlobalMarkets := func() {
+		globalMarkets.open()
+		setNotice("")
+		if app.globalMarkets == nil {
+			globalMarkets.fail(fmt.Errorf("外盘指数服务未初始化"))
+		} else {
+			startGlobalMarketFetch()
+		}
+		renderer.ResetViewport()
+		render(true)
+	}
 	startBoardFetch := func(symbol string, force bool) {
 		if app.boards == nil || symbol == "" || boardRunning[symbol] {
 			return
@@ -871,6 +1109,51 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 		}()
 	}
+	startBoardDetailFetch := func(symbol string) {
+		if boardDetailRunning || symbol == "" {
+			return
+		}
+		client, ok := app.boards.(market.BoardDetailClient)
+		if !ok || client == nil {
+			boardDetail.fail(fmt.Errorf("板块查询服务未初始化"))
+			return
+		}
+		boardDetailRunning = true
+		go func() {
+			requestContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+			flow, leaders, fetchError := client.FetchBoard(requestContext, symbol)
+			cancel()
+			select {
+			case boardDetailResults <- boardDetailResult{symbol: symbol, flow: flow, leaders: leaders, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startBoardAssetFetch := func(force bool) {
+		client, ok := app.boards.(market.BoardDetailClient)
+		if !ok || client == nil {
+			return
+		}
+		for _, symbol := range symbols {
+			if market.AssetKindOf(symbol) != domain.AssetKindSector || boardAssetRunning[symbol] {
+				continue
+			}
+			if !force && time.Since(boardAssetRefreshed[symbol]) < time.Minute {
+				continue
+			}
+			boardAssetRunning[symbol] = true
+			go func(symbol string) {
+				requestContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+				flow, _, fetchError := client.FetchBoard(requestContext, symbol)
+				cancel()
+				select {
+				case boardAssetResults <- boardAssetResult{symbol: symbol, flow: flow, err: fetchError}:
+				case <-ctx.Done():
+				}
+			}(symbol)
+		}
+	}
+	prewarmBoardAssets = func() { startBoardAssetFetch(false) }
 	startDragonTigerFetch := func(symbol string, force bool) {
 		if app.dragonTiger == nil || symbol == "" || dragonTigerRunning[symbol] {
 			return
@@ -1049,6 +1332,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		render(true)
 	}
 	openFundMonitor := func(source string, rankingKind domain.MarketRankingKind, monitorSymbols []string) {
+		monitorSymbols = stockAssetSymbols(monitorSymbols)
 		if len(monitorSymbols) == 0 {
 			setNotice("当前没有可监视的股票")
 			render(true)
@@ -1107,16 +1391,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 	}
 	startMarketReport := func() {
-		if aiChat.generating {
-			setNotice("AI问答正在处理，请完成后再生成市场报告")
-			render(true)
-			return
-		}
-		if stockReport.generating {
-			setNotice("个股研判正在生成，请完成后再生成市场报告")
-			render(true)
-			return
-		}
 		if marketReport.generating {
 			setNotice("智能报告正在生成，无需重复启动")
 			render(true)
@@ -1124,8 +1398,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		marketReportEpoch++
 		epoch := marketReportEpoch
-		stockReport.unread = false
-		stockReport.error = ""
 		marketReport.begin()
 		setNotice("")
 		render(true)
@@ -1146,37 +1418,39 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if marketReport.generating {
 			return
 		}
-		report := marketReport.report
-		if strings.TrimSpace(report.Markdown) == "" {
-			if app.marketReports == nil {
-				setNotice("智能市场报告存储未初始化")
-				render(true)
-				return
-			}
-			loaded, loadError := app.marketReports.LoadLatest()
-			if loadError != nil {
-				setNotice(loadError.Error() + "；按 s 生成")
-				render(true)
-				return
-			}
-			report = loaded
+		if app.marketReports == nil {
+			setNotice("智能市场报告存储未初始化")
+			render(true)
+			return
+		}
+		report, loadError := app.marketReports.LoadLatest()
+		if loadError != nil {
+			setNotice(loadError.Error() + "；按 s 生成")
+			render(true)
+			return
 		}
 		marketReport.open(report)
 		setNotice("")
 		renderer.ResetViewport()
 		render(true)
 	}
+	openMarketReportHistory := func() {
+		if app.marketReports == nil {
+			setNotice("智能市场报告存储未初始化")
+			render(true)
+			return
+		}
+		items, loadError := app.marketReports.List(0)
+		if loadError != nil {
+			setNotice("读取市场报告历史失败：" + loadError.Error())
+			render(true)
+			return
+		}
+		reportHistory.openMarket(items)
+		renderer.ResetViewport()
+		render(true)
+	}
 	startStockReport := func() {
-		if aiChat.generating {
-			setNotice("AI问答正在处理，请完成后再生成个股研判")
-			render(true)
-			return
-		}
-		if marketReport.generating {
-			setNotice("市场报告正在生成，请完成后再生成个股研判")
-			render(true)
-			return
-		}
 		if stockReport.generating {
 			setNotice("个股研判正在生成，无需重复启动")
 			render(true)
@@ -1188,6 +1462,20 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			render(true)
 			return
 		}
+		if app.aiChats != nil && !aiChat.generating && (aiChat.symbol != symbol || len(aiChat.turns) == 0) {
+			storedName, turns, loadError := app.aiChats.Load(symbol)
+			if loadError != nil {
+				setNotice("读取AI咨询历史失败: " + loadError.Error())
+				render(true)
+				return
+			}
+			if len(turns) > 0 {
+				if storedName != "" {
+					name = storedName
+				}
+				aiChat.hydrate(symbol, name, turns)
+			}
+		}
 		var movement *domain.FundMovement
 		if item, ok := fundMonitor.movementFor(symbol); ok {
 			copyMovement := item
@@ -1195,8 +1483,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}
 		stockReportEpoch++
 		epoch := stockReportEpoch
-		marketReport.unread = false
-		marketReport.error = ""
 		stockReport.begin(symbol, name)
 		setNotice("")
 		render(true)
@@ -1223,23 +1509,45 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			render(true)
 			return
 		}
-		report := stockReport.report
-		if report.Symbol != symbol || strings.TrimSpace(report.Markdown) == "" {
-			if app.stockReports == nil {
-				setNotice("个股研判存储未初始化")
-				render(true)
-				return
-			}
-			loaded, loadError := app.stockReports.LoadLatest(symbol)
-			if loadError != nil {
-				setNotice(loadError.Error() + "；按 c 生成")
-				render(true)
-				return
-			}
-			report = loaded
+		if app.stockReports == nil {
+			setNotice("个股研判存储未初始化")
+			render(true)
+			return
+		}
+		report, loadError := app.stockReports.LoadLatest(symbol)
+		if loadError != nil {
+			setNotice(loadError.Error() + "；按 c 生成")
+			render(true)
+			return
 		}
 		stockReport.open(report)
 		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
+	openStockReportHistory := func() {
+		symbol := stockReport.report.Symbol
+		name := stockReport.report.Name
+		if symbol == "" {
+			symbol, name = selectedStockReportTarget()
+		}
+		if symbol == "" {
+			setNotice("当前没有可查看研判的股票")
+			render(true)
+			return
+		}
+		if app.stockReports == nil {
+			setNotice("个股研判存储未初始化")
+			render(true)
+			return
+		}
+		items, loadError := app.stockReports.List(symbol, 0)
+		if loadError != nil {
+			setNotice("读取个股研判历史失败：" + loadError.Error())
+			render(true)
+			return
+		}
+		reportHistory.openStock(symbol, name, items)
 		renderer.ResetViewport()
 		render(true)
 	}
@@ -1247,11 +1555,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		question = strings.TrimSpace(question)
 		if question == "" {
 			setNotice("请输入要咨询AI的问题")
-			render(true)
-			return
-		}
-		if marketReport.generating || stockReport.generating {
-			setNotice("报告正在生成，请完成后再咨询AI")
 			render(true)
 			return
 		}
@@ -1281,14 +1584,14 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		setNotice("")
 		render(true)
 		go func() {
-			answer, answerError := app.answerAIChatQuestion(ctx, symbol, movement, history, question, func(message string) {
+			answer, answerError := app.answerAIChatQuestionDetailed(ctx, symbol, movement, history, question, func(message string) {
 				select {
 				case aiChatProgressResults <- aiChatProgressResult{epoch: epoch, message: message}:
 				default:
 				}
 			})
 			select {
-			case aiChatResults <- aiChatResult{epoch: epoch, answer: answer, at: time.Now(), err: answerError}:
+			case aiChatResults <- aiChatResult{epoch: epoch, result: answer, at: time.Now(), err: answerError}:
 			case <-ctx.Done():
 			}
 		}()
@@ -1299,8 +1602,22 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			render(true)
 			return
 		}
-		symbol, _ := selectedStockReportTarget()
-		if aiChat.error == "" && symbol != "" && symbol == aiChat.symbol && aiChat.open() {
+		symbol, name := selectedStockReportTarget()
+		if symbol != "" && symbol != aiChat.symbol && app.aiChats != nil {
+			storedName, turns, loadError := app.aiChats.Load(symbol)
+			if loadError != nil {
+				setNotice("读取AI咨询历史失败: " + loadError.Error())
+				render(true)
+				return
+			}
+			if len(turns) > 0 {
+				if storedName != "" {
+					name = storedName
+				}
+				aiChat.hydrate(symbol, name, turns)
+			}
+		}
+		if symbol != "" && symbol == aiChat.symbol && aiChat.open() {
 			setNotice("")
 			renderer.ResetViewport()
 			render(true)
@@ -1311,12 +1628,186 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		setNotice("")
 		render(true)
 	}
+	loadStrategyLabHistory := func() {
+		backtests, backtestError := app.backtestStore().List(50)
+		if backtestError != nil {
+			strategyLab.fail(backtestError)
+			return
+		}
+		optimizations, optimizationError := app.optimizationStore().List(50)
+		if optimizationError != nil {
+			strategyLab.fail(optimizationError)
+			return
+		}
+		strategyLab.backtests = backtests
+		strategyLab.optimizations = optimizations
+		continuous, continuousError := app.continuousOptimizationStore().List(50)
+		if continuousError != nil {
+			strategyLab.fail(continuousError)
+			return
+		}
+		strategyLab.continuous = continuous
+	}
+	openStrategyLab := func(symbol, name, source string, sourceSymbols []string, sourceNames map[string]string) {
+		if market.AssetKindOf(symbol) == domain.AssetKindSector {
+			symbol, name = "", ""
+		}
+		if symbol == "" {
+			symbol, name = selectedStock()
+		}
+		if source == "" {
+			source = currentGroup
+		}
+		if len(sourceSymbols) == 0 {
+			sourceSymbols = symbols
+		}
+		sourceSymbols = stockAssetSymbols(sourceSymbols)
+		if len(sourceNames) == 0 {
+			sourceNames = strategyLabNames()
+		}
+		strategyLab.updateContext(symbol, name, source, sourceSymbols, sourceNames)
+		loadStrategyLabHistory()
+		strategyLab.open()
+		setNotice("")
+		renderer.ResetViewport()
+		render(true)
+	}
+	startStrategyLabBacktest := func() {
+		if strategyLab.running {
+			setNotice("策略研究正在后台运行")
+			render(true)
+			return
+		}
+		refreshStrategyLabContext()
+		symbolsForTask, namesForTask, targetError := strategyLab.targets()
+		if targetError != nil {
+			setNotice(targetError.Error())
+			render(true)
+			return
+		}
+		end := dateOnly(time.Now()).AddDate(0, 0, -1)
+		period := strategyLabBacktestPeriod(end, strategyLabBacktestYears[strategyLab.backtestYearsIndex])
+		strategyLab.begin("backtest", "准备历史日K和确定性撮合")
+		setNotice("策略研究已启动，行情继续刷新")
+		render(true)
+		go func() {
+			result, err := app.runStrategyLabBacktest(ctx, strategyLabTask{
+				kind: "backtest", symbols: symbolsForTask, names: namesForTask, period: period,
+			})
+			select {
+			case strategyLabResults <- strategyLabResult{kind: "backtest", run: result, err: err}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startStrategyLabOptimization := func() {
+		if strategyLab.running {
+			setNotice("策略研究正在后台运行")
+			render(true)
+			return
+		}
+		refreshStrategyLabContext()
+		symbolsForTask, namesForTask, targetError := strategyLab.targets()
+		if targetError != nil {
+			setNotice(targetError.Error())
+			render(true)
+			return
+		}
+		end := dateOnly(time.Now()).AddDate(0, 0, -1)
+		train, validate, oos := strategyLabOptimizationPeriods(end, strategyLabSplits[strategyLab.splitIndex])
+		strategyLab.begin("optimization", "准备训练/验证候选")
+		setNotice("策略优化已启动，行情继续刷新")
+		render(true)
+		task := strategyLabTask{
+			kind: "optimization", symbols: symbolsForTask, names: namesForTask,
+			train: train, validate: validate, oos: oos,
+			maxCandidates: strategyLabCandidateCounts[strategyLab.candidateIndex],
+			minimumTrades: strategyLabMinimumTrades[strategyLab.minimumTradesIndex], useAI: strategyLab.useAI,
+		}
+		go func() {
+			result, err := app.runStrategyLabOptimization(ctx, task, func(message string) {
+				select {
+				case strategyLabProgressResults <- strategyLabProgressResult{message: message}:
+				default:
+				}
+			})
+			select {
+			case strategyLabResults <- strategyLabResult{kind: "optimization", optimization: result, err: err}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startStrategyLabContinuous := func() {
+		if strategyLab.running {
+			setNotice("策略研究正在后台运行")
+			render(true)
+			return
+		}
+		refreshStrategyLabContext()
+		symbolsForTask, namesForTask, targetError := strategyLab.targets()
+		if targetError != nil {
+			setNotice(targetError.Error())
+			render(true)
+			return
+		}
+		end := dateOnly(time.Now()).AddDate(0, 0, -1)
+		strategyLab.begin("continuous", "主Agent准备多Agent候选与滚动窗口")
+		setNotice("多Agent持续优化已启动，行情继续刷新")
+		render(true)
+		options := defaultContinuousOptimizationOptions()
+		options.UseAI = strategyLab.useAI
+		go func() {
+			result, err := app.runContinuousOptimization(ctx, symbolsForTask, namesForTask, end, options, func(message string) {
+				select {
+				case strategyLabProgressResults <- strategyLabProgressResult{message: message}:
+				default:
+				}
+			})
+			select {
+			case strategyLabResults <- strategyLabResult{kind: "continuous", continuous: result, err: err}:
+			case <-ctx.Done():
+			}
+		}()
+	}
 	prewarmFundMonitor()
+	prewarmBoardAssets()
 	startFlowFetch()
 	startAmountFetch()
 	executeWatchCommand := func(symbol string) {
 		switch command.kind {
 		case watchCommandAdd:
+			if market.AssetKindOf(symbol) == domain.AssetKindSector {
+				inView := false
+				for _, value := range symbols {
+					if value == symbol {
+						inView = true
+						break
+					}
+				}
+				var added []bool
+				var addError error
+				if currentGroup != storage.AllWatchlistGroup && currentGroup != temporaryWatchlistGroup {
+					added, addError = storage.AddWatchlistToGroup(app.paths.WatchlistFile, currentGroup, []string{symbol})
+				} else {
+					added, addError = storage.AddWatchlist(app.paths.WatchlistFile, []string{symbol})
+				}
+				if addError != nil {
+					setNotice("添加板块失败: " + addError.Error())
+				} else if len(added) == 0 || !added[0] {
+					setNotice("板块已在当前分组中: " + symbol[2:])
+				} else {
+					setNotice("已添加板块到自选: " + symbol[2:])
+				}
+				if addError == nil && len(added) > 0 && added[0] && !inView {
+					symbols = append(symbols, symbol)
+					current = append(current, emptyAssetQuote(symbol))
+					requestSymbols = quoteRequestSymbols(symbols)
+				}
+				command.reset()
+				startBoardAssetFetch(true)
+				render(true)
+				return
+			}
 			inView := false
 			for _, value := range symbols {
 				if value == symbol {
@@ -1365,6 +1856,20 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			render(true)
 		case watchCommandJump, watchCommandHistory, watchCommandRanking, watchCommandFundMonitor:
 			recordHistory := command.kind != watchCommandRanking && command.kind != watchCommandFundMonitor
+			if market.AssetKindOf(symbol) == domain.AssetKindSector {
+				boardDetail.open(symbol)
+				command.reset()
+				startBoardDetailFetch(symbol)
+				if recordHistory {
+					name := app.names.LookupName(symbol)
+					if historyError := storage.RecordViewHistory(app.paths.ViewHistoryFile, symbol, name); historyError != nil {
+						boardDetail.refreshErr = "已打开，但保存查看历史失败: " + historyError.Error()
+					}
+				}
+				renderer.ResetViewport()
+				render(true)
+				return
+			}
 			opened := false
 			if temporarySymbol != "" && temporarySymbol != symbol {
 				for index, value := range symbols {
@@ -1441,6 +1946,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	defer quoteTicker.Stop()
 	flowTicker := time.NewTicker(60 * time.Second)
 	defer flowTicker.Stop()
+	globalMarketTicker := time.NewTicker(globalMarketRefreshInterval)
+	defer globalMarketTicker.Stop()
 	sessionTicker := time.NewTicker(time.Second)
 	defer sessionTicker.Stop()
 	resizeTicker := time.NewTicker(250 * time.Millisecond)
@@ -1454,6 +1961,230 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		case event, ok := <-events:
 			if !ok {
 				events = nil
+				continue
+			}
+			if globalMarkets.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					globalMarkets.close()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				if event.Key == terminalKeyNone && (event.Text == "w" || event.Text == "W") {
+					startGlobalMarketFetch()
+					render(true)
+					continue
+				}
+				navigateRenderer(renderer, event.Key)
+				continue
+			}
+			if boardDetail.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					boardDetail.close()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				if event.Key == terminalKeyNone && (event.Text == "w" || event.Text == "W") {
+					openGlobalMarkets()
+					continue
+				}
+				navigateRenderer(renderer, event.Key)
+				continue
+			}
+			modalActive := sortState.active || groupAssignment.active || groupChooser.active || command.active()
+			if isStrategyLabShortcut(event, modalActive, strategyLab.viewing) {
+				symbol, name := selectedStockReportTarget()
+				source := currentGroup
+				sourceSymbols := stockAssetSymbols(symbols)
+				sourceNames := strategyLabNames()
+				if fundMonitor.viewing && !viewState.Detail {
+					source = fundMonitor.source
+					sourceSymbols = sourceSymbols[:0]
+					for _, item := range fundMonitor.rows {
+						sourceSymbols = append(sourceSymbols, item.Symbol)
+						if item.Name != "" {
+							sourceNames[item.Symbol] = item.Name
+						}
+					}
+				} else if marketRanking.active && !viewState.Detail {
+					source = fundMonitorRankingSource(marketRanking.kind)
+					sourceSymbols = sourceSymbols[:0]
+					for _, item := range marketRanking.items {
+						sourceSymbols = append(sourceSymbols, item.Symbol)
+						if item.Name != "" {
+							sourceNames[item.Symbol] = item.Name
+						}
+					}
+				}
+				aiChat.close()
+				marketReport.close()
+				stockReport.close()
+				reportHistory.close()
+				boardFunds.close()
+				fundMonitor.viewing = false
+				marketRanking.reset()
+				openStrategyLab(symbol, name, source, sourceSymbols, sourceNames)
+				continue
+			}
+			if strategyLab.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					strategyLab.back()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				if strategyLab.view == strategyLabTradeDetail || strategyLab.view == strategyLabOptimizationDetail || strategyLab.view == strategyLabContinuousDetail {
+					navigateRenderer(renderer, event.Key)
+					continue
+				}
+				switch event.Key {
+				case terminalKeyUp:
+					strategyLab.move(-1)
+				case terminalKeyDown:
+					strategyLab.move(1)
+				case terminalKeyPageUp:
+					strategyLab.move(-10)
+				case terminalKeyPageDown, terminalKeySpace:
+					strategyLab.move(10)
+				case terminalKeyHome:
+					strategyLab.selectEndpoint(false)
+				case terminalKeyEnd:
+					strategyLab.selectEndpoint(true)
+				case terminalKeyEnter:
+					switch strategyLab.view {
+					case strategyLabMenu:
+						switch strategyLab.selected {
+						case 0:
+							startStrategyLabBacktest()
+							continue
+						case 1:
+							startStrategyLabOptimization()
+							continue
+						case 2:
+							startStrategyLabContinuous()
+							continue
+						case 3:
+							strategyLab.view = strategyLabSettings
+						case 4:
+							loadStrategyLabHistory()
+							strategyLab.view = strategyLabBacktestHistory
+						case 5:
+							loadStrategyLabHistory()
+							strategyLab.view = strategyLabOptimizationHistory
+						case 6:
+							loadStrategyLabHistory()
+							strategyLab.view = strategyLabContinuousHistory
+						}
+						strategyLab.selected = 0
+					case strategyLabSettings:
+						strategyLab.cycleSetting()
+					case strategyLabBacktestHistory:
+						if strategyLab.selected >= 0 && strategyLab.selected < len(strategyLab.backtests) {
+							run, loadError := app.backtestStore().Load(strategyLab.backtests[strategyLab.selected].RunID)
+							if loadError != nil {
+								strategyLab.error = loadError.Error()
+							} else {
+								strategyLab.run = &run
+								strategyLab.view = strategyLabBacktestDetail
+								strategyLab.selected = 0
+							}
+						}
+					case strategyLabBacktestDetail:
+						if strategyLab.run != nil && strategyLab.selected >= 0 && strategyLab.selected < len(strategyLab.run.Trades) {
+							trade := strategyLab.run.Trades[strategyLab.selected]
+							strategyLab.trade = &trade
+							strategyLab.view = strategyLabTradeDetail
+						}
+					case strategyLabOptimizationHistory:
+						if strategyLab.selected >= 0 && strategyLab.selected < len(strategyLab.optimizations) {
+							result, loadError := app.optimizationStore().Load(strategyLab.optimizations[strategyLab.selected].ID)
+							if loadError != nil {
+								strategyLab.error = loadError.Error()
+							} else {
+								strategyLab.optimization = &result
+								strategyLab.view = strategyLabOptimizationDetail
+								strategyLab.selected = 0
+							}
+						}
+					case strategyLabContinuousHistory:
+						if strategyLab.selected >= 0 && strategyLab.selected < len(strategyLab.continuous) {
+							result, loadError := app.continuousOptimizationStore().Load(strategyLab.continuous[strategyLab.selected].ID)
+							if loadError != nil {
+								strategyLab.error = loadError.Error()
+							} else {
+								strategyLab.continuousRun = &result
+								strategyLab.view = strategyLabContinuousDetail
+								strategyLab.selected = 0
+							}
+						}
+					}
+				default:
+					continue
+				}
+				renderer.ResetViewport()
+				render(true)
+				continue
+			}
+			if reportHistory.viewing {
+				if event.Key == terminalKeyQuit {
+					return nil
+				}
+				if event.Key == terminalKeyBack {
+					reportHistory.back()
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+				switch event.Key {
+				case terminalKeyUp:
+					reportHistory.move(-1)
+				case terminalKeyDown:
+					reportHistory.move(1)
+				case terminalKeyPageUp:
+					reportHistory.move(-10)
+				case terminalKeyPageDown, terminalKeySpace:
+					reportHistory.move(10)
+				case terminalKeyHome:
+					reportHistory.selectEndpoint(false)
+				case terminalKeyEnd:
+					reportHistory.selectEndpoint(true)
+				case terminalKeyEnter:
+					if reportHistory.view == reportHistoryDates {
+						reportHistory.openSelectedDate()
+					} else if item, ok := reportHistory.selectedReport(); ok {
+						if reportHistory.kind == reportHistoryMarket {
+							report, loadError := app.marketReports.Load(item.id)
+							if loadError != nil {
+								reportHistory.error = "读取报告失败：" + loadError.Error()
+							} else {
+								reportHistory.close()
+								marketReport.open(report)
+							}
+						} else {
+							report, loadError := app.stockReports.Load(reportHistory.symbol, item.id)
+							if loadError != nil {
+								reportHistory.error = "读取报告失败：" + loadError.Error()
+							} else {
+								reportHistory.close()
+								stockReport.open(report)
+							}
+						}
+					}
+				default:
+					continue
+				}
+				renderer.ResetViewport()
+				render(true)
 				continue
 			}
 			if aiChat.viewing {
@@ -1487,6 +2218,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					render(true)
 					continue
 				}
+				if event.Key == terminalKeyNone && (event.Text == "h" || event.Text == "H") {
+					openMarketReportHistory()
+					continue
+				}
 				navigateRenderer(renderer, event.Key)
 				continue
 			}
@@ -1508,6 +2243,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					render(true)
 					continue
 				}
+				if event.Key == terminalKeyNone && (event.Text == "h" || event.Text == "H") {
+					openStockReportHistory()
+					continue
+				}
 				navigateRenderer(renderer, event.Key)
 				continue
 			}
@@ -1526,10 +2265,14 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					render(true)
 					continue
 				}
+				if event.Key == terminalKeyNone && (event.Text == "w" || event.Text == "W") {
+					openGlobalMarkets()
+					continue
+				}
 				navigateRenderer(renderer, event.Key)
 				continue
 			}
-			modalActive := sortState.active || groupAssignment.active || groupChooser.active || command.active()
+			modalActive = sortState.active || groupAssignment.active || groupChooser.active || command.active()
 			if !modalActive && event.Key == terminalKeyNone {
 				switch event.Text {
 				case "s", "S":
@@ -1549,6 +2292,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					continue
 				case "y", "Y":
 					openBoardFundDashboard()
+					continue
+				case "w", "W":
+					openGlobalMarkets()
 					continue
 				}
 			}
@@ -2162,6 +2908,18 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				continue
 			}
 			wasDetail := viewState.Detail
+			if !wasDetail && event.Key == terminalKeyEnter && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
+				symbol := symbols[viewState.Selected]
+				if market.AssetKindOf(symbol) == domain.AssetKindSector {
+					boardDetail.open(symbol)
+					startBoardDetailFetch(symbol)
+					name := app.names.LookupName(symbol)
+					_ = storage.RecordViewHistory(app.paths.ViewHistoryFile, symbol, name)
+					renderer.ResetViewport()
+					render(true)
+					continue
+				}
+			}
 			changed, quit := viewState.handle(event.Key, len(symbols))
 			if quit {
 				return nil
@@ -2204,7 +2962,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					flowMessage = result.err.Error()
 				}
 			} else {
-				flows = result.flows
+				flows = mergeBoardAssetFundFlows(result.flows, boardAssets)
 				flowMessage = ""
 			}
 			render(true)
@@ -2266,6 +3024,37 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				boardFunds.complete(result.dashboard)
 			}
 			render(true)
+		case result := <-boardDetailResults:
+			boardDetailRunning = false
+			if !boardDetail.viewing || boardDetail.symbol != result.symbol {
+				continue
+			}
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					boardDetail.fail(result.err)
+				}
+			} else {
+				boardDetail.complete(result.flow, result.leaders)
+				if result.flow.Name != "" {
+					_ = app.names.Remember([]domain.Candidate{{Symbol: result.symbol, Name: result.flow.Name}})
+					_ = storage.RecordViewHistory(app.paths.ViewHistoryFile, result.symbol, result.flow.Name)
+				}
+			}
+			renderer.ResetViewport()
+			render(true)
+		case result := <-boardAssetResults:
+			boardAssetRunning[result.symbol] = false
+			if result.err != nil {
+				continue
+			}
+			boardAssets[result.symbol] = result.flow
+			boardAssetRefreshed[result.symbol] = time.Now()
+			current = mergeBoardAssetQuotes(current, symbols, boardAssets)
+			if result.flow.Name != "" {
+				_ = app.names.Remember([]domain.Candidate{{Symbol: result.symbol, Name: result.flow.Name}})
+			}
+			flows[result.symbol] = boardAssetFundFlow(result.symbol, result.flow)
+			render(true)
 		case result := <-marketReportProgressResults:
 			if result.epoch != marketReportEpoch || !marketReport.generating {
 				continue
@@ -2311,8 +3100,33 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if result.err != nil {
 				aiChat.fail(result.err)
 			} else {
-				aiChat.complete(result.answer, result.at)
+				aiChat.completeResearch(
+					result.result.Answer, result.at, result.result.FactsAt,
+					result.result.FactsHash, result.result.Agents,
+				)
+				if app.aiChats != nil {
+					if saveError := app.aiChats.Save(aiChat.symbol, aiChat.name, aiChat.turns); saveError != nil {
+						aiChat.error = saveError.Error()
+					}
+				}
 			}
+			render(true)
+		case progress := <-strategyLabProgressResults:
+			if strategyLab.running {
+				strategyLab.progress = progress.message
+				render(true)
+			}
+		case result := <-strategyLabResults:
+			if result.err != nil {
+				strategyLab.fail(result.err)
+			} else if result.kind == "optimization" {
+				strategyLab.completeOptimization(result.optimization)
+			} else if result.kind == "continuous" {
+				strategyLab.completeContinuous(result.continuous)
+			} else {
+				strategyLab.completeBacktest(result.run)
+			}
+			loadStrategyLabHistory()
 			render(true)
 		case result := <-marketRankingResults:
 			marketRankingRunning = false
@@ -2369,6 +3183,18 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				previousAmounts = result.amounts
 			}
 			render(true)
+		case result := <-globalMarketResults:
+			globalMarketRunning = false
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					globalMarkets.fail(result.err)
+				}
+			} else {
+				globalMarkets.complete(result.indices)
+			}
+			if globalMarkets.viewing {
+				render(true)
+			}
 		case <-resizeTicker.C:
 			render(false)
 		case <-cursorTicker.C:
@@ -2399,6 +3225,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					}
 					startFlowFetch()
 					startAmountFetch()
+					startBoardAssetFetch(true)
 					if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 						symbol := symbols[viewState.Selected]
 						startBoardFetch(symbol, true)
@@ -2419,9 +3246,14 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				}
 				return err
 			}
+		case <-globalMarketTicker.C:
+			if globalMarkets.viewing {
+				startGlobalMarketFetch()
+			}
 		case <-flowTicker.C:
 			if session.Poll {
 				startFlowFetch()
+				startBoardAssetFetch(false)
 				startIndustryFlowFetch(false)
 				startBoardFundDashboardFetch(false)
 				if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {

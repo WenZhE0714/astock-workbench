@@ -1,6 +1,19 @@
 package domain
 
-// Candidate is a resolved A-share name/code candidate.
+import "time"
+
+// AssetKind identifies the market object represented by a normalized symbol.
+// Keeping this at the domain boundary prevents board symbols from being sent
+// to stock-only fund-flow and K-line adapters.
+type AssetKind string
+
+const (
+	AssetKindStock           AssetKind = "stock"
+	AssetKindSector          AssetKind = "sector"
+	AssetKindConvertibleBond AssetKind = "convertible_bond"
+)
+
+// Candidate is a resolved stock, convertible-bond or board name/code candidate.
 type Candidate struct {
 	Symbol string `json:"symbol"`
 	Name   string `json:"name"`
@@ -35,6 +48,7 @@ type DepthLevel struct {
 // fidelity from the upstream payload.
 type Quote struct {
 	Symbol         string       `json:"symbol"`
+	Source         string       `json:"source,omitempty"`
 	Name           string       `json:"name"`
 	TaskName       string       `json:"task_name"`
 	Code           string       `json:"code"`
@@ -73,6 +87,38 @@ type MarketAmountSnapshot struct {
 	Source    string  `json:"source"`
 }
 
+// GlobalIndex is one overseas index snapshot. QuoteTime is the source-provided
+// market time, which can belong to the previous trading day for US indices.
+type GlobalIndex struct {
+	Symbol        string               `json:"symbol"`
+	Region        string               `json:"region"`
+	Name          string               `json:"name"`
+	Current       float64              `json:"current"`
+	Delta         float64              `json:"delta"`
+	Percent       float64              `json:"percent"`
+	Open          float64              `json:"open"`
+	PreviousClose float64              `json:"previous_close"`
+	High          float64              `json:"high"`
+	Low           float64              `json:"low"`
+	QuoteTime     string               `json:"quote_time"`
+	Source        string               `json:"source"`
+	Extended      *GlobalExtendedQuote `json:"extended,omitempty"`
+}
+
+// GlobalExtendedQuote is the latest US pre-market or after-hours quote for
+// an ETF proxy. Major cash indices themselves do not trade in extended hours.
+type GlobalExtendedQuote struct {
+	Session   string  `json:"session"`
+	Symbol    string  `json:"symbol"`
+	Name      string  `json:"name"`
+	Price     float64 `json:"price"`
+	Delta     float64 `json:"delta"`
+	Percent   float64 `json:"percent"`
+	Volume    float64 `json:"volume"`
+	QuoteTime string  `json:"quote_time"`
+	Source    string  `json:"source"`
+}
+
 // DailyBar is one unadjusted daily K-line. Price levels derived from these
 // bars stay on the same scale as the Level-1 quote shown to the user.
 type DailyBar struct {
@@ -86,6 +132,22 @@ type DailyBar struct {
 	Volume   float64 `json:"volume"`
 	Amount   float64 `json:"amount_yuan"`
 	Turnover float64 `json:"turnover_percent"`
+}
+
+// MinutePoint is one valid continuous-auction minute in an A-share trading
+// day. Volume and Amount are minute increments derived from Tencent's
+// cumulative fields; Average is the intraday volume-weighted average price.
+type MinutePoint struct {
+	Symbol           string  `json:"symbol"`
+	Source           string  `json:"source"`
+	TradeDate        string  `json:"trade_date"`
+	Time             string  `json:"time"`
+	Price            float64 `json:"price"`
+	Average          float64 `json:"average"`
+	Volume           float64 `json:"volume"`
+	Amount           float64 `json:"amount_yuan"`
+	CumulativeVolume float64 `json:"cumulative_volume"`
+	CumulativeAmount float64 `json:"cumulative_amount_yuan"`
 }
 
 const (
@@ -141,19 +203,20 @@ type FundFlow struct {
 // FundMovement is a short-line behavior observation derived from cumulative
 // main-fund snapshots. It is evidence for monitoring, not a trading order.
 type FundMovement struct {
-	Symbol          string  `json:"symbol"`
-	Name            string  `json:"name"`
-	Industry        string  `json:"industry"`
-	Price           float64 `json:"price"`
-	Percent         float64 `json:"percent"`
-	MainNet         float64 `json:"main_net_yuan"`
-	MainRatio       float64 `json:"main_ratio_percent"`
-	Delta1Minute    float64 `json:"delta_1m_yuan"`
-	Delta3Minutes   float64 `json:"delta_3m_yuan"`
-	Delta5Minutes   float64 `json:"delta_5m_yuan"`
-	IndustryNet     float64 `json:"industry_main_net_yuan"`
-	IndustryPercent float64 `json:"industry_percent"`
-	State           string  `json:"state"`
+	SampledAt       time.Time `json:"sampled_at,omitempty"`
+	Symbol          string    `json:"symbol"`
+	Name            string    `json:"name"`
+	Industry        string    `json:"industry"`
+	Price           float64   `json:"price"`
+	Percent         float64   `json:"percent"`
+	MainNet         float64   `json:"main_net_yuan"`
+	MainRatio       float64   `json:"main_ratio_percent"`
+	Delta1Minute    float64   `json:"delta_1m_yuan"`
+	Delta3Minutes   float64   `json:"delta_3m_yuan"`
+	Delta5Minutes   float64   `json:"delta_5m_yuan"`
+	IndustryNet     float64   `json:"industry_main_net_yuan"`
+	IndustryPercent float64   `json:"industry_percent"`
+	State           string    `json:"state"`
 }
 
 const (
@@ -164,23 +227,38 @@ const (
 // BoardFlow is an Eastmoney industry/concept board snapshot associated with
 // one stock. MainNet is denominated in yuan.
 type BoardFlow struct {
-	Code          string  `json:"code"`
-	Name          string  `json:"name"`
-	Kind          string  `json:"kind"`
-	Percent       float64 `json:"percent"`
-	MainNet       float64 `json:"main_net_yuan"`
-	MainRatio     float64 `json:"main_ratio_percent"`
-	Turnover      float64 `json:"turnover_percent"`
-	RiseCount     int     `json:"rise_count"`
-	FallCount     int     `json:"fall_count"`
-	FlatCount     int     `json:"flat_count"`
-	ChangeRank    int     `json:"change_rank"`
-	FlowRank      int     `json:"flow_rank"`
-	TurnoverRank  int     `json:"turnover_rank"`
-	UniverseSize  int     `json:"universe_size"`
-	LeaderName    string  `json:"leader_name"`
-	LeaderCode    string  `json:"leader_code"`
-	LeaderPercent float64 `json:"leader_percent"`
+	Code          string              `json:"code"`
+	Name          string              `json:"name"`
+	Kind          string              `json:"kind"`
+	Quote         *BoardQuoteSnapshot `json:"quote,omitempty"`
+	Percent       float64             `json:"percent"`
+	MainNet       float64             `json:"main_net_yuan"`
+	MainRatio     float64             `json:"main_ratio_percent"`
+	Turnover      float64             `json:"turnover_percent"`
+	RiseCount     int                 `json:"rise_count"`
+	FallCount     int                 `json:"fall_count"`
+	FlatCount     int                 `json:"flat_count"`
+	ChangeRank    int                 `json:"change_rank"`
+	FlowRank      int                 `json:"flow_rank"`
+	TurnoverRank  int                 `json:"turnover_rank"`
+	UniverseSize  int                 `json:"universe_size"`
+	LeaderName    string              `json:"leader_name"`
+	LeaderCode    string              `json:"leader_code"`
+	LeaderPercent float64             `json:"leader_percent"`
+}
+
+// BoardQuoteSnapshot contains index-level quote fields exposed by board
+// sources such as Tonghuashun. Volume is measured in ten-thousand lots and
+// Amount is denominated in yuan.
+type BoardQuoteSnapshot struct {
+	Price         float64 `json:"price"`
+	Delta         float64 `json:"delta"`
+	Open          float64 `json:"open"`
+	PreviousClose float64 `json:"previous_close"`
+	High          float64 `json:"high"`
+	Low           float64 `json:"low"`
+	Volume        float64 `json:"volume_wan_lots"`
+	Amount        float64 `json:"amount_yuan"`
 }
 
 // DragonTigerEntry is one Eastmoney daily-billboard record. A stock can have

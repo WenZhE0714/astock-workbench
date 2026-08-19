@@ -96,7 +96,7 @@ func ParseQuotePayload(raw string) []domain.Quote {
 			})
 		}
 		result = append(result, domain.Quote{
-			Symbol:         match[1] + match[2],
+			Symbol: match[1] + match[2], Source: "腾讯HTTP",
 			Name:           fields[1],
 			TaskName:       fields[1],
 			Code:           field(fields, 2),

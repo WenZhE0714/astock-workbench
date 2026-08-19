@@ -796,7 +796,11 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 		name = item.Code
 	}
 	headerLeft := style(name, "1;37", color) + "  " + style(item.Code+" · "+marketTag(item.Symbol), "36", color)
-	headerRight := style("LEVEL-1", "1;36", color) + "  " + style(quoteClock(item.QuoteTime), "90", color)
+	source := strings.TrimSpace(item.Source)
+	if source == "" {
+		source = "LEVEL-1"
+	}
+	headerRight := style(source, "1;36", color) + "  " + style(quoteClock(item.QuoteTime), "90", color)
 	lines = append(lines, sideBySide(headerLeft, headerRight, innerWidth)...)
 	lines = append(lines, "\x00separator")
 

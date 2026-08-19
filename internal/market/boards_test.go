@@ -2,6 +2,7 @@ package market
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
@@ -78,5 +79,11 @@ func TestBoardAddresses(t *testing.T) {
 	}
 	if got := boardRankAddress("https://example.test?type={type}&metric={metric}", domain.BoardKindConcept, "f62"); got != "https://example.test?type=3&metric=f62" {
 		t.Fatalf("unexpected concept rank address: %s", got)
+	}
+	if got := boardSearchAddress("https://example.test/api", domain.BoardKindConcept); !strings.Contains(got, "pz=100") || !strings.Contains(got, "pn=1") || !strings.Contains(got, "m%3A90%2Bt%3A3") {
+		t.Fatalf("unexpected board search address: %s", got)
+	}
+	if got := boardSearchPageAddress("https://example.test/api", domain.BoardKindIndustry, 3); !strings.Contains(got, "pn=3") {
+		t.Fatalf("unexpected board search page address: %s", got)
 	}
 }

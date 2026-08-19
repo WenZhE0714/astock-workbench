@@ -15,7 +15,7 @@ func cleanViewHistoryName(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-// LoadViewHistory returns the most recently viewed stock first. Malformed and
+// LoadViewHistory returns the most recently viewed asset first. Malformed and
 // duplicate records are ignored so a partially edited file remains usable.
 func LoadViewHistory(file string) ([]domain.Candidate, error) {
 	data, err := readOptionalFile(file)
@@ -30,7 +30,7 @@ func LoadViewHistory(file string) ([]domain.Candidate, error) {
 			continue
 		}
 		symbol := strings.ToLower(strings.TrimSpace(fields[0]))
-		if !market.ValidPrefixedSymbol(symbol) || seen[symbol] {
+		if !market.ValidAssetSymbol(symbol) || seen[symbol] {
 			continue
 		}
 		seen[symbol] = true
@@ -45,12 +45,12 @@ func LoadViewHistory(file string) ([]domain.Candidate, error) {
 	return result, nil
 }
 
-// RecordViewHistory inserts or moves a stock to the front of the persisted
+// RecordViewHistory inserts or moves an asset to the front of the persisted
 // MRU list. An empty new name keeps the previously recorded name.
 func RecordViewHistory(file, symbol, name string) error {
 	symbol = strings.ToLower(strings.TrimSpace(symbol))
-	if !market.ValidPrefixedSymbol(symbol) {
-		return fmt.Errorf("无效历史股票代码 %q", symbol)
+	if !market.ValidAssetSymbol(symbol) {
+		return fmt.Errorf("无效历史证券或板块代码 %q", symbol)
 	}
 	items, err := LoadViewHistory(file)
 	if err != nil {

@@ -100,18 +100,18 @@ func (command *watchCommand) selectedCandidate() (domain.Candidate, bool) {
 }
 
 func (command *watchCommand) candidateWindow() (int, int) {
-	const historyWindowSize = 10
-	if command.kind != watchCommandHistory || len(command.candidates) <= historyWindowSize {
+	const candidateWindowSize = 10
+	if len(command.candidates) <= candidateWindowSize {
 		return 0, len(command.candidates)
 	}
-	start := command.candidateSelected - historyWindowSize/2
+	start := command.candidateSelected - candidateWindowSize/2
 	if start < 0 {
 		start = 0
 	}
-	if start+historyWindowSize > len(command.candidates) {
-		start = len(command.candidates) - historyWindowSize
+	if start+candidateWindowSize > len(command.candidates) {
+		start = len(command.candidates) - candidateWindowSize
 	}
-	return start, start + historyWindowSize
+	return start, start + candidateWindowSize
 }
 
 func (command *watchCommand) status(moyu, cursorVisible bool) string {
@@ -151,8 +151,14 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 			}
 		} else if moyu {
 			fmt.Fprintf(&builder, "SELECT MATCH FOR %s:", command.buffer)
+			if len(command.candidates) > end-start {
+				fmt.Fprintf(&builder, " %d-%d/%d", start+1, end, len(command.candidates))
+			}
 		} else {
-			fmt.Fprintf(&builder, "名称“%s”匹配到多只沪深 A 股，请选择：", command.buffer)
+			fmt.Fprintf(&builder, "名称“%s”匹配到多个证券或板块，请选择：", command.buffer)
+			if len(command.candidates) > end-start {
+				fmt.Fprintf(&builder, "（%d-%d/%d）", start+1, end, len(command.candidates))
+			}
 		}
 		for index := start; index < end; index++ {
 			candidate := command.candidates[index]
@@ -160,7 +166,7 @@ func (command *watchCommand) status(moyu, cursorVisible bool) string {
 			if index == command.candidateSelected {
 				marker = "> "
 			}
-			fmt.Fprintf(&builder, "\n%s%s  %s  %s", marker, candidate.Symbol[2:], candidate.Name, market.MarketText(candidate.Symbol))
+			fmt.Fprintf(&builder, "\n%s%s  %s  %s", marker, candidateDisplayCode(candidate.Symbol), candidate.Name, market.MarketText(candidate.Symbol))
 		}
 		return builder.String()
 	}
@@ -212,9 +218,9 @@ func (command *watchCommand) controls(moyu bool) string {
 			return "↑/↓ 选择  [/]跳选  Enter打开  Esc取消"
 		}
 		if moyu {
-			return "↑/↓ SELECT  ENTER CONFIRM  ESC CANCEL"
+			return "↑/↓ SELECT  [/] PAGE  ENTER CONFIRM  ESC CANCEL"
 		}
-		return "↑/↓ 选择  Enter确认  Esc取消"
+		return "↑/↓ 选择  [/]翻页  Enter确认  Esc取消"
 	}
 	if moyu {
 		return "ENTER CONFIRM  ESC CANCEL"
@@ -232,4 +238,14 @@ func removeLastRune(value string) string {
 
 func commandText(value string) string {
 	return strings.TrimSpace(value)
+}
+
+func candidateDisplayCode(symbol string) string {
+	if len(symbol) >= 2 {
+		prefix := strings.ToLower(symbol[:2])
+		if prefix == "sh" || prefix == "sz" || prefix == "th" {
+			return symbol[2:]
+		}
+	}
+	return symbol
 }

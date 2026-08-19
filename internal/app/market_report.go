@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,7 +71,7 @@ func scanTechnical(bars []domain.DailyBar) (domain.MarketTechnicalSnapshot, bool
 		closePosition = (latest.Close - latest.Low) / (latest.High - latest.Low) * 100
 	}
 	result := domain.MarketTechnicalSnapshot{
-		DataDate: latest.Date, Close: latest.Close,
+		DataSource: latest.Source, DataDate: latest.Date, Close: latest.Close,
 		Return5:  (latest.Close/closes[len(closes)-6] - 1) * 100,
 		Return20: (latest.Close/closes[len(closes)-21] - 1) * 100,
 		Return60: (latest.Close/closes[len(closes)-61] - 1) * 100,
@@ -454,6 +455,28 @@ func marketAmountFromQuotes(quotes []domain.Quote) float64 {
 	return shanghai + shenzhen + math.Max(beijing, 0)
 }
 
+func oldestMarketQuoteTime(quotes []domain.Quote) string {
+	oldest := ""
+	for _, quote := range quotes {
+		if !slices.Contains(market.BroadMarketSymbols, quote.Symbol) || strings.TrimSpace(quote.QuoteTime) == "" {
+			continue
+		}
+		if oldest == "" || quote.QuoteTime < oldest {
+			oldest = quote.QuoteTime
+		}
+	}
+	return oldest
+}
+
+func marketQuoteSource(quotes []domain.Quote) string {
+	for _, quote := range quotes {
+		if source := strings.TrimSpace(quote.Source); source != "" {
+			return source
+		}
+	}
+	return "腾讯Level-1指数行情"
+}
+
 type scanFetchResult struct {
 	kind   string
 	boards []domain.BoardFlow
@@ -551,9 +574,14 @@ func (app *App) collectMarketScanFacts(ctx context.Context, progress marketRepor
 		return domain.MarketScanFacts{}, fmt.Errorf("市场扫描基础数据不足: %s", strings.Join(warnings, "；"))
 	}
 
+	generatedAt := time.Now()
 	facts := domain.MarketScanFacts{
-		SchemaVersion: 1, GeneratedAt: time.Now(), MarketStatus: marketSessionAt(time.Now()).Label,
+		SchemaVersion: 1, GeneratedAt: generatedAt, MarketStatus: marketSessionAt(generatedAt).Label,
+		QuoteSource: marketQuoteSource(quotes), QuoteTime: oldestMarketQuoteTime(quotes),
 		HotBoards: selectHotBoards(boardsUp, boardsFlow), WeakBoards: selectWeakBoards(boardsDown), Warnings: warnings,
+	}
+	if warning := quoteFreshnessWarning(facts.QuoteTime, facts.GeneratedAt); warning != "" {
+		facts.Warnings = append(facts.Warnings, warning)
 	}
 	strictIntraday := marketSessionAt(facts.GeneratedAt).Continuous
 	if len(facts.HotBoards) == 0 {
@@ -593,12 +621,19 @@ func (app *App) collectMarketScanFacts(ctx context.Context, progress marketRepor
 	indexNames := map[string]string{"sh000001": "上证", "sz399001": "深证", "sz399006": "创业板"}
 	for range market.BroadMarketSymbols {
 		result := <-historyResults
-		technical, ok := scanTechnical(result.bars)
+		bars, unfinishedWarning := completedDailyBars(result.bars, facts.GeneratedAt)
+		if unfinishedWarning != "" {
+			facts.Warnings = append(facts.Warnings, result.symbol+": "+unfinishedWarning)
+		}
+		technical, ok := scanTechnical(bars)
 		if result.err != nil || !ok {
 			if result.err != nil {
 				facts.Warnings = append(facts.Warnings, result.symbol+"日线: "+result.err.Error())
 			}
 			continue
+		}
+		if warning := dailyFreshnessWarning(technical.DataDate, technical.DataSource, facts.GeneratedAt); warning != "" {
+			facts.Warnings = append(facts.Warnings, result.symbol+": "+warning)
 		}
 		facts.Indices = append(facts.Indices, domain.MarketIndexAssessment{
 			Symbol: result.symbol, Name: indexNames[result.symbol], Percent: quoteMap[result.symbol].Percent,
@@ -729,8 +764,15 @@ func (app *App) collectMarketScanFacts(ctx context.Context, progress marketRepor
 	technicals := make(map[string]domain.MarketTechnicalSnapshot, len(preliminary))
 	for range preliminary {
 		result := <-stockHistoryResults
-		if technical, ok := scanTechnical(result.bars); ok {
+		bars, unfinishedWarning := completedDailyBars(result.bars, facts.GeneratedAt)
+		if unfinishedWarning != "" {
+			facts.Warnings = append(facts.Warnings, result.symbol+": "+unfinishedWarning)
+		}
+		if technical, ok := scanTechnical(bars); ok {
 			technicals[result.symbol] = technical
+			if warning := dailyFreshnessWarning(technical.DataDate, technical.DataSource, facts.GeneratedAt); warning != "" {
+				facts.Warnings = append(facts.Warnings, result.symbol+": "+warning)
+			}
 		} else if result.err != nil {
 			facts.Warnings = append(facts.Warnings, result.symbol+"日线: "+result.err.Error())
 		}
@@ -739,7 +781,7 @@ func (app *App) collectMarketScanFacts(ctx context.Context, progress marketRepor
 		preliminary[index].Technical = technicals[preliminary[index].Stock.Symbol]
 		applyTechnicalScore(&preliminary[index])
 	}
-	reportProgress(progress, "核对候选股近期正式公告索引")
+	reportProgress(progress, "核对候选股近30日正式公告索引")
 	preliminarySymbols := make([]string, 0, len(preliminary))
 	for _, candidate := range preliminary {
 		preliminarySymbols = append(preliminarySymbols, candidate.Stock.Symbol)
@@ -748,24 +790,92 @@ func (app *App) collectMarketScanFacts(ctx context.Context, progress marketRepor
 	if announcementError != nil {
 		facts.Warnings = append(facts.Warnings, "公告索引: "+announcementError.Error())
 	}
-	reportDate := facts.GeneratedAt.Format("2006-01-02")
-	filteredAnnouncements := announcements[:0]
-	for _, announcement := range announcements {
-		if announcement.Date == "" || announcement.Date <= reportDate {
-			filteredAnnouncements = append(filteredAnnouncements, announcement)
-		}
-	}
-	announcements = filteredAnnouncements
+	announcements, _ = filterRecentAnnouncementsBySymbol(announcements, facts.GeneratedAt, 5)
 	for index := range preliminary {
 		attachAnnouncements(&preliminary[index], announcements)
 		preliminary[index].Grade, preliminary[index].Category = classifyMarketCandidate(preliminary[index])
 	}
 	facts.Candidates = selectMarketCandidates(preliminary, marketReportCandidateLimit)
 	if len(facts.Candidates) == 0 {
-		return domain.MarketScanFacts{}, fmt.Errorf("未筛选到满足量价和资金条件的候选股")
+		facts.Warnings = append(facts.Warnings, "未筛选到同时满足当前量价、流动性和资金条件的候选股；本轮观察池留空，不为凑数降低门槛")
+	}
+	selectedAnnouncements := make([]domain.MarketAnnouncement, 0)
+	for _, candidate := range facts.Candidates {
+		selectedAnnouncements = append(selectedAnnouncements, candidate.Announcements...)
+	}
+	selectedAnnouncements, _ = filterRecentAnnouncementsBySymbol(selectedAnnouncements, facts.GeneratedAt, 5)
+	selectedResearch := app.collectMarketCandidateResearch(ctx, facts.Candidates, facts.GeneratedAt, progress, &facts.Warnings)
+	marketNews := app.collectMarketReportNews(ctx, facts.GeneratedAt, progress, &facts.Warnings)
+	facts.Evidence = buildEvidenceSnapshot(facts.GeneratedAt, selectedAnnouncements, marketNews, selectedResearch)
+	for index := range facts.Candidates {
+		facts.Candidates[index].EvidenceIDs = evidenceIDsForSymbol(facts.Evidence, facts.Candidates[index].Stock.Symbol)
 	}
 	sanitizeMarketScanFacts(&facts)
+	facts.Warnings = sortedWarnings(facts.Warnings)
 	return facts, nil
+}
+
+func (app *App) collectMarketReportNews(
+	ctx context.Context,
+	generatedAt time.Time,
+	progress marketReportProgress,
+	warnings *[]string,
+) []domain.StockNewsItem {
+	client, ok := app.news.(market.MarketNewsClient)
+	if !ok {
+		return nil
+	}
+	reportProgress(progress, "采集近7日市场新闻线索")
+	items, err := client.FetchMarketNews(ctx, 8)
+	if err != nil {
+		*warnings = append(*warnings, "市场新闻: "+err.Error())
+		return nil
+	}
+	filtered, _ := filterRecentNews(items, generatedAt, 8)
+	return filtered
+}
+
+func (app *App) collectMarketCandidateResearch(
+	ctx context.Context,
+	candidates []domain.MarketCandidateAssessment,
+	generatedAt time.Time,
+	progress marketReportProgress,
+	warnings *[]string,
+) []domain.BrokerResearchItem {
+	if app.research == nil || len(candidates) == 0 {
+		return nil
+	}
+	limit := len(candidates)
+	if limit > 5 {
+		limit = 5
+	}
+	reportProgress(progress, fmt.Sprintf("采集前%d只候选的近90日券商专业观点", limit))
+	type result struct {
+		symbol string
+		items  []domain.BrokerResearchItem
+		err    error
+	}
+	results := make(chan result, limit)
+	for _, candidate := range candidates[:limit] {
+		symbol := candidate.Stock.Symbol
+		go func() {
+			items, err := app.research.FetchBrokerResearch(
+				ctx, symbol, generatedAt.AddDate(0, 0, -90), generatedAt, 3,
+			)
+			results <- result{symbol: symbol, items: items, err: err}
+		}()
+	}
+	items := make([]domain.BrokerResearchItem, 0, limit*3)
+	for range limit {
+		result := <-results
+		if result.err != nil {
+			*warnings = append(*warnings, result.symbol+"券商研报: "+result.err.Error())
+			continue
+		}
+		filtered, _ := filterRecentResearch(result.items, generatedAt, 3)
+		items = append(items, filtered...)
+	}
+	return items
 }
 
 func zeroIfNotFinite(value float64) float64 {
@@ -887,6 +997,9 @@ func renderDeterministicMarketReport(facts domain.MarketScanFacts, aiError strin
 			board.LeaderName, board.LeaderCode, board.LeaderPercent)
 	}
 	builder.WriteString("\n## 智能观察池\n\n")
+	if len(facts.Candidates) == 0 {
+		builder.WriteString("- 本轮没有候选同时通过当前量价、流动性和资金条件，不为凑数降低门槛。\n\n")
+	}
 	gradeLabels := map[string]string{
 		"A": "A：板块龙头/核心承接",
 		"B": "B：高波动情绪候选",
@@ -916,6 +1029,9 @@ func renderDeterministicMarketReport(facts domain.MarketScanFacts, aiError strin
 			if len(candidate.Risks) > 0 {
 				fmt.Fprintf(&builder, "   风险：%s。\n", strings.Join(candidate.Risks, "；"))
 			}
+			if len(candidate.EvidenceIDs) > 0 {
+				fmt.Fprintf(&builder, "   外部凭证：[%s]（仅按对应来源等级使用）。\n", strings.Join(candidate.EvidenceIDs, "]、["))
+			}
 		}
 		builder.WriteString("\n")
 	}
@@ -935,9 +1051,9 @@ func marketReportPrompt(facts domain.MarketScanFacts) (string, error) {
 2. 先给一句话总判断，再分为“大盘量能与承接”“看涨/看跌条件”“热门板块与5只龙头”“智能观察池10只”“公告与舆情线索”“次日复核规则”。
 3. 必须区分短线和中期；趋势必须引用MA5/20/60、20日量比、收盘位置或成交额变化。
 4. 板块通常同时引用涨幅、主力净额和上涨/下跌家数；flow_available为false时必须明确写“资金暂不可用”，并只按涨幅与广度做低置信度判断。
-5. 观察池必须按grade/category分为“A板块龙头/核心承接”“B高波动情绪候选”“C超跌反转观察”，沿用reasons、risks和公告标题；flow_available为false时不得把main_net=0描述成资金持平或净流入；不得添加数据中没有的公司事实、政策、新闻或公告数字。
-6. 资金流和公告标题只是行为/事件线索，不得写成确定性买卖指令。公告核心条款未经PDF核验时必须说明。
-7. 最后明确：报告不触发自动交易，观察池不是开盘直接买入清单。
+5. 观察池必须按grade/category分为“A板块龙头/核心承接”“B高波动情绪候选”“C超跌反转观察”，沿用reasons、risks和公告标题；候选为空时必须如实写“本轮观察池为空”，不得编造或降低门槛凑数；flow_available为false时不得把main_net=0描述成资金持平或净流入；不得添加数据中没有的公司事实、政策、新闻或公告数字。
+6. evidence是冻结的信息凭证。涉及公告、新闻、券商观点的每项判断都必须在句末引用已有的[E##]（即evidence.id），禁止创造不存在的ID。A层只有verified_body=true才可作已核验事实；B层券商研报仅是专业观点；C层新闻只作背景线索；D层只衡量情绪。B/C/D层不得单独支撑买卖结论。
+7. 正文不自行编造来源链接；最后明确：报告不触发自动交易，观察池不是开盘直接买入清单。系统会在末尾追加冻结凭证清单。
 
 结构化事实JSON：
 ` + string(data)
@@ -945,7 +1061,7 @@ func marketReportPrompt(facts domain.MarketScanFacts) (string, error) {
 }
 
 func codexReportTimeout() time.Duration {
-	seconds := 300
+	seconds := 600
 	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ASTOCK_CODEX_TIMEOUT_SECONDS"))); err == nil && value >= 30 && value <= 1800 {
 		seconds = value
 	}
@@ -957,26 +1073,40 @@ func (app *App) generateMarketReport(ctx context.Context, progress marketReportP
 	if err != nil {
 		return domain.GeneratedMarketReport{}, err
 	}
+	setSnapshotHash(&facts)
 	report := domain.GeneratedMarketReport{GeneratedAt: facts.GeneratedAt, Facts: facts}
 	prompt, promptError := marketReportPrompt(facts)
 	if promptError != nil {
 		return report, promptError
 	}
 	if app.marketReportAI != nil {
-		reportProgress(progress, "Codex正在后台综合市场报告")
-		aiContext, cancel := context.WithTimeout(ctx, codexReportTimeout())
-		markdown, aiError := app.marketReportAI.Synthesize(aiContext, prompt)
-		cancel()
-		if aiError == nil {
-			report.AIUsed = true
-			report.Markdown = markdown
+		freshness := marketFactsFreshness(facts)
+		report.Agents = app.runResearchAgents(ctx, "市场扫描", freshness, facts, marketReportAgentRoles, progress)
+		if successfulAgentCount(report.Agents) > 0 {
+			reportProgress(progress, "主Agent校验角色分歧并综合市场报告")
+			aiContext, cancel := context.WithTimeout(ctx, codexReportTimeout())
+			markdown, aiError := app.marketReportAI.Synthesize(
+				aiContext, researchSupervisorPrompt(prompt, "市场扫描", freshness, report.Agents),
+			)
+			cancel()
+			if aiError == nil {
+				aiError = validateEvidenceReferences(markdown, facts.Evidence)
+			}
+			if aiError == nil {
+				report.AIUsed = true
+				report.Markdown = markdown
+			} else {
+				report.AIError = aiError.Error()
+			}
 		} else {
-			report.AIError = aiError.Error()
+			report.AIError = "多角色Agent均不可用: " + researchFailureSummary(report.Agents)
 		}
 	}
 	if strings.TrimSpace(report.Markdown) == "" {
 		report.Markdown = renderDeterministicMarketReport(facts, report.AIError)
 	}
+	report.Markdown = attachEvidenceSection(report.Markdown, facts.Evidence)
+	report.Markdown = attachResearchFreshness(report.Markdown, marketFactsFreshness(facts), report.Agents)
 	if app.marketReports == nil {
 		return report, fmt.Errorf("智能市场报告存储未初始化")
 	}

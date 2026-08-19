@@ -25,6 +25,35 @@ func TestMoveWatchlistSymbolAndReorderQuotes(t *testing.T) {
 	}
 }
 
+func TestReorderQuotesKeepsBoardPlaceholderInMixedWatchlist(t *testing.T) {
+	symbols := []string{"sh600519", "th881155", "sz000001"}
+	quotes := []domain.Quote{{Symbol: "sz000001", Name: "平安银行"}, {Symbol: "sh600519", Name: "贵州茅台"}}
+	ordered := reorderQuotes(quotes, symbols)
+	if len(ordered) != 3 || ordered[0].Symbol != "sh600519" || ordered[1].Symbol != "th881155" || ordered[1].Code != "881155" || ordered[2].Symbol != "sz000001" {
+		t.Fatalf("mixed watchlist lost board position: %#v", ordered)
+	}
+	flow := domain.BoardFlow{Code: "th881155", Name: "银行", Percent: 1.2, MainNet: 3e9, Quote: &domain.BoardQuoteSnapshot{Price: 1333.5}}
+	merged := mergeBoardAssetQuotes(ordered, symbols, map[string]domain.BoardFlow{"th881155": flow})
+	if merged[1].Name != "银行" || merged[1].Current != "1333.50" || merged[1].Percent != 1.2 {
+		t.Fatalf("board row was not decorated: %#v", merged[1])
+	}
+}
+
+func TestMergeBoardAssetFundFlowsPreservesBoardAfterStockRefresh(t *testing.T) {
+	flows := mergeBoardAssetFundFlows(map[string]domain.FundFlow{
+		"sh600519": {Symbol: "sh600519", MainNet: 1.25e8},
+	}, map[string]domain.BoardFlow{
+		"th881155": {Code: "th881155", Name: "银行", Percent: 1.2, MainNet: 64.42e8, MainRatio: 8.3},
+	})
+	if len(flows) != 2 || flows["sh600519"].MainNet != 1.25e8 {
+		t.Fatalf("stock fund flow was not preserved: %#v", flows)
+	}
+	board, ok := flows["th881155"]
+	if !ok || board.Name != "银行" || board.MainNet != 64.42e8 || board.MainRatio != 8.3 {
+		t.Fatalf("board fund flow was not merged: %#v", board)
+	}
+}
+
 func TestWatchSortStateUsesTwoEnterPhases(t *testing.T) {
 	state := watchSortState{}
 	state.begin([]string{"sh600519", "sz000001"}, 1)
@@ -110,6 +139,15 @@ func TestWatchBaseControlsAdvertisesGroupAssignment(t *testing.T) {
 	}
 	if controls := watchBaseControls(false, false); !strings.Contains(controls, "y板块资金") {
 		t.Fatalf("standard controls missing board fund shortcut: %q", controls)
+	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "w外盘指数") {
+		t.Fatalf("standard controls missing global market shortcut: %q", controls)
+	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "t策略研究") {
+		t.Fatalf("standard controls missing strategy lab shortcut: %q", controls)
+	}
+	if controls := watchBaseControls(false, false); !strings.Contains(controls, "\nt策略研究  x咨询AI  c个股研判  o查看  s市场报告  r查看") {
+		t.Fatalf("strategy and AI/report shortcuts should share one line: %q", controls)
 	}
 }
 

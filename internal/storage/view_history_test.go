@@ -60,6 +60,23 @@ func TestRecordViewHistoryPreservesExistingName(t *testing.T) {
 	}
 }
 
+func TestRecordViewHistorySupportsTHSIndustryAndMovesItToFront(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "view-history.tsv")
+	if err := RecordViewHistory(file, "sh600519", "贵州茅台"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordViewHistory(file, "th881155", "银行"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := LoadViewHistory(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Symbol != "th881155" || items[0].Name != "银行" || items[1].Symbol != "sh600519" {
+		t.Fatalf("unexpected mixed asset history: %#v", items)
+	}
+}
+
 func TestLoadViewHistoryIgnoresInvalidAndDuplicateLines(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "view-history.tsv")
 	data := strings.Join([]string{

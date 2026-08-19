@@ -40,6 +40,7 @@ type MarketAnnouncement struct {
 }
 
 type MarketTechnicalSnapshot struct {
+	DataSource    string  `json:"data_source,omitempty"`
 	DataDate      string  `json:"data_date"`
 	Close         float64 `json:"close"`
 	Return5       float64 `json:"return_5d_percent"`
@@ -81,12 +82,16 @@ type MarketCandidateAssessment struct {
 	Reasons       []string                `json:"reasons"`
 	Risks         []string                `json:"risks"`
 	Announcements []MarketAnnouncement    `json:"announcements,omitempty"`
+	EvidenceIDs   []string                `json:"evidence_ids,omitempty"`
 }
 
 type MarketScanFacts struct {
 	SchemaVersion      int                         `json:"schema_version"`
+	SnapshotHash       string                      `json:"snapshot_hash,omitempty"`
 	GeneratedAt        time.Time                   `json:"generated_at"`
 	MarketStatus       string                      `json:"market_status"`
+	QuoteSource        string                      `json:"quote_source,omitempty"`
+	QuoteTime          string                      `json:"quote_time,omitempty"`
 	CurrentAmount      float64                     `json:"current_market_amount_wan_yuan"`
 	PreviousAmount     float64                     `json:"previous_market_amount_wan_yuan"`
 	AmountChange       float64                     `json:"amount_change_percent"`
@@ -97,16 +102,20 @@ type MarketScanFacts struct {
 	TopAmountAdvancers int                         `json:"top_amount_advancers"`
 	TopAmountDecliners int                         `json:"top_amount_decliners"`
 	TopAmountMainNet   float64                     `json:"top_amount_main_net_yuan"`
+	Evidence           EvidenceSnapshot            `json:"evidence"`
 	Warnings           []string                    `json:"warnings,omitempty"`
 }
 
 type GeneratedMarketReport struct {
-	GeneratedAt  time.Time       `json:"generated_at"`
-	AIUsed       bool            `json:"ai_used"`
-	AIError      string          `json:"ai_error,omitempty"`
-	Markdown     string          `json:"markdown"`
-	Facts        MarketScanFacts `json:"facts"`
-	Directory    string          `json:"-"`
-	MarkdownPath string          `json:"-"`
-	FactsPath    string          `json:"-"`
+	GeneratedAt  time.Time          `json:"generated_at"`
+	AIUsed       bool               `json:"ai_used"`
+	AIError      string             `json:"ai_error,omitempty"`
+	Markdown     string             `json:"markdown"`
+	Facts        MarketScanFacts    `json:"facts"`
+	Agents       []AgentResearchRun `json:"agents,omitempty"`
+	Directory    string             `json:"-"`
+	MarkdownPath string             `json:"-"`
+	FactsPath    string             `json:"-"`
+	AgentsPath   string             `json:"-"`
+	EvidencePath string             `json:"-"`
 }

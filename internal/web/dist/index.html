@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
+  <title>ASTOCK Web 行情</title>
+  <script type="module" crossorigin src="/assets/index.38ec7dfb.js"></script>
+  <link rel="stylesheet" href="/assets/index.0af2015b.css">
+</head>
+<body>
+  <div id="app" v-cloak>
+    <main class="shell">
+      <div class="app-layout" :class="{'drawer-collapsed': !watchlistOpen}">
+        <aside class="watchlist-drawer" :class="{open: watchlistOpen}">
+          <div class="drawer-head">
+            <div v-if="watchlistOpen"><div class="drawer-kicker">WATCHLIST</div><h2>自选</h2></div>
+            <button type="button" class="drawer-toggle" :title="watchlistOpen ? '收起自选' : '展开自选'" :aria-label="watchlistOpen ? '收起自选' : '展开自选'" @click="watchlistOpen = !watchlistOpen" v-text="watchlistOpen ? '‹' : '›'"></button>
+          </div>
+          <template v-if="watchlistOpen">
+            <div class="watchlist-toolbar">
+              <select v-model="selectedWatchlistGroup" aria-label="自选分组">
+                <option v-for="group in watchlistGroupNames" :key="group" :value="group" v-text="group"></option>
+              </select>
+              <span class="symbol" v-text="watchlistItems.length + ' 只'"></span>
+              <button type="button" class="icon-button" title="刷新自选" aria-label="刷新自选" :disabled="watchlistRefreshing" @click="loadWatchlist">↻</button>
+            </div>
+            <div class="watchlist-list" v-if="watchlistItems.length">
+              <div class="watchlist-item" v-for="item in watchlistItems" :key="item.symbol" :class="{active: item.symbol === data.symbol}" @click="selectWatchlistSymbol(item.symbol)">
+                <div class="watchlist-copy"><strong v-text="watchlistName(item)"></strong><small><span class="watchlist-kind" v-text="assetKindLabel(item.kind)"></span> <span v-text="displayCode(item.symbol)"></span></small></div>
+                <div class="watchlist-market"><strong v-text="item.kind === 'sector' ? '板块' : (item.price || '--')"></strong><small :class="watchlistChangeClass(item.percent)" v-text="watchlistPercent(item.percent)"></small></div>
+                <button type="button" class="remove-button" title="从当前自选中移除" :aria-label="'移除 ' + displayCode(item.symbol)" @click.stop="removeWatchlist(item.symbol)">×</button>
+              </div>
+            </div>
+            <div class="watchlist-empty" v-else>当前分组暂无资产</div>
+            <form class="watchlist-add" @submit.prevent="addWatchlist">
+              <input v-model.trim="watchlistInput" autocomplete="off" placeholder="添加股票、转债、板块代码或名称" aria-label="添加股票、转债、板块代码或名称">
+              <button type="submit" :disabled="watchlistLoading || !watchlistInput">添加</button>
+            </form>
+            <div class="watchlist-error" v-if="watchlistError" v-text="watchlistError"></div>
+          </template>
+        </aside>
+
+        <div class="main-content">
+          <section class="market-strip" aria-label="主要指数">
+            <div class="market-strip-label"><span>MARKET</span><small v-text="indicesLoading ? '刷新中' : '主要指数'"></small></div>
+            <div class="market-index-list">
+              <button type="button" class="market-index" v-for="item in marketIndices" :key="item.symbol" :class="{active: item.symbol === data.symbol}" :title="(item.source || '行情') + (item.quote_time ? ' · ' + item.quote_time : '')" @click="selectMarketIndex(item)">
+                <span class="market-index-name"><strong v-text="item.name"></strong><small v-text="displayCode(item.symbol)"></small></span>
+                <span class="market-index-value" v-text="item.current || '--'"></span>
+                <span class="market-index-change" :class="watchlistChangeClass(item.percent)" v-text="marketIndexChange(item)"></span>
+              </button>
+            </div>
+            <div class="market-turnover" v-if="marketAmount" :title="(marketAmount.source || '成交额数据') + (marketAmount.trade_date ? ' · 上一交易日 ' + marketAmount.trade_date : '')">
+              <span class="market-turnover-label">今日成交额总计</span>
+              <strong v-text="marketAmountValue(marketAmount.current_wan_yuan)"></strong>
+              <small :class="marketAmount.delta_wan_yuan >= 0 ? 'up' : 'down'" v-text="'较上一日 ' + marketAmountChange(marketAmount)"></small>
+            </div>
+            <span class="market-strip-error" v-if="indicesError" :title="indicesError">!</span>
+          </section>
+          <header>
+            <div class="title-row"><button type="button" class="mobile-drawer-button" title="打开自选" aria-label="打开自选" @click="watchlistOpen = true">☰</button><div><div class="eyebrow">ASTOCK / MARKET VIEW</div><h1 v-text="title"></h1></div></div>
+            <form class="toolbar" @submit.prevent="search">
+              <input v-model.trim="query" autocomplete="off" placeholder="股票、转债、板块代码或名称" aria-label="股票、转债、板块代码或名称">
+              <button type="submit" :disabled="loading" v-text="loading ? '加载中' : '查看行情'"></button>
+            </form>
+          </header>
+          <section class="meta">
+            <span class="symbol" v-text="data.symbol || '--'"></span>
+            <span class="price" v-if="!isSector" v-text="quote.current || '--'"></span>
+            <span class="change" v-if="!isSector" :class="changeClass" v-text="changeText"></span>
+            <span class="change" v-else :class="boardChangeClass" v-text="boardChangeText"></span>
+            <span class="timestamp" v-text="timestamp"></span>
+          </section>
+          <section class="stats" v-if="!isSector">
+            <div class="stat"><label>今开</label><strong v-text="quote.open || '--'"></strong></div>
+            <div class="stat"><label>最高</label><strong v-text="quote.high || '--'"></strong></div>
+            <div class="stat"><label>最低</label><strong v-text="quote.low || '--'"></strong></div>
+            <div class="stat"><label>成交额</label><strong v-text="quoteAmount"></strong></div>
+            <div class="stat"><label>换手率</label><strong v-text="quote.turnover || '--'"></strong></div>
+            <div class="stat"><label>量比</label><strong v-text="quote.volume_ratio || '--'"></strong></div>
+          </section>
+          <section class="sector-panel" v-if="isSector && board">
+            <div class="sector-head"><div><div class="eyebrow">SECTOR / BOARD</div><h2 v-text="board.name || data.symbol"></h2><span class="symbol" v-text="board.code || data.symbol"></span></div><div class="sector-change" :class="boardChangeClass" v-text="boardChangeText"></div></div>
+            <div class="sector-stats">
+              <div class="stat"><label>行业指数</label><strong v-text="board.quote ? number(board.quote.price) : '--'"></strong></div>
+              <div class="stat"><label>涨跌额</label><strong v-text="board.quote ? number(board.quote.delta) : '--'"></strong></div>
+              <div class="stat"><label>今开 / 昨收</label><strong v-text="board.quote ? number(board.quote.open) + ' / ' + number(board.quote.previous_close) : '--'"></strong></div>
+              <div class="stat"><label>最高 / 最低</label><strong v-text="board.quote ? number(board.quote.high) + ' / ' + number(board.quote.low) : '--'"></strong></div>
+              <div class="stat"><label>成交额</label><strong v-text="board.quote ? compact(board.quote.amount_yuan) : '--'"></strong></div>
+              <div class="stat"><label>成交量</label><strong v-text="board.quote ? number(board.quote.volume_wan_lots) + '万手' : '--'"></strong></div>
+              <div class="stat"><label>主力净流入</label><strong v-text="compact(board.main_net_yuan)"></strong></div>
+              <div class="stat" v-if="board.main_ratio_percent != null"><label>主力占比</label><strong v-text="percentText(board.main_ratio_percent)"></strong></div>
+              <div class="stat"><label>涨幅排名</label><strong v-text="board.change_rank && board.universe_size ? board.change_rank + ' / ' + board.universe_size : '--'"></strong></div>
+              <div class="stat"><label>上涨 / 下跌</label><strong v-text="(board.rise_count || 0) + ' / ' + (board.fall_count || 0)"></strong></div>
+            </div>
+            <div class="sector-leaders"><div class="panel-head"><span class="panel-title">板块成分股 · 前十</span><span class="symbol" v-text="board.leaders && board.leaders.length ? board.leaders.length + ' 只' : '暂无'"></span></div><div class="leader-grid"><div class="leader-row" v-for="leader in (board.leaders || [])" :key="leader.symbol"><span><strong v-text="leader.name || '--'"></strong><small v-text="displayCode(leader.symbol) + ' · 涨速 ' + percentText(leader.speed_percent) + ' · 换手 ' + percentText(leader.turnover_percent) + ' · 量比 ' + number(leader.volume_ratio)"></small></span><b :class="watchlistChangeClass(leader.percent)" v-text="percentText(leader.percent)"></b><em v-text="compact(leader.amount_yuan)"></em></div></div></div>
+            <div class="symbol sector-note">板块资金和龙头用于观察，不构成买卖建议。</div>
+          </section>
+          <div class="workspace" v-if="!isSector">
+            <section class="chart-panel">
+              <div class="panel-head">
+                <div class="view-controls" role="tablist" aria-label="图表周期">
+                  <button type="button" role="tab" :aria-selected="chartMode === 'intraday'" :class="{active: chartMode === 'intraday'}" @click="setChartMode('intraday')">分时</button>
+                  <button type="button" role="tab" :aria-selected="chartMode === 'daily'" :class="{active: chartMode === 'daily'}" @click="setChartMode('daily')">日 K</button>
+                </div>
+                <div class="range-controls" v-if="chartMode === 'daily'" role="tablist" aria-label="日K显示范围">
+                  <button type="button" role="tab" v-for="option in dailyRangeOptions" :key="option.key" :aria-selected="dailyRangePreset === option.key" :class="{active: dailyRangePreset === option.key}" @click="setDailyRange(option)" v-text="option.label"></button>
+                  <button type="button" class="range-reset" title="恢复默认6个月" aria-label="恢复默认6个月" @click="resetDailyViewport">↺</button>
+                </div>
+                <span class="panel-title" v-text="chartMode === 'intraday' ? '分时 · 当日' : '日 K · 未复权'"></span>
+                <div class="legend" v-if="chartMode === 'intraday'"><span class="price-line">现价</span><span class="average-line">均价</span><span class="previous-line">昨收</span><span class="volume-line">成交量</span></div>
+                <div class="legend" v-else><span class="kline">K线</span><span class="ma5">MA5</span><span class="ma20">MA20</span><span class="ma60">MA60</span><span class="pressure-line">压力</span><span class="support-line">支撑</span></div>
+              </div>
+              <div class="chart-wrap"><canvas ref="chart" :class="{pannable: chartMode === 'daily', dragging: dailyDragging}" :title="chartMode === 'daily' ? '滚轮或双指缩放，拖动查看历史，双击恢复6个月' : '移动光标查看分时明细'" :aria-label="chartMode === 'intraday' ? '分时图' : '日K线图'" @pointerdown="handleChartPointerDown" @pointermove="handleChartPointerMove" @pointerup="handleChartPointerUp" @pointercancel="handleChartPointerUp" @pointerleave="handleChartPointerLeave" @wheel="handleChartWheel" @dblclick="chartMode === 'daily' && resetDailyViewport()"></canvas></div>
+            </section>
+            <aside class="side-panel">
+              <div class="panel-head"><span class="panel-title">行情摘要</span><span class="symbol" v-text="chartMode === 'intraday' ? minutes.length + ' 分钟' : bars.length + ' 根'"></span></div>
+              <div class="side-section"><h2>涨跌停边界</h2><div class="rows"><div class="row"><span>涨停价</span><b class="up" v-text="quote.limit_up || '--'"></b></div><div class="row"><span>跌停价</span><b class="down" v-text="quote.limit_down || '--'"></b></div></div></div>
+              <div class="side-section" v-if="chartMode === 'intraday'"><h2>最新分时</h2><div class="rows"><div class="row"><span>行情源</span><b v-text="quote.source || '--'"></b></div><div class="row"><span>交易日</span><b v-text="lastMinute.trade_date || '--'"></b></div><div class="row"><span>时间</span><b v-text="lastMinute.time || '--'"></b></div><div class="row"><span>现价</span><b v-text="number(lastMinute.price)"></b></div><div class="row"><span>均价</span><b v-text="number(lastMinute.average)"></b></div><div class="row"><span>分钟成交量</span><b v-text="compact(lastMinute.volume)"></b></div><div class="row"><span>分时源</span><b v-text="lastMinute.source || '--'"></b></div></div></div>
+              <div class="side-section" v-if="chartMode === 'daily'"><h2>关键点位</h2><div class="rows"><div class="row"><span>前20日压力</span><b class="up" v-text="number(dailyLevels.resistance)"></b></div><div class="row"><span>前20日支撑</span><b class="down" v-text="number(dailyLevels.support)"></b></div><div class="row"><span>最新收盘</span><b v-text="number(dailyLevels.close)"></b></div></div></div>
+              <div class="side-section" v-if="chartMode === 'daily'"><h2>可视日 K</h2><div class="rows"><div class="row"><span>日期</span><b v-text="visibleLastBar.date || '--'"></b></div><div class="row"><span>收盘</span><b v-text="number(visibleLastBar.close)"></b></div><div class="row"><span>成交量</span><b v-text="compact(visibleLastBar.volume)"></b></div><div class="row"><span>数据源</span><b v-text="visibleLastBar.source || '--'"></b></div></div></div>
+              <div class="side-section"><h2>说明</h2><div class="symbol" v-text="chartMode === 'intraday' ? '分时均价按当日累计成交额与成交量计算。图表用于观察，不构成买卖建议。' : '价格与均线沿用未复权日 K 口径。图表用于观察，不构成买卖建议。'"></div></div>
+            </aside>
+          </div>
+          <div class="notice" v-if="messages.length" v-text="messages.join('；')"></div>
+          <footer>Vue 行情页 · 自选与 CLI 共用 · 页面每 10 秒刷新 · 不影响 CLI 看盘</footer>
+        </div>
+      </div>
+    </main>
+  </div>
+
+</body>
+</html>

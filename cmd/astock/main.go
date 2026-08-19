@@ -19,6 +19,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "astock: %s\n", err)
 		os.Exit(1)
 	}
+	defer application.Close()
 	if err := application.Run(ctx, os.Args[1:]); err != nil {
 		application.PrintError(err)
 		os.Exit(1)

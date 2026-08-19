@@ -20,6 +20,10 @@ type StockNewsClient interface {
 	FetchStockNews(context.Context, string, int) ([]domain.StockNewsItem, error)
 }
 
+type MarketNewsClient interface {
+	FetchMarketNews(context.Context, int) ([]domain.StockNewsItem, error)
+}
+
 var newsHTMLPattern = regexp.MustCompile(`<[^>]+>`)
 
 func cleanNewsText(value string) string {
@@ -121,6 +125,41 @@ func (EastmoneyClient) FetchStockNews(ctx context.Context, symbol string, limit 
 	items := ParseStockNewsPayload(raw)
 	if len(items) == 0 {
 		return nil, fmt.Errorf("未解析到个股新闻线索")
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	prefixed := stockFromResearchCode(symbol)
+	for index := range items {
+		items[index].Symbol = prefixed
+		items[index].Relevance = "market_context"
+	}
+	return items, nil
+}
+
+func (EastmoneyClient) FetchMarketNews(ctx context.Context, limit int) ([]domain.StockNewsItem, error) {
+	if limit < 1 {
+		limit = 8
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	base := os.Getenv("ASTOCK_STOCK_NEWS_API_URL")
+	if base == "" {
+		base = stockNewsAPIURL
+	}
+	requestContext, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	keyword := "A股 沪深两市"
+	raw, err := fetchDecodedWithHeaders(requestContext, stockNewsAddress(base, keyword, limit), nil, map[string]string{
+		"Accept": "*/*", "Referer": "https://so.eastmoney.com/news/s?keyword=" + url.QueryEscape(keyword),
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := ParseStockNewsPayload(raw)
+	if len(items) == 0 {
+		return nil, fmt.Errorf("未解析到市场新闻线索")
 	}
 	if len(items) > limit {
 		items = items[:limit]

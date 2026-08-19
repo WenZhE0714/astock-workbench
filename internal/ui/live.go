@@ -232,13 +232,16 @@ func marketAmountChange(current, previous float64, currentDate, previousDate str
 	return fmt.Sprintf(" 较昨 %s %s (%+.2f%%)", arrow, humanMarketAmount(math.Abs(delta)), percent)
 }
 
-func marketAmountLine(label string, current, previous float64, currentDate, previousDate string, width int) string {
+func marketAmountLine(label string, current, previous float64, currentDate, previousDate string, moyu, color bool, width int) string {
 	value := humanMarketAmount(current)
 	change := marketAmountChange(current, previous, currentDate, previousDate)
+	if change != "" && color && !moyu {
+		change = style(change, trendCode(current-previous, false), true)
+	}
 	return truncateWidth(padWidth(label, 12, "left")+value+change, width)
 }
 
-func marketAmountOverview(indices []domain.Quote, previous domain.MarketAmountSnapshot, moyu bool, width int) string {
+func marketAmountOverview(indices []domain.Quote, previous domain.MarketAmountSnapshot, moyu, color bool, width int) string {
 	shanghai, shenzhen, beijing := marketAmountComponents(indices)
 	currentDate := marketQuoteTradeDate(indices)
 	previousDate := previous.TradeDate
@@ -253,9 +256,9 @@ func marketAmountOverview(indices []domain.Quote, previous domain.MarketAmountSn
 		allPrevious = previous.Shanghai + previous.Shenzhen + previous.Beijing
 	}
 	if moyu {
-		return marketAmountLine("TOTAL AMT", allCurrent, allPrevious, currentDate, previousDate, width)
+		return marketAmountLine("TOTAL AMT", allCurrent, allPrevious, currentDate, previousDate, moyu, color, width)
 	}
-	return marketAmountLine("沪深成交额", allCurrent, allPrevious, currentDate, previousDate, width)
+	return marketAmountLine("沪深成交额", allCurrent, allPrevious, currentDate, previousDate, moyu, color, width)
 }
 
 func liveHeader(data LiveData, options ViewOptions, width int) string {
@@ -272,7 +275,7 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 	}
 	header := first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
 		"\n" + marketFlowOverview(data.Flows, options.Moyu, options.Color, width) +
-		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, width)
+		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, options.Color, width)
 	if data.GroupName != "" && data.RankingKind == "" && !data.FundMonitorActive {
 		label := fmt.Sprintf("自选分组  %s  ·  %d只", data.GroupName, data.GroupCount)
 		if options.Moyu {

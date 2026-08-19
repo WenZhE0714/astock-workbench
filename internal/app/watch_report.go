@@ -66,7 +66,7 @@ func (state watchMarketReport) status(moyu bool) string {
 			return "AI MARKET REPORT READY | PRESS R TO OPEN"
 		}
 		if state.report.AIUsed {
-			return "智能报告已生成，按 r 查看"
+			return fmt.Sprintf("多Agent智能报告已生成（%d/%d），按 r 查看", successfulAgentCount(state.report.Agents), len(state.report.Agents))
 		}
 		return "量化报告已生成（Codex综合未完成），按 r 查看"
 	}
@@ -81,7 +81,7 @@ func (state watchMarketReport) status(moyu bool) string {
 
 func marketReportViewControls(moyu bool) string {
 	if moyu {
-		return "UP/DOWN SCROLL  [/] PAGE  G/G ENDPOINTS  ESC BACK  Q QUIT"
+		return "UP/DOWN SCROLL  [/] PAGE  G/G ENDPOINTS  H HISTORY  T STRATEGY  ESC BACK  Q QUIT"
 	}
-	return "↑/↓滚动  [/]翻页  g/G首尾  Esc返回  q退出"
+	return "↑/↓滚动  [/]翻页  g/G首尾  h历史  t策略研究  Esc返回  q退出"
 }

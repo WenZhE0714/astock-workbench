@@ -6,13 +6,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 const (
 	DefaultWatchlistGroup = "默认"
 	AllWatchlistGroup     = "全部"
-	watchlistHeader       = "# astock 自选股分组：[分组名] 后每行一个 sh/sz 前缀代码\n"
+	watchlistHeader       = "# astock 自选资产分组：[分组名] 后每行一个股票、转债或 BK 板块代码\n"
 )
 
 type WatchlistGroup struct {
@@ -87,9 +88,9 @@ func LoadWatchlistGroups(file string) ([]WatchlistGroup, []string, error) {
 			}
 			continue
 		}
-		symbol, status := market.InspectSymbol(line)
+		symbol, status := market.InspectAsset(line)
 		if status != "ok" {
-			warnings = append(warnings, "忽略自选股中的无效代码: "+line)
+			warnings = append(warnings, "忽略自选中的无效证券或板块代码: "+line)
 			continue
 		}
 		groupName := groups[current].Name
@@ -115,9 +116,9 @@ func SaveWatchlistGroups(file string, groups []WatchlistGroup) error {
 		builder.WriteString("]\n")
 		seen := make(map[string]bool)
 		for _, rawSymbol := range group.Symbols {
-			symbol, status := market.InspectSymbol(rawSymbol)
+			symbol, status := market.InspectAsset(rawSymbol)
 			if status != "ok" {
-				return fmt.Errorf("分组 %s 包含无效股票代码 %q", name, rawSymbol)
+				return fmt.Errorf("分组 %s 包含无效证券或板块代码 %q", name, rawSymbol)
 			}
 			if seen[symbol] {
 				continue
@@ -405,17 +406,23 @@ func PrintWatchlist(output io.Writer, file string, cache *NameCache) error {
 		fmt.Fprintf(output, "警告: %s\n", warning)
 	}
 	if len(WatchlistSymbols(groups, AllWatchlistGroup)) == 0 {
-		fmt.Fprintln(output, "自选股为空。可运行: astock add 600519 000001")
+		fmt.Fprintln(output, "自选为空。可运行: astock add 600519 113001 BK0423")
 		return nil
 	}
 	for groupIndex, group := range groups {
 		fmt.Fprintf(output, "[%s] %d只\n", group.Name, len(group.Symbols))
 		for _, symbol := range group.Symbols {
+			displayCode := symbol
+			if market.IsTHSIndustrySymbol(symbol) {
+				displayCode = market.THSIndustryCode(symbol)
+			} else if market.AssetKindOf(symbol) != domain.AssetKindSector && len(symbol) == 8 {
+				displayCode = symbol[2:]
+			}
 			name := cache.LookupName(symbol)
 			if name != "" {
-				fmt.Fprintf(output, "  %s  %s  %s\n", symbol[2:], market.MarketText(symbol), name)
+				fmt.Fprintf(output, "  %s  %s  %s\n", displayCode, market.MarketText(symbol), name)
 			} else {
-				fmt.Fprintf(output, "  %s  %s\n", symbol[2:], market.MarketText(symbol))
+				fmt.Fprintf(output, "  %s  %s\n", displayCode, market.MarketText(symbol))
 			}
 		}
 		if groupIndex < len(groups)-1 {

@@ -374,7 +374,7 @@ func (monitor *watchFundMonitor) rebuildRows() {
 		ratioDelta1 := fundSampleDelta(samples, time.Minute, func(flow domain.FundFlow) float64 { return flow.MainRatio })
 		industry := monitor.industryFlow(current.Industry)
 		rows = append(rows, domain.FundMovement{
-			Symbol: symbol, Name: current.Name, Industry: current.Industry,
+			SampledAt: samples[len(samples)-1].at, Symbol: symbol, Name: current.Name, Industry: current.Industry,
 			Price: current.Price, Percent: current.Percent, MainNet: current.MainNet, MainRatio: current.MainRatio,
 			Delta1Minute: delta1, Delta3Minutes: delta3, Delta5Minutes: delta5,
 			IndustryNet: industry.MainNet, IndustryPercent: industry.Percent,
@@ -482,9 +482,9 @@ func (monitor watchFundMonitor) movementFor(symbol string) (domain.FundMovement,
 
 func (monitor watchFundMonitor) controls(moyu bool) string {
 	if moyu {
-		return "UP/DOWN SELECT  [/] JUMP  ENTER DETAIL  V REFRESH  ESC BACK  Q QUIT\nY BOARD FUNDS  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
+		return "UP/DOWN SELECT  [/] JUMP  ENTER DETAIL  V REFRESH  ESC BACK  Q QUIT\nY BOARD FUNDS\nT STRATEGY  X ASK/OPEN AI  C STOCK REPORT  O OPEN  S MARKET REPORT  R OPEN"
 	}
-	return "↑/↓选择  [/]跳选  Enter详情  v刷新  Esc返回  q退出\ny板块资金  x咨询AI  c个股研判  o查看  s市场报告  r查看"
+	return "↑/↓选择  [/]跳选  Enter详情  v刷新  Esc返回  q退出\ny板块资金\nt策略研究  x咨询AI  c个股研判  o查看  s市场报告  r查看"
 }
 
 func (monitor watchFundMonitor) status(moyu bool) string {

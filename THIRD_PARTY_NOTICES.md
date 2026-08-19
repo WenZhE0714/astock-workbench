@@ -23,6 +23,28 @@ subprocess adapter.
 Users who redistribute or modify TradingAgents-Astock must comply with its own
 `LICENSE`, `NOTICE`, and `CHANGES_FROM_UPSTREAM.md` files.
 
+## Vue.js
+
+- Project: https://github.com/vuejs/core
+- License: MIT
+- Usage: bundled browser runtime for the local read-only Web interface
+
+## Vite
+
+- Project: https://github.com/vitejs/vite
+- License: MIT
+- Usage: Web interface build tool; not used by the running Go service
+
+## tdxrs
+
+`tdxrs` is an optional, separately installed Python dependency used only when
+the user selects the TongdaXin TCP market source.
+
+- Project: https://github.com/jiangtaovan/tdxrs
+- Version tested: 0.6.7
+- License: MIT
+- Usage: TongdaXin TCP quote, unadjusted daily-bar and intraday packet client
+
 ## Go dependencies
 
 - `github.com/mozillazg/go-pinyin` — MIT

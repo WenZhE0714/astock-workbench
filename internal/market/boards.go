@@ -31,6 +31,12 @@ type BoardFlowClient interface {
 	FetchBoards(context.Context, string) ([]domain.BoardFlow, error)
 }
 
+// BoardDetailClient is the board-level counterpart to BoardFlowClient. It is
+// used by the Web asset view so a BK symbol is never treated as a stock.
+type BoardDetailClient interface {
+	FetchBoard(context.Context, string) (domain.BoardFlow, []domain.MarketStockSnapshot, error)
+}
+
 type boardMembership struct {
 	Code      string
 	Name      string
@@ -138,6 +144,7 @@ type boardFlowPayload struct {
 
 type boardRankSnapshot struct {
 	Code         string
+	Name         string
 	Percent      float64
 	MainNet      float64
 	Turnover     float64
@@ -166,6 +173,7 @@ type boardRankPayload struct {
 		Total int `json:"total"`
 		Diff  []struct {
 			Code      string          `json:"f12"`
+			Name      string          `json:"f14"`
 			Percent   json.RawMessage `json:"f3"`
 			Turnover  json.RawMessage `json:"f8"`
 			MainNet   json.RawMessage `json:"f62"`
@@ -204,7 +212,7 @@ func parseBoardRankPage(raw string) (int, []boardRankSnapshot, bool) {
 			continue
 		}
 		items = append(items, boardRankSnapshot{
-			Code: code, Percent: rawNumber(item.Percent), MainNet: rawNumber(item.MainNet), Turnover: rawNumber(item.Turnover),
+			Code: code, Name: strings.TrimSpace(item.Name), Percent: rawNumber(item.Percent), MainNet: rawNumber(item.MainNet), Turnover: rawNumber(item.Turnover),
 			RiseCount: item.RiseCount, FallCount: item.FallCount, FlatCount: item.FlatCount,
 		})
 	}
@@ -319,6 +327,26 @@ func boardRankAddress(base, kind, metric string) string {
 	return base + separator + values.Encode()
 }
 
+func boardSearchAddress(base, kind string) string {
+	return boardSearchPageAddress(base, kind, 1)
+}
+
+func boardSearchPageAddress(base, kind string, page int) string {
+	address := boardRankAddress(base, kind, "f3")
+	parsed, err := url.Parse(address)
+	if err != nil {
+		return address
+	}
+	query := parsed.Query()
+	query.Set("pz", strconv.Itoa(boardRankPageSize))
+	if page < 1 {
+		page = 1
+	}
+	query.Set("pn", strconv.Itoa(page))
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
 func (EastmoneyClient) fetchBoardFlows(ctx context.Context, memberships []boardMembership) (map[string]domain.BoardFlow, error) {
 	configuredBase := os.Getenv("ASTOCK_BOARD_FLOW_API_URL")
 	bases := []string{configuredBase}
@@ -385,6 +413,9 @@ func mergeBoardRankMetric(universe *boardRankUniverse, total int, items []boardR
 	for index, item := range items {
 		current := universe.Items[item.Code]
 		current.Code = item.Code
+		if item.Name != "" {
+			current.Name = item.Name
+		}
 		current.Percent = item.Percent
 		current.MainNet = item.MainNet
 		current.Turnover = item.Turnover
@@ -548,4 +579,95 @@ func (client EastmoneyClient) FetchBoards(ctx context.Context, symbol string) ([
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+// SearchBoards searches the current industry/concept board directory. The
+// ranking endpoint is also the most stable public directory available from
+// Eastmoney, and returning candidates lets the shared resolver handle board
+// names exactly like stock names.
+func (client EastmoneyClient) SearchBoards(ctx context.Context, input string) ([]domain.Candidate, error) {
+	needle := strings.TrimSpace(input)
+	if needle == "" {
+		return nil, nil
+	}
+	result := make([]domain.Candidate, 0)
+	seen := make(map[string]bool)
+	succeeded := 0
+	var lastError error
+	for _, kind := range []string{domain.BoardKindIndustry, domain.BoardKindConcept} {
+		foundDirectory := false
+		for _, base := range boardRankBases(kind) {
+			page := 1
+			for {
+				requestContext, cancel := context.WithTimeout(ctx, 4*time.Second)
+				raw, err := fetchDecoded(requestContext, boardSearchPageAddress(base, kind, page), nil)
+				cancel()
+				if err != nil {
+					lastError = err
+					break
+				}
+				total, items, ok := parseBoardRankPage(raw)
+				if !ok {
+					lastError = fmt.Errorf("未解析到板块目录")
+					break
+				}
+				foundDirectory = true
+				for _, item := range items {
+					if item.Name == "" || (!strings.Contains(item.Name, needle) && !strings.Contains(item.Code, strings.ToUpper(needle))) || seen[item.Code] {
+						continue
+					}
+					seen[item.Code] = true
+					result = append(result, domain.Candidate{Symbol: item.Code, Name: item.Name})
+				}
+				pages := (total + boardRankPageSize - 1) / boardRankPageSize
+				if pages <= page || len(items) == 0 || page >= 10 {
+					break
+				}
+				page++
+			}
+			if foundDirectory {
+				succeeded++
+				break
+			}
+		}
+		if !foundDirectory {
+			continue
+		}
+	}
+	if succeeded == 0 && lastError != nil {
+		return nil, lastError
+	}
+	return result, nil
+}
+
+// FetchBoard returns a board flow snapshot and its top members. Board flow
+// data is fetched through the same Eastmoney endpoint already used for stock
+// membership, so no separate quote protocol is introduced.
+func (client EastmoneyClient) FetchBoard(ctx context.Context, boardCode string) (domain.BoardFlow, []domain.MarketStockSnapshot, error) {
+	if IsTHSIndustrySymbol(boardCode) {
+		return (THSIndustryClient{}).FetchBoard(ctx, boardCode)
+	}
+	code := normalizeBoardCode(boardCode)
+	if code == "" {
+		return domain.BoardFlow{}, nil, fmt.Errorf("无效板块代码 %q", boardCode)
+	}
+	flowMap, err := client.fetchBoardFlows(ctx, []boardMembership{{Code: code, Name: "", Kind: domain.BoardKindIndustry}})
+	if err != nil {
+		return domain.BoardFlow{}, nil, err
+	}
+	flow, ok := flowMap[code]
+	if !ok {
+		return domain.BoardFlow{}, nil, fmt.Errorf("未返回板块 %s 的行情", code)
+	}
+	flow.Code = code
+	if flow.Kind == "" {
+		flow.Kind = domain.BoardKindIndustry
+	}
+	leaders, leaderErr := client.FetchIndustryLeaders(ctx, code, 5)
+	if leaderErr == nil && len(leaders) > 0 {
+		flow.LeaderCode = strings.TrimPrefix(leaders[0].Symbol, "sh")
+		flow.LeaderName = leaders[0].Name
+		flow.LeaderPercent = leaders[0].Percent
+	}
+	return flow, leaders, nil
 }

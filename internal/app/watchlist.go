@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
 func (app *App) runWatchlistMutation(ctx context.Context, action string, inputs []string) error {
 	if len(inputs) == 0 {
-		return fmt.Errorf("%s 后至少需要一个股票代码或名称", action)
+		return fmt.Errorf("%s 后至少需要一个股票、转债或板块代码/名称", action)
 	}
 	resolvedInputs := make([]string, 0)
 	for _, input := range inputs {
@@ -41,10 +43,16 @@ func (app *App) runWatchlistMutation(ctx context.Context, action string, inputs 
 			}
 		}
 		name := app.names.LookupName(symbol)
+		displayCode := symbol
+		if market.IsTHSIndustrySymbol(symbol) {
+			displayCode = market.THSIndustryCode(symbol)
+		} else if market.AssetKindOf(symbol) != domain.AssetKindSector && len(symbol) == 8 {
+			displayCode = symbol[2:]
+		}
 		if name != "" {
-			fmt.Fprintf(app.out, "%s  %s  %s\n", status, symbol[2:], name)
+			fmt.Fprintf(app.out, "%s  %s  %s\n", status, displayCode, name)
 		} else {
-			fmt.Fprintf(app.out, "%s  %s\n", status, symbol[2:])
+			fmt.Fprintf(app.out, "%s  %s\n", status, displayCode)
 		}
 	}
 	if action == "add" {
@@ -55,7 +63,7 @@ func (app *App) runWatchlistMutation(ctx context.Context, action string, inputs 
 
 func (app *App) runWatchlistList(arguments []string) error {
 	if len(arguments) > 0 {
-		return fmt.Errorf("list 不接受股票代码或名称")
+		return fmt.Errorf("list 不接受证券或板块代码/名称")
 	}
 	return storage.PrintWatchlist(app.out, app.paths.WatchlistFile, app.names)
 }

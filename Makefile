@@ -1,11 +1,15 @@
-.PHONY: test build dist-macos install clean
+.PHONY: test web-build build dist-macos install tdx-setup clean
 
 BINARY := astock
 LDFLAGS := -s -w -buildid=
+TDX_VENV ?= $(HOME)/.local/share/astock-workbench/tdx-venv
 
 test:
 	go test ./...
 	go vet ./...
+
+web-build:
+	cd web && npm run build
 
 build:
 	mkdir -p dist
@@ -22,6 +26,11 @@ dist-macos:
 
 install: build
 	install -m 0755 dist/$(BINARY) /usr/local/bin/$(BINARY)
+
+tdx-setup:
+	uv venv $(TDX_VENV) --python 3.11
+	uv pip install --python $(TDX_VENV)/bin/python tdxrs==0.6.7
+	@echo "TDX Python ready: $(TDX_VENV)/bin/python"
 
 clean:
 	rm -f dist/$(BINARY) dist/$(BINARY)-darwin-amd64 dist/$(BINARY)-darwin-arm64 dist/$(BINARY)-darwin-universal

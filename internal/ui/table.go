@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -177,6 +178,9 @@ func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, se
 		}
 		if task == "" {
 			task = item.Symbol
+		}
+		if market.AssetKindOf(item.Symbol) == domain.AssetKindSector {
+			task = "板块·" + task
 		}
 		if selected >= 0 {
 			marker := "  "
