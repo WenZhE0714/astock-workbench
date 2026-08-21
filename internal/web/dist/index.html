@@ -4,9 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
+  <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.38ec7dfb.js"></script>
-  <link rel="stylesheet" href="/assets/index.0af2015b.css">
+  <script type="module" crossorigin src="/assets/index.cf62dd6a.js"></script>
+  <link rel="stylesheet" href="/assets/index.23d99365.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -42,7 +43,15 @@
         </aside>
 
         <div class="main-content">
-          <section class="market-strip" aria-label="主要指数">
+          <nav class="workspace-nav" aria-label="工作台视图">
+            <div class="workspace-tabs" role="tablist">
+              <button type="button" role="tab" :aria-selected="workspaceMode === 'market'" :class="{active: workspaceMode === 'market'}" @click="switchWorkspace('market')">行情看板</button>
+              <button type="button" role="tab" :aria-selected="workspaceMode === 'realtime'" :class="{active: workspaceMode === 'realtime'}" @click="switchWorkspace('realtime')">实时选股</button>
+              <button type="button" role="tab" :aria-selected="workspaceMode === 'strategy'" :class="{active: workspaceMode === 'strategy'}" @click="switchWorkspace('strategy')">量化研究</button>
+            </div>
+            <span class="workspace-context" v-text="workspaceMode === 'strategy' ? '历史回测 · 样本外门禁 · 交易审计' : workspaceMode === 'realtime' ? '实时因子 · 多策略评分 · 信号留痕' : '实时行情 · 分时 · 日 K'"></span>
+          </nav>
+          <section class="market-strip" v-if="workspaceMode === 'market'" aria-label="主要指数">
             <div class="market-strip-label"><span>MARKET</span><small v-text="indicesLoading ? '刷新中' : '主要指数'"></small></div>
             <div class="market-index-list">
               <button type="button" class="market-index" v-for="item in marketIndices" :key="item.symbol" :class="{active: item.symbol === data.symbol}" :title="(item.source || '行情') + (item.quote_time ? ' · ' + item.quote_time : '')" @click="selectMarketIndex(item)">
@@ -58,21 +67,21 @@
             </div>
             <span class="market-strip-error" v-if="indicesError" :title="indicesError">!</span>
           </section>
-          <header>
+          <header v-if="workspaceMode === 'market'">
             <div class="title-row"><button type="button" class="mobile-drawer-button" title="打开自选" aria-label="打开自选" @click="watchlistOpen = true">☰</button><div><div class="eyebrow">ASTOCK / MARKET VIEW</div><h1 v-text="title"></h1></div></div>
             <form class="toolbar" @submit.prevent="search">
               <input v-model.trim="query" autocomplete="off" placeholder="股票、转债、板块代码或名称" aria-label="股票、转债、板块代码或名称">
               <button type="submit" :disabled="loading" v-text="loading ? '加载中' : '查看行情'"></button>
             </form>
           </header>
-          <section class="meta">
+          <section class="meta" v-if="workspaceMode === 'market'">
             <span class="symbol" v-text="data.symbol || '--'"></span>
             <span class="price" v-if="!isSector" v-text="quote.current || '--'"></span>
             <span class="change" v-if="!isSector" :class="changeClass" v-text="changeText"></span>
             <span class="change" v-else :class="boardChangeClass" v-text="boardChangeText"></span>
             <span class="timestamp" v-text="timestamp"></span>
           </section>
-          <section class="stats" v-if="!isSector">
+          <section class="stats" v-if="workspaceMode === 'market' && !isSector">
             <div class="stat"><label>今开</label><strong v-text="quote.open || '--'"></strong></div>
             <div class="stat"><label>最高</label><strong v-text="quote.high || '--'"></strong></div>
             <div class="stat"><label>最低</label><strong v-text="quote.low || '--'"></strong></div>
@@ -80,7 +89,7 @@
             <div class="stat"><label>换手率</label><strong v-text="quote.turnover || '--'"></strong></div>
             <div class="stat"><label>量比</label><strong v-text="quote.volume_ratio || '--'"></strong></div>
           </section>
-          <section class="sector-panel" v-if="isSector && board">
+          <section class="sector-panel" v-if="workspaceMode === 'market' && isSector && board">
             <div class="sector-head"><div><div class="eyebrow">SECTOR / BOARD</div><h2 v-text="board.name || data.symbol"></h2><span class="symbol" v-text="board.code || data.symbol"></span></div><div class="sector-change" :class="boardChangeClass" v-text="boardChangeText"></div></div>
             <div class="sector-stats">
               <div class="stat"><label>行业指数</label><strong v-text="board.quote ? number(board.quote.price) : '--'"></strong></div>
@@ -97,7 +106,7 @@
             <div class="sector-leaders"><div class="panel-head"><span class="panel-title">板块成分股 · 前十</span><span class="symbol" v-text="board.leaders && board.leaders.length ? board.leaders.length + ' 只' : '暂无'"></span></div><div class="leader-grid"><div class="leader-row" v-for="leader in (board.leaders || [])" :key="leader.symbol"><span><strong v-text="leader.name || '--'"></strong><small v-text="displayCode(leader.symbol) + ' · 涨速 ' + percentText(leader.speed_percent) + ' · 换手 ' + percentText(leader.turnover_percent) + ' · 量比 ' + number(leader.volume_ratio)"></small></span><b :class="watchlistChangeClass(leader.percent)" v-text="percentText(leader.percent)"></b><em v-text="compact(leader.amount_yuan)"></em></div></div></div>
             <div class="symbol sector-note">板块资金和龙头用于观察，不构成买卖建议。</div>
           </section>
-          <div class="workspace" v-if="!isSector">
+          <div class="workspace" v-if="workspaceMode === 'market' && !isSector">
             <section class="chart-panel">
               <div class="panel-head">
                 <div class="view-controls" role="tablist" aria-label="图表周期">
@@ -123,8 +132,187 @@
               <div class="side-section"><h2>说明</h2><div class="symbol" v-text="chartMode === 'intraday' ? '分时均价按当日累计成交额与成交量计算。图表用于观察，不构成买卖建议。' : '价格与均线沿用未复权日 K 口径。图表用于观察，不构成买卖建议。'"></div></div>
             </aside>
           </div>
-          <div class="notice" v-if="messages.length" v-text="messages.join('；')"></div>
-          <footer>Vue 行情页 · 自选与 CLI 共用 · 页面每 10 秒刷新 · 不影响 CLI 看盘</footer>
+          <div class="notice" v-if="workspaceMode === 'market' && messages.length" v-text="messages.join('；')"></div>
+
+          <section class="realtime-view" v-if="workspaceMode === 'realtime'">
+            <div class="strategy-header">
+              <div><div class="eyebrow">QUANT / LIVE SCAN</div><h1>实时辅助选股</h1><p>实时行情只用于生成可审计的观察信号，不自动下单；评分覆盖趋势、动量、量价、波动、流动性、资金、板块和市场状态九个组件。</p></div>
+              <div class="strategy-stage"><span>扫描范围</span><strong v-text="realtimeResult ? realtimeResult.universe : '自选 + 强势候选'"></strong><small v-text="realtimeResult ? realtimeSessionSummary + ' · 快照 ' + formatDateTime(realtimeResult.generated_at) : realtimeSessionSummary"></small></div>
+            </div>
+            <div class="realtime-toolbar">
+              <div class="scope-control"><button type="button" :class="{active: realtimeScope === 'leaders'}" @click="realtimeScope = 'leaders'">自选 + 强势候选</button><button type="button" :class="{active: realtimeScope === 'watchlist'}" @click="realtimeScope = 'watchlist'">仅自选</button></div>
+              <button type="button" class="strategy-run" :disabled="realtimeLoading || realtimeSnapshotLoading || !realtimeScanAllowed" @click="runRealtimeScan" v-text="realtimeScanButtonText"></button>
+              <span class="realtime-session-status" :class="{frozen: realtimeFrozen}" v-text="realtimeSessionSummary"></span>
+              <span class="realtime-note" v-if="realtimeResult" v-text="(realtimeResult.signals || []).length + ' 个候选 · 仅供研究参考'"></span>
+            </div>
+            <div class="strategy-error" v-if="realtimeError" v-text="realtimeError"></div>
+            <div class="realtime-layout">
+              <main class="realtime-results">
+                <div class="strategy-empty-state" v-if="!realtimeResult && !realtimeLoading"><span class="empty-mark">◎</span><h2 v-text="realtimeFrozen ? '当前实时扫描已冻结' : '等待实时策略扫描'"></h2><p v-text="realtimeFrozen ? realtimeSessionSummary : '扫描会读取自选、强势候选、日 K、分时、资金和板块数据，并给出多策略分项依据。'"></p></div>
+                <div class="strategy-loading-state" v-if="realtimeLoading"><span></span><strong>正在计算实时策略信号</strong><small>历史日 K 会复用缓存，分钟数据只补充高活跃候选</small></div>
+                <template v-if="realtimeResult && !realtimeLoading">
+                  <div class="realtime-summary"><div><span>候选数量</span><strong v-text="realtimeSignals.length"></strong></div><div><span>触发</span><strong class="up" v-text="realtimeCount('triggered')"></strong></div><div><span>观察</span><strong class="warn-text" v-text="realtimeCount('watching')"></strong></div><div><span>数据不足/偏弱</span><strong class="down" v-text="realtimeCount('invalid') + realtimeCount('weak')"></strong></div></div>
+                  <div class="realtime-list">
+                    <article class="realtime-card" v-for="signal in realtimeSignals" :key="signal.id">
+                      <div class="realtime-card-head"><div><span class="section-kicker" v-text="signal.industry || '行业待补充'"></span><h2><button type="button" class="stock-link" @click="selectRealtimeSignal(signal)" v-text="signal.name || displayCode(signal.symbol)"></button><small v-text="displayCode(signal.symbol)"></small></h2></div><div class="realtime-score"><span :class="realtimeStateClass(signal.state)" v-text="realtimeStateLabel(signal.state)"></span><strong v-text="number(signal.score, 1)"></strong><small>综合分</small></div></div>
+                      <div class="realtime-price"><b v-text="number(signal.price)"></b><span :class="watchlistChangeClass(signal.percent)" v-text="watchlistPercent(signal.percent)"></span><small v-text="'涨速 ' + signedPercent(signal.speed_percent)"></small><em v-if="signal.quote_time" v-text="signal.quote_time"></em></div>
+                      <div class="realtime-components"><div v-for="component in signal.components" :key="component.key" class="realtime-component"><span v-text="component.name"></span><b v-text="component.state === '数据不足' ? '--/20' : number(component.score, 1) + '/20'"></b><small v-text="component.reasons && component.reasons[0] ? component.reasons[0] : (component.warnings && component.warnings[0] ? component.warnings[0] : component.state)"></small></div></div>
+                      <div class="realtime-evidence"><div><span>触发观察</span><b v-text="signal.trigger_price ? number(signal.trigger_price) : '--'"></b></div><div><span>失效参考</span><b v-text="signal.invalidation_price ? number(signal.invalidation_price) : '--'"></b></div><div><span>日 K 截止</span><b v-text="signal.data_date || '--'"></b></div></div>
+                      <div class="realtime-reasons"><span v-for="reason in signal.reasons" :key="reason" v-text="reason"></span></div>
+                      <div class="realtime-risks"><strong>风险</strong><span v-for="risk in signal.risks" :key="risk" v-text="risk"></span></div>
+                    </article>
+                  </div>
+                  <div class="result-warnings" v-if="realtimeResult.warnings && realtimeResult.warnings.length"><strong>扫描限制</strong><span v-for="warning in realtimeResult.warnings" :key="warning" v-text="warning"></span></div>
+                </template>
+              </main>
+              <aside class="realtime-history-panel"><div class="research-section-head"><div><span class="section-kicker">SIGNAL LEDGER</span><h2>最近信号</h2></div><button type="button" class="text-action" @click="loadRealtimeHistory">刷新</button></div><div class="realtime-history-list" v-if="realtimeHistory.length"><button type="button" v-for="item in realtimeHistory" :key="item.id" @click="selectRealtimeSignal(item)"><span><strong v-text="item.name || displayCode(item.symbol)"></strong><small v-text="formatDateTime(item.as_of) + ' · ' + realtimeStateLabel(item.state)"></small></span><b :class="realtimeStateClass(item.state)" v-text="number(item.score, 1)"></b></button></div><div class="strategy-empty-inline" v-else>暂无信号留痕</div></aside>
+            </div>
+            <section class="realtime-performance-panel">
+              <div class="research-section-head realtime-performance-head">
+                <div><span class="section-kicker">FORWARD TEST / QLIB STYLE</span><h2>信号效果</h2><p class="realtime-panel-note" v-if="realtimeOutcomeReport" v-text="'截至 ' + (realtimeOutcomeReport.as_of || '--') + ' · 只统计信号日之后的交易日'"></p></div>
+                <div class="realtime-performance-actions"><div class="horizon-control" role="tablist" aria-label="前测窗口"><button type="button" v-for="horizon in (realtimeOutcomeReport && realtimeOutcomeReport.horizons || [1, 3, 5, 10])" :key="horizon" role="tab" :aria-selected="Number(realtimeOutcomeHorizon) === Number(horizon)" :class="{active: Number(realtimeOutcomeHorizon) === Number(horizon)}" @click="realtimeOutcomeHorizon = Number(horizon)" v-text="outcomeHorizonLabel(horizon)"></button></div><button type="button" class="text-action" :disabled="realtimeOutcomeLoading" @click="refreshRealtimeOutcomes" v-text="realtimeOutcomeLoading ? '更新中…' : '更新评估'"></button></div>
+              </div>
+              <div class="strategy-error" v-if="realtimeOutcomeError" v-text="realtimeOutcomeError"></div>
+              <div class="strategy-empty-inline realtime-outcome-empty" v-if="!realtimeOutcomeReport && !realtimeOutcomeLoading">尚无成熟结果；运行扫描后点击“更新评估”开始积累前测样本。</div>
+              <div class="strategy-loading-state realtime-outcome-loading" v-if="realtimeOutcomeLoading"><span></span><strong>正在补齐前测窗口</strong><small>只读取信号日之后的交易日，不改写原始信号</small></div>
+              <template v-if="realtimeOutcomeReport && !realtimeOutcomeLoading">
+                <div class="realtime-outcome-metrics">
+                  <div><span>成熟 / 总数</span><strong v-text="(realtimeOutcomeSummary.ready || 0) + ' / ' + (realtimeOutcomeSummary.total || 0)"></strong><small v-text="'覆盖 ' + number(realtimeOutcomeSummary.coverage_percent, 1) + '%'"></small></div>
+                  <div><span>正收益率</span><strong :class="metricClass(realtimeOutcomeSummary.hit_rate_percent)" v-text="percentText(realtimeOutcomeSummary.hit_rate_percent)"></strong><small v-text="'正超额 ' + percentText(realtimeOutcomeSummary.excess_hit_rate_percent)"></small></div>
+                  <div><span>平均收益</span><strong :class="metricClass(realtimeOutcomeSummary.average_return_percent)" v-text="percentText(realtimeOutcomeSummary.average_return_percent)"></strong><small v-text="'中位数 ' + percentText(realtimeOutcomeSummary.median_return_percent)"></small></div>
+                  <div><span>平均超额</span><strong :class="metricClass(realtimeOutcomeSummary.average_excess_return_percent)" v-text="percentText(realtimeOutcomeSummary.average_excess_return_percent)"></strong><small v-text="'相对沪深300'"></small></div>
+                  <div><span>IC / Rank IC</span><strong v-text="number(realtimeOutcomeSummary.information_coefficient, 3) + ' / ' + number(realtimeOutcomeSummary.rank_information_coefficient, 3)"></strong><small>分数与未来收益相关性</small></div>
+                  <div><span>触发 / 失效</span><strong v-text="percentText(realtimeOutcomeSummary.trigger_hit_rate_percent) + ' / ' + percentText(realtimeOutcomeSummary.invalidation_rate_percent)"></strong><small v-text="'目标触达 ' + percentText(realtimeOutcomeSummary.target_hit_rate_percent)"></small></div>
+                </div>
+                <div class="realtime-outcome-tabs" role="tablist" aria-label="前测分析视图"><button type="button" role="tab" :aria-selected="realtimeOutcomeView === 'scores'" :class="{active: realtimeOutcomeView === 'scores'}" @click="realtimeOutcomeView = 'scores'">分数分层</button><button type="button" role="tab" :aria-selected="realtimeOutcomeView === 'strategies'" :class="{active: realtimeOutcomeView === 'strategies'}" @click="realtimeOutcomeView = 'strategies'">组件归因</button><button type="button" role="tab" :aria-selected="realtimeOutcomeView === 'regimes'" :class="{active: realtimeOutcomeView === 'regimes'}" @click="realtimeOutcomeView = 'regimes'">市场状态</button><button type="button" role="tab" :aria-selected="realtimeOutcomeView === 'correlation'" :class="{active: realtimeOutcomeView === 'correlation'}" @click="realtimeOutcomeView = 'correlation'">组件相关性</button><button type="button" role="tab" :aria-selected="realtimeOutcomeView === 'stability'" :class="{active: realtimeOutcomeView === 'stability'}" @click="realtimeOutcomeView = 'stability'">状态稳定</button><button type="button" role="tab" :aria-selected="realtimeOutcomeView === 'recent'" :class="{active: realtimeOutcomeView === 'recent'}" @click="realtimeOutcomeView = 'recent'">结果明细</button></div>
+                <div class="realtime-outcome-table" v-if="realtimeOutcomeView === 'scores' || realtimeOutcomeView === 'strategies' || realtimeOutcomeView === 'regimes'"><div class="outcome-row heading"><span v-text="realtimeOutcomeView === 'strategies' ? '组件' : realtimeOutcomeView === 'regimes' ? '市场状态' : '综合分'"></span><span>信号数</span><span>成熟</span><span>正收益</span><span>平均收益</span><span>平均超额</span><span>Rank IC</span></div><div class="outcome-row" v-for="item in realtimeOutcomeBreakdowns" :key="item.key"><span><strong v-text="item.label"></strong><small v-if="realtimeOutcomeView === 'strategies'" v-text="item.key"></small></span><span v-text="item.signals || 0"></span><span v-text="outcomeBreakdownSummary(item).ready || 0"></span><span :class="metricClass(outcomeBreakdownSummary(item).hit_rate_percent)" v-text="percentText(outcomeBreakdownSummary(item).hit_rate_percent)"></span><span :class="metricClass(outcomeBreakdownSummary(item).average_return_percent)" v-text="percentText(outcomeBreakdownSummary(item).average_return_percent)"></span><span :class="metricClass(outcomeBreakdownSummary(item).average_excess_return_percent)" v-text="percentText(outcomeBreakdownSummary(item).average_excess_return_percent)"></span><span v-text="number(outcomeBreakdownSummary(item).rank_information_coefficient, 3)"></span></div><div class="strategy-empty-inline" v-if="!realtimeOutcomeBreakdowns.length">该窗口暂无可分组的成熟结果。</div></div>
+                <section class="component-analysis" v-if="realtimeOutcomeView === 'correlation'"><div class="component-analysis-head"><div><span class="section-kicker">COMPONENT COVERAGE</span><h3>组件覆盖率</h3></div><span class="symbol" v-text="(realtimeComponentAnalysis.signals || 0) + ' 个代表信号 · 至少 ' + (realtimeComponentAnalysis.minimum_correlation_samples || 20) + ' 个成对样本' "></span></div><div class="component-coverage-table"><div class="component-coverage-row heading"><span>组件</span><span>可用 / 激活</span><span>覆盖率</span><span>平均分</span></div><div class="component-coverage-row" v-for="item in realtimeComponentCoverage" :key="item.key"><span><strong v-text="item.name"></strong><small v-text="item.key"></small></span><span v-text="(item.available || 0) + ' / ' + (item.active || 0)"></span><b :class="componentCoverageClass(item)" v-text="number(item.available_percent, 1) + '%' "></b><em v-text="item.available ? number(item.average_score, 1) + '/20' : '--'"></em></div><div class="strategy-empty-inline" v-if="!realtimeComponentCoverage.length">暂无组件目录。</div></div><div class="component-analysis-head component-matrix-head"><div><span class="section-kicker">PAIRWISE RANK CORRELATION</span><h3>组件相关性矩阵</h3></div><span class="symbol" v-text="(realtimeComponentAnalysis.sufficient_pairs || 0) + ' 对充分 · 重叠 ' + (realtimeComponentAnalysis.redundant_pairs || 0) + ' 对' "></span></div><div class="component-matrix-wrap"><div class="component-matrix" v-if="realtimeCorrelationRows.length" :style="{'grid-template-columns': '148px repeat(' + realtimeCorrelationRows.length + ',76px)'}"><div class="component-matrix-corner">组件</div><div class="component-matrix-header" v-for="item in realtimeComponentAnalysis.components" :key="'head-' + item.key" :title="item.name" v-text="item.name"></div><template v-for="row in realtimeCorrelationRows" :key="'row-' + row.key"><div class="component-matrix-label" :title="row.name"><strong v-text="row.name"></strong><small v-text="row.key"></small></div><div class="component-matrix-cell" v-for="cell in row.cells" :key="row.key + '-' + cell.right_key" :class="componentCorrelationClass(cell)" :title="componentCorrelationTitle(cell)"><strong v-text="componentCorrelationText(cell)"></strong><small v-text="componentRelationLabel(cell.relation)"></small></div></template></div><div class="strategy-empty-inline" v-else>暂无相关性样本。</div></div></section>
+                <section class="component-analysis" v-if="realtimeOutcomeView === 'stability'"><div class="component-analysis-head"><div><span class="section-kicker">REGIME STABILITY</span><h3>分市场状态稳定性</h3></div><span class="symbol" v-text="'当前 ' + outcomeHorizonLabel(realtimeOutcomeHorizon) + ' · 每格至少 ' + (realtimeComponentAnalysis.minimum_regime_samples || 8) + ' 个可用 / 5 个激活' "></span></div><div class="component-stability-summary"><span>充分单元 <b v-text="realtimeRegimeSummary.sufficient"></b></span><span class="up">正向 <b v-text="realtimeRegimeSummary.positive"></b></span><span class="down">负向 <b v-text="realtimeRegimeSummary.negative"></b></span><span class="warn-text">混合 <b v-text="realtimeRegimeSummary.mixed"></b></span></div><div class="component-stability-table"><div class="component-stability-row heading"><span>组件</span><span>牛市</span><span>熊市</span><span>震荡</span><span>高波动</span></div><div class="component-stability-row" v-for="row in realtimeRegimeRows" :key="row.key"><span><strong v-text="row.name"></strong><small v-text="row.key"></small></span><div v-for="cell in row.cells" :key="row.key + '-' + cell.regime" class="component-stability-cell" :class="componentRegimeClass(cell)" :title="componentRegimeTitle(cell)"><strong v-text="componentRegimeText(cell)"></strong><small v-text="cell.sample_sufficient ? cell.samples + '/' + cell.active_samples : (cell.samples || 0) + '/' + (cell.active_samples || 0)"></small></div></div><div class="strategy-empty-inline" v-if="!realtimeRegimeRows.length">暂无状态稳定性样本。</div></div></section>
+                <div class="realtime-outcome-recent" v-if="realtimeOutcomeView === 'recent'"><div class="outcome-row heading"><span>股票 / 信号日</span><span>窗口</span><span>状态</span><span>收益</span><span>超额</span><span>波动区间</span></div><div class="outcome-row" v-for="item in realtimeOutcomeRecent" :key="item.key"><span><strong v-text="item.name || displayCode(item.symbol)"></strong><small v-text="displayCode(item.symbol) + ' · ' + item.signal_date"></small></span><span v-text="outcomeHorizonLabel(item.horizon)"></span><span :class="outcomeStatusClass(item.status)" v-text="outcomeStatusLabel(item.status)"></span><span :class="metricClass(item.return_percent)" v-text="item.status === 'ready' ? percentText(item.return_percent) : '--'"></span><span :class="metricClass(item.excess_return_percent)" v-text="item.status === 'ready' && item.benchmark_available ? percentText(item.excess_return_percent) : '--'"></span><span v-text="item.status === 'ready' ? percentText(item.max_adverse_percent) + ' / ' + percentText(item.max_favorable_percent) : (item.warning || '--')"></span></div><div class="strategy-empty-inline" v-if="!realtimeOutcomeRecent.length">该窗口暂无结果明细。</div></div>
+                <section class="realtime-assessment"><div class="research-section-head"><div><span class="section-kicker">WALK-FORWARD CALIBRATION</span><h2 v-text="realtimeOutcomeAssessment.verdict || '信号校准'"></h2></div><span class="symbol" v-text="realtimeOutcomeAssessment.ready_samples ? realtimeOutcomeAssessment.ready_samples + ' 个成熟样本' : '样本收集中'"></span></div><div class="assessment-checks"><div v-for="check in (realtimeOutcomeAssessment.checks || [])" :key="check.key" :class="outcomeCheckClass(check)"><span v-text="check.passed ? '通过' : (check.required ? '未通过' : '待观察')"></span><strong v-text="check.name"></strong><small v-text="check.detail"></small></div></div><div class="assessment-proposal" v-if="realtimeOutcomeAssessment.threshold"><div><span>候选最低分</span><strong v-text="number(realtimeOutcomeAssessment.threshold.minimum_score, 1)"></strong><small v-text="'留出超额 ' + percentText(realtimeOutcomeAssessment.threshold.validation_average_excess_percent) + ' · 正收益 ' + percentText(realtimeOutcomeAssessment.threshold.validation_hit_rate_percent)"></small></div><div><span>基线对照</span><strong v-text="percentText(realtimeOutcomeAssessment.threshold.baseline_validation_excess_percent)"></strong><small>未分层验证集平均超额</small></div><div><span>验证窗口</span><strong v-text="(realtimeOutcomeAssessment.threshold.folds || []).length + ' 个' "></strong><small>时间顺序展开，不回看后段</small></div></div><div class="assessment-weights" v-if="realtimeOutcomeAssessment.strategy_weights && realtimeOutcomeAssessment.strategy_weights.length"><div class="outcome-row heading"><span>组件候选权重</span><span>样本</span><span>平均超额</span><span>命中率</span><span>建议权重</span></div><div class="outcome-row" v-for="item in realtimeOutcomeAssessment.strategy_weights" :key="item.key"><span v-text="item.name || item.key"></span><span v-text="item.samples"></span><span :class="metricClass(item.average_excess_percent)" v-text="percentText(item.average_excess_percent)"></span><span v-text="percentText(item.hit_rate_percent)"></span><strong v-text="outcomeWeightText(item.weight)"></strong></div></div><div class="assessment-notes" v-if="realtimeOutcomeAssessment.notes && realtimeOutcomeAssessment.notes.length"><span v-for="note in realtimeOutcomeAssessment.notes" :key="note" v-text="note"></span></div></section>
+                <div class="result-warnings" v-if="realtimeOutcomeReport.warnings && realtimeOutcomeReport.warnings.length"><strong>评估限制</strong><span v-for="warning in realtimeOutcomeReport.warnings" :key="warning" v-text="warning"></span></div>
+              </template>
+            </section>
+          </section>
+
+          <section class="strategy-view" v-if="workspaceMode === 'strategy'">
+            <div class="strategy-header">
+              <div><div class="eyebrow">QUANT / RESEARCH</div><h1>量化策略研究</h1><p>复用 CLI 的 A 股日线回测引擎，结果自动归档并保留完整交易证据。</p></div>
+              <div class="strategy-stage"><span>当前阶段</span><strong>基础历史回测</strong><small>通过门禁后再进入样本外与滚动验证</small></div>
+            </div>
+
+            <div class="strategy-layout">
+              <aside class="strategy-config">
+                <div class="research-section-head"><div><span class="section-kicker">UNIVERSE</span><h2>股票池与区间</h2></div><span class="symbol" v-text="strategyPool.length + ' 只'"></span></div>
+                <div class="scope-control" role="tablist" aria-label="股票池范围">
+                  <button type="button" :class="{active: strategyScope === 'current'}" :disabled="!currentStrategyAsset" @click="strategyScope = 'current'">当前个股</button>
+                  <button type="button" :class="{active: strategyScope === 'group'}" @click="strategyScope = 'group'">当前自选组</button>
+                </div>
+                <div class="strategy-pool" v-if="strategyPool.length">
+                  <span v-for="item in strategyPool" :key="item.symbol"><b v-text="item.name || displayCode(item.symbol)"></b><small v-text="displayCode(item.symbol)"></small></span>
+                </div>
+                <div class="strategy-empty-inline" v-else>当前范围没有可回测的 A 股，板块、指数和转债不会进入股票池。</div>
+
+                <form class="strategy-form" @submit.prevent="runStrategyBacktest">
+                  <label class="field wide"><span>入场模型</span><select v-model="strategyForm.entry_mode"><option value="breakout">放量突破</option><option value="trend-reclaim">趋势收复</option><option value="ma-pullback">均线回踩</option></select></label>
+                  <label class="field"><span>开始日期</span><input type="date" v-model="strategyForm.start" required></label>
+                  <label class="field"><span>结束日期</span><input type="date" v-model="strategyForm.end" required></label>
+                  <label class="field"><span>快均线</span><input type="number" min="2" max="60" v-model.number="strategyForm.fast_ma"></label>
+                  <label class="field"><span>慢均线</span><input type="number" min="3" max="250" v-model.number="strategyForm.slow_ma"></label>
+                  <label class="field"><span>突破窗口</span><input type="number" min="2" max="120" v-model.number="strategyForm.breakout_days"></label>
+                  <label class="field"><span>最低量比</span><input type="number" min="0.5" max="5" step="0.1" v-model.number="strategyForm.volume_ratio_min"></label>
+                  <label class="field"><span>止损</span><div class="input-unit"><input type="number" min="1" max="50" step="0.5" v-model.number="strategyForm.stop_loss_percent"><i>%</i></div></label>
+                  <label class="field"><span>止盈</span><div class="input-unit"><input type="number" min="2" max="200" step="1" v-model.number="strategyForm.take_profit_percent"><i>%</i></div></label>
+                  <label class="field"><span>最长持有</span><div class="input-unit"><input type="number" min="1" max="252" v-model.number="strategyForm.max_holding_days"><i>日</i></div></label>
+                  <label class="field"><span>单股仓位</span><div class="input-unit"><input type="number" min="1" max="100" step="1" v-model.number="strategyForm.max_position_percent"><i>%</i></div></label>
+
+                  <button type="button" class="advanced-toggle wide" @click="strategyAdvanced = !strategyAdvanced"><span v-text="strategyAdvanced ? '收起成交假设' : '展开成交假设'"></span><b v-text="strategyAdvanced ? '−' : '+'"></b></button>
+                  <template v-if="strategyAdvanced">
+                    <label class="field"><span>初始资金</span><input type="number" min="10000" step="10000" v-model.number="strategyForm.initial_cash"></label>
+                    <label class="field"><span>佣金</span><div class="input-unit"><input type="number" min="0" max="100" step="0.1" v-model.number="strategyForm.commission_bps"><i>bp</i></div></label>
+                    <label class="field"><span>卖出印花税</span><div class="input-unit"><input type="number" min="0" max="100" step="0.1" v-model.number="strategyForm.stamp_duty_bps"><i>bp</i></div></label>
+                    <label class="field"><span>滑点</span><div class="input-unit"><input type="number" min="0" max="200" step="0.5" v-model.number="strategyForm.slippage_bps"><i>bp</i></div></label>
+                  </template>
+                  <div class="execution-note wide"><strong>执行口径</strong><span>未复权日 K · 收盘信号 · 次日开盘成交 · T+1 · 100 股整手 · 一字板不可成交 · 沪深300基准</span></div>
+                  <button type="submit" class="strategy-run wide" :disabled="strategyLoading || !strategyPool.length"><span v-text="strategyLoading ? '正在获取历史数据并回测…' : '运行回测'"></span></button>
+                </form>
+                <div class="strategy-error" v-if="strategyError" v-text="strategyError"></div>
+
+                <div class="strategy-history">
+                  <div class="research-section-head"><div><span class="section-kicker">ARCHIVE</span><h2>最近运行</h2></div><button type="button" class="text-action" :disabled="strategyHistoryLoading" @click="loadStrategyHistory">刷新</button></div>
+                  <div class="history-list" v-if="strategyHistory.length">
+                    <button type="button" v-for="item in strategyHistory" :key="item.run_id" :class="{active: strategyResult && strategyResult.run_id === item.run_id}" @click="loadStrategyRun(item.run_id)">
+                      <span><strong v-text="strategyHistoryTitle(item)"></strong><small v-text="formatDateTime(item.generated_at) + ' · ' + strategyModeLabel(item.entry_mode)"></small></span>
+                      <b :class="metricClass(item.metrics && item.metrics.total_return_percent)" v-text="percentText(item.metrics && item.metrics.total_return_percent)"></b>
+                    </button>
+                  </div>
+                  <div class="strategy-empty-inline" v-else v-text="strategyHistoryLoading ? '正在读取归档…' : '暂无回测记录'"></div>
+                </div>
+              </aside>
+
+              <main class="strategy-results">
+                <div class="strategy-empty-state" v-if="!strategyResult && !strategyLoading">
+                  <span class="empty-mark">Σ</span><h2>等待一次可审计的历史模拟</h2><p>从左侧选择当前个股或自选组，配置模型后运行。结果不会触发任何交易。</p>
+                </div>
+                <div class="strategy-loading-state" v-if="strategyLoading"><span></span><strong>正在执行日线回测</strong><small>多股票历史数据会并行获取，最长等待 3 分钟</small></div>
+
+                <template v-if="strategyResult && !strategyLoading">
+                  <div class="result-head">
+                    <div><span class="section-kicker">RUN / <b v-text="strategyResult.run_id"></b></span><h2 v-text="strategyResultTitle"></h2><p v-text="strategyResultPeriod"></p></div>
+                    <div class="verdict" :class="strategyAssessment && strategyAssessment.passed ? 'passed' : 'pending'"><span v-text="strategyAssessment ? strategyAssessment.stage : '基础历史回测'"></span><strong v-text="strategyAssessment ? strategyAssessment.verdict : '--'"></strong></div>
+                  </div>
+
+                  <div class="metric-grid">
+                    <div class="metric-primary"><span>策略收益</span><strong :class="metricClass(strategyMetrics.total_return_percent)" v-text="percentText(strategyMetrics.total_return_percent)"></strong><small v-text="'期末权益 ' + currency(strategyMetrics.final_equity)"></small></div>
+                    <div><span>沪深300</span><strong :class="metricClass(strategyMetrics.benchmark_return_percent)" v-text="strategyMetrics.benchmark_available ? percentText(strategyMetrics.benchmark_return_percent) : '--'"></strong><small>同期买入持有</small></div>
+                    <div><span>超额收益</span><strong :class="metricClass(strategyMetrics.excess_return_percent)" v-text="strategyMetrics.benchmark_available ? percentText(strategyMetrics.excess_return_percent) : '--'"></strong><small>策略减基准</small></div>
+                    <div><span>年化收益</span><strong :class="metricClass(strategyMetrics.annualized_return_percent)" v-text="percentText(strategyMetrics.annualized_return_percent)"></strong><small v-text="'年化波动 ' + percentText(strategyMetrics.annualized_volatility_percent)"></small></div>
+                    <div><span>最大回撤</span><strong class="down" v-text="percentText(strategyMetrics.max_drawdown_percent)"></strong><small v-text="'Calmar ' + number(strategyMetrics.calmar) + ' · 单日 ' + percentText(strategyMetrics.best_day_percent) + ' / ' + percentText(strategyMetrics.worst_day_percent)"></small></div>
+                    <div><span>Sharpe</span><strong v-text="number(strategyMetrics.sharpe)"></strong><small v-text="'Sortino ' + number(strategyMetrics.sortino)"></small></div>
+                    <div><span>交易 / 胜率</span><strong v-text="(strategyMetrics.trades || 0) + ' / ' + percentText(strategyMetrics.win_rate_percent)"></strong><small v-text="'盈亏比 ' + number(strategyMetrics.profit_factor)"></small></div>
+                    <div><span>换手 / 费用</span><strong v-text="percentText(strategyMetrics.turnover_percent)"></strong><small v-text="currency(strategyMetrics.total_fees)"></small></div>
+                  </div>
+
+                  <section class="research-gates" v-if="strategyAssessment">
+                    <div class="research-section-head"><div><span class="section-kicker">RESEARCH GATES</span><h2>研究门禁</h2></div><span class="symbol" v-text="strategyAssessment.next_stage"></span></div>
+                    <div class="gate-grid"><div v-for="check in strategyAssessment.checks" :key="check.key" :class="{pass: check.passed, required: check.required}"><span v-text="check.passed ? '通过' : '未通过'"></span><strong v-text="check.name"></strong><small v-text="check.detail"></small></div></div>
+                  </section>
+
+                  <section class="strategy-chart-panel">
+                    <div class="research-section-head"><div><span class="section-kicker">EQUITY / DRAWDOWN</span><h2>净值与回撤</h2></div><div class="strategy-legend"><span class="strategy-line">策略</span><span class="benchmark-line">沪深300</span><span class="drawdown-area">回撤</span></div></div>
+                    <div class="strategy-chart-wrap"><canvas ref="strategyChart" aria-label="策略与沪深300净值、策略回撤曲线" @pointermove="handleStrategyChartPointer" @pointerleave="clearStrategyCrosshair"></canvas></div>
+                  </section>
+
+                  <section class="strategy-regimes">
+                    <div class="research-section-head"><div><span class="section-kicker">POINT-IN-TIME REGIMES</span><h2>市场状态分层</h2></div><span class="symbol" v-text="strategyMarketRegimeDays ? strategyMarketRegimeDays + ' 个收益日' : '等待基准样本'"></span></div>
+                    <div class="regime-table" v-if="strategyMarketRegimes.length"><div class="regime-row heading"><span>市场状态</span><span>交易日</span><span>入场交易</span><span>策略收益</span><span>最大回撤</span><span>沪深300</span><span>超额收益</span></div><div class="regime-row" v-for="item in strategyMarketRegimes" :key="item.key"><span><strong v-text="item.label || item.key"></strong><small v-text="item.benchmark_available ? item.benchmark_days + ' 日基准对齐' : '基准未对齐'"></small></span><span v-text="item.days || 0"></span><span v-text="item.trades || 0"></span><span :class="metricClass(item.return_percent)" v-text="percentText(item.return_percent)"></span><span :class="metricClass(item.max_drawdown_percent)" v-text="percentText(item.max_drawdown_percent)"></span><span :class="metricClass(item.benchmark_return_percent)" v-text="item.benchmark_available ? percentText(item.benchmark_return_percent) : '--'"></span><span :class="metricClass(item.excess_return_percent)" v-text="item.benchmark_available ? percentText(item.excess_return_percent) : '--'"></span></div></div>
+                    <div class="strategy-empty-inline" v-else>当前归档没有足够的沪深300历史用于状态分层。</div>
+                  </section>
+
+                  <section class="strategy-evidence-grid">
+                    <div class="parameter-sheet">
+                      <div class="research-section-head"><div><span class="section-kicker">MODEL</span><h2>策略与成交假设</h2></div></div>
+                      <div class="evidence-rows"><div><span>入场模型</span><b v-text="strategyModeLabel(strategyRequest.technical && strategyRequest.technical.entry_mode)"></b></div><div><span>均线 / 突破</span><b v-text="strategyParameterSummary"></b></div><div><span>止损 / 止盈</span><b v-text="percentText((strategyRequest.technical && strategyRequest.technical.stop_loss) * 100) + ' / ' + percentText((strategyRequest.technical && strategyRequest.technical.take_profit) * 100)"></b></div><div><span>初始资金 / 单股上限</span><b v-text="currency(strategyRequest.initial_cash) + ' / ' + percentText((strategyRequest.technical && strategyRequest.technical.max_position) * 100)"></b></div><div><span>佣金 / 印花税 / 滑点</span><b v-text="costSummary"></b></div><div><span>数据口径</span><b>未复权 · 无未来数据</b></div></div>
+                    </div>
+                    <div class="coverage-sheet">
+                      <div class="research-section-head"><div><span class="section-kicker">DATA</span><h2>数据覆盖</h2></div><span class="symbol" v-text="strategyCoverage.length + ' 只'"></span></div>
+                      <div class="coverage-table"><div class="coverage-row heading"><span>股票</span><b>首日 / 末日</b><em>覆盖</em></div><div class="coverage-row" v-for="item in strategyCoverage" :key="item.symbol"><span><strong v-text="strategyName(item.symbol)"></strong><small v-text="displayCode(item.symbol) + ' · ' + (strategyResult.data_sources[item.symbol] || '--')"></small></span><b v-text="item.first_date + ' / ' + item.last_date"></b><em :class="item.coverage_ratio >= .85 ? 'up' : 'down'" v-text="number(item.coverage_ratio * 100, 1) + '% · ' + item.bars + '根'"></em></div></div>
+                    </div>
+                  </section>
+
+                  <section class="trade-ledger">
+                    <div class="research-section-head"><div><span class="section-kicker">TRADE LEDGER</span><h2>逐笔交易</h2></div><span class="symbol" v-text="strategyTrades.length + ' 笔 · 平均持有 ' + number(strategyMetrics.average_holding_days, 1) + ' 日'"></span></div>
+                    <div class="trade-table" v-if="strategyTrades.length"><div class="trade-row heading"><span>股票</span><span>入场</span><span>离场</span><span>持有</span><span>净收益</span><span>退出原因</span></div><div class="trade-row" v-for="trade in strategyTrades" :key="trade.id"><span><strong v-text="trade.name || displayCode(trade.symbol)"></strong><small v-text="displayCode(trade.symbol) + ' · ' + trade.entry.quantity + '股'"></small></span><span><b v-text="trade.entry.date"></b><small v-text="number(trade.entry.price) + ' · 信号 ' + trade.entry_signal.date"></small></span><span><b v-text="trade.exit.date"></b><small v-text="number(trade.exit.price) + ' · 费用 ' + currency(trade.entry.total_fee + trade.exit.total_fee)"></small></span><span v-text="trade.holding_days + '日'"></span><span :class="metricClass(trade.return_percent)"><b v-text="percentText(trade.return_percent)"></b><small v-text="currency(trade.net_profit)"></small></span><span class="exit-reason" v-text="trade.exit_reason"></span></div></div>
+                    <div class="strategy-empty-inline" v-else>该参数在当前样本内没有完成交易，不能据此评价策略有效性。</div>
+                  </section>
+                  <div class="result-warnings" v-if="strategyResult.warnings && strategyResult.warnings.length"><strong>回测限制</strong><span v-for="warning in strategyResult.warnings" :key="warning" v-text="warning"></span></div>
+                </template>
+              </main>
+            </div>
+          </section>
+          <footer v-if="workspaceMode === 'market'">Vue 行情页 · 自选与 CLI 共用 · 页面每 10 秒刷新 · 不影响 CLI 看盘</footer>
+          <footer v-else-if="workspaceMode === 'realtime'">实时策略是辅助观察信号 · 不代表未来收益 · 触发价和失效价需结合涨跌停、流动性和个人仓位复核</footer>
+          <footer v-else>量化研究与 CLI 共用 Go 回测引擎和本地归档 · 历史模拟不代表未来收益 · 不触发自动交易</footer>
         </div>
       </div>
     </main>

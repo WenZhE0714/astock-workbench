@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 	"github.com/wenzhe/astock-workbench/internal/web"
 )
@@ -56,8 +58,19 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithNameCache(app.paths.NameCacheFile),
 		web.WithMarketAmount(app.amounts),
 		web.WithBoardDetails(market.EastmoneyClient{}),
+		web.WithStrategyResearch(
+			backtest.NewDailyEngine(backtest.NewCachingDailyBarProvider(market.EastmoneyClient{})),
+			storage.NewBacktestStore(app.paths.BacktestsDir),
+		),
+		web.WithRealtimeStrategy(
+			realtime.NewScanner(app.marketScan, app.quotes, app.scanHistory, app.minutes, storage.NewRealtimeSignalStore(app.paths.RealtimeSignalsDir)),
+			storage.NewRealtimeSignalStore(app.paths.RealtimeSignalsDir),
+		),
+		web.WithRealtimeOutcomes(
+			realtime.NewOutcomeEvaluator(app.scanHistory, app.scanHistory, storage.NewRealtimeOutcomeStore(app.paths.RealtimeSignalsDir)),
+		),
 	)
 	fmt.Fprintf(app.out, "ASTOCK Web 已启动: http://%s/\n", *listen)
-	fmt.Fprintln(app.out, "按 Ctrl-C 停止；行情只读，自选改动与 CLI 共用")
+	fmt.Fprintln(app.out, "按 Ctrl-C 停止；自选和量化回测归档与 CLI 共用")
 	return server.Serve(ctx, *listen)
 }

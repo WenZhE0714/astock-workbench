@@ -23,8 +23,8 @@ func mockQuotePayload() string {
 	fields[38] = "0.10"
 	fields[39] = "19.77"
 	fields[43] = "1.57"
-	fields[44] = "16351.07"
-	fields[45] = "16000.00"
+	fields[44] = "16000.00"
+	fields[45] = "16351.07"
 	fields[46] = "7.02"
 	fields[47] = "1540.00"
 	fields[48] = "1260.00"
@@ -56,7 +56,7 @@ func TestParseQuotePayload(t *testing.T) {
 	if quotes[0].QuoteTime != "2026-08-07 14:59:59" {
 		t.Fatalf("unexpected time: %q", quotes[0].QuoteTime)
 	}
-	if quotes[0].PETTM != "19.77" || quotes[0].PB != "7.02" || quotes[0].MarketCap != 16351.07 {
+	if quotes[0].PETTM != "19.77" || quotes[0].PB != "7.02" || quotes[0].MarketCap != 16351.07 || quotes[0].FloatMarketCap != 16000 {
 		t.Fatalf("extended fields were not parsed: %#v", quotes[0])
 	}
 	if quotes[0].VolumeRatio != "0.84" || quotes[0].AveragePrice != "1409.50" {

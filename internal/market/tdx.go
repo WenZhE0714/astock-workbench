@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +23,10 @@ import (
 var tdxBridgeSource string
 
 const (
-	tdxMetadataTTL   = 30 * time.Minute
-	tdxRetryBackoff  = 15 * time.Second
-	tdxDefaultPython = "python3"
+	tdxMetadataTTL             = 30 * time.Minute
+	tdxInvalidQuoteFallbackTTL = 2 * time.Second
+	tdxRetryBackoff            = 15 * time.Second
+	tdxDefaultPython           = "python3"
 )
 
 // TDXOptions configures the optional tdxrs-backed TCP adapter. The adapter is
@@ -334,12 +336,20 @@ func (client *TDXClient) Status() string {
 }
 
 func (client *TDXClient) metadataFor(ctx context.Context, symbols []string) map[string]domain.Quote {
+	return client.cachedHTTPQuotes(ctx, symbols, client.metadataTTL)
+}
+
+// cachedHTTPQuotes serves two related needs: infrequent quote metadata used by
+// TDX rows, and a short-lived rescue snapshot when a TCP node emits its
+// auction placeholder price of zero. The latter is deliberately batched and
+// capped at two seconds so normal TDX refreshes do not become HTTP polling.
+func (client *TDXClient) cachedHTTPQuotes(ctx context.Context, symbols []string, maxAge time.Duration) map[string]domain.Quote {
 	missing := make([]string, 0, len(symbols))
 	now := time.Now()
 	client.metadataMu.Lock()
 	for _, symbol := range symbols {
 		entry, ok := client.metadata[symbol]
-		if !ok || now.Sub(entry.fetchedAt) >= client.metadataTTL {
+		if !ok || now.Sub(entry.fetchedAt) >= maxAge {
 			missing = append(missing, symbol)
 		}
 	}
@@ -359,6 +369,49 @@ func (client *TDXClient) metadataFor(ctx context.Context, symbols []string) map[
 	for _, symbol := range symbols {
 		if entry, ok := client.metadata[symbol]; ok {
 			result[symbol] = entry.quote
+		}
+	}
+	return result
+}
+
+func validTDXQuote(raw tdxQuote) bool {
+	price, err := strconv.ParseFloat(strings.TrimSpace(raw.Current), 64)
+	return err == nil && price > 0 && !math.IsNaN(price) && !math.IsInf(price, 0)
+}
+
+func validQuoteCurrent(quote domain.Quote) bool {
+	price, err := strconv.ParseFloat(strings.TrimSpace(quote.Current), 64)
+	return err == nil && price > 0 && !math.IsNaN(price) && !math.IsInf(price, 0)
+}
+
+func tdxFallbackSymbols(symbols []string, rows map[string]tdxQuote) []string {
+	result := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		row, ok := rows[symbol]
+		if !ok || !validTDXQuote(row) {
+			result = append(result, symbol)
+		}
+	}
+	return result
+}
+
+func mergeTDXQuoteRows(
+	symbols []string,
+	rows map[string]tdxQuote,
+	metadata, fallback map[string]domain.Quote,
+) []domain.Quote {
+	result := make([]domain.Quote, 0, len(symbols))
+	for _, symbol := range symbols {
+		if row, ok := rows[symbol]; ok && validTDXQuote(row) {
+			result = append(result, mergeTDXQuote(row, metadata[symbol]))
+			continue
+		}
+		if quote, ok := fallback[symbol]; ok && validQuoteCurrent(quote) {
+			result = append(result, quote)
+			continue
+		}
+		if quote, ok := metadata[symbol]; ok && validQuoteCurrent(quote) {
+			result = append(result, quote)
 		}
 	}
 	return result
@@ -411,15 +464,11 @@ func (client *TDXClient) Fetch(ctx context.Context, symbols []string) ([]domain.
 		for _, row := range rows {
 			bySymbol[row.Symbol] = row
 		}
-		result := make([]domain.Quote, 0, len(symbols))
-		for _, symbol := range symbols {
-			if row, ok := bySymbol[symbol]; ok {
-				result = append(result, mergeTDXQuote(row, metadata[symbol]))
-			} else if quote, ok := metadata[symbol]; ok {
-				result = append(result, quote)
-			}
+		fallback := map[string]domain.Quote{}
+		if invalid := tdxFallbackSymbols(symbols, bySymbol); len(invalid) > 0 {
+			fallback = client.cachedHTTPQuotes(ctx, invalid, tdxInvalidQuoteFallbackTTL)
 		}
-		return result, nil
+		return mergeTDXQuoteRows(symbols, bySymbol, metadata, fallback), nil
 	}
 	if client.fallbackQuote == nil {
 		if tdxError == nil {

@@ -18,8 +18,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
@@ -71,28 +73,65 @@ type SymbolResolver interface {
 	Resolve(context.Context, string) (string, error)
 }
 
+type backtestArchive interface {
+	Save(backtest.Result) (backtest.Result, error)
+	Load(string) (backtest.Result, error)
+	List(int) ([]storage.BacktestIndexEntry, error)
+}
+
+type realtimeScanner interface {
+	Scan(context.Context, []string, bool) (realtime.ScanResult, error)
+}
+
+type realtimeSectorEnricher interface {
+	EnrichSectors(context.Context, realtime.ScanResult) (realtime.ScanResult, error)
+}
+
+type realtimeSignalArchive interface {
+	List(int) ([]realtime.Signal, error)
+	Latest() (realtime.ScanResult, error)
+}
+
+type realtimeOutcomeAnalyzer interface {
+	Evaluate(context.Context, []realtime.Signal, realtime.OutcomeOptions) (realtime.OutcomeReport, error)
+	Report(int, time.Time) (realtime.OutcomeReport, error)
+}
+
 type Server struct {
-	resolver      SymbolResolver
-	quotes        QuoteClient
-	history       DailyHistoryClient
-	minutes       MinuteClient
-	boardDetails  BoardDetailClient
-	marketAmounts MarketAmountClient
-	defaultSymbol string
-	watchlistFile string
-	nameCacheFile string
-	handler       http.Handler
-	quoteMu       sync.Mutex
-	quoteCache    map[string]quoteCacheEntry
-	minuteMu      sync.Mutex
-	minuteCache   map[string]minuteCacheEntry
-	historyMu     sync.Mutex
-	historyCache  map[string]historyCacheEntry
-	boardMu       sync.Mutex
-	boardCache    map[string]boardCacheEntry
-	amountMu      sync.Mutex
-	amountCache   marketAmountCacheEntry
-	watchlistMu   sync.Mutex
+	resolver                 SymbolResolver
+	quotes                   QuoteClient
+	history                  DailyHistoryClient
+	minutes                  MinuteClient
+	boardDetails             BoardDetailClient
+	marketAmounts            MarketAmountClient
+	strategyEngine           backtest.Engine
+	strategyArchive          backtestArchive
+	realtimeScanner          realtimeScanner
+	realtimeArchive          realtimeSignalArchive
+	realtimeOutcomes         realtimeOutcomeAnalyzer
+	defaultSymbol            string
+	watchlistFile            string
+	nameCacheFile            string
+	handler                  http.Handler
+	quoteMu                  sync.Mutex
+	quoteCache               map[string]quoteCacheEntry
+	minuteMu                 sync.Mutex
+	minuteCache              map[string]minuteCacheEntry
+	historyMu                sync.Mutex
+	historyCache             map[string]historyCacheEntry
+	boardMu                  sync.Mutex
+	boardCache               map[string]boardCacheEntry
+	amountMu                 sync.Mutex
+	amountCache              marketAmountCacheEntry
+	watchlistMu              sync.Mutex
+	strategyMu               sync.Mutex
+	strategyRunning          bool
+	realtimeMu               sync.Mutex
+	realtimeRunning          bool
+	realtimeCache            realtime.ScanResult
+	realtimeSectorEnriching  bool
+	realtimeSectorEnrichedAt time.Time
+	now                      func() time.Time
 }
 
 type quoteCacheEntry struct {
@@ -311,6 +350,26 @@ func WithBoardDetails(client BoardDetailClient) ServerOption {
 	}
 }
 
+func WithStrategyResearch(engine backtest.Engine, archive backtestArchive) ServerOption {
+	return func(server *Server) {
+		server.strategyEngine = engine
+		server.strategyArchive = archive
+	}
+}
+
+func WithRealtimeStrategy(scanner realtimeScanner, archive realtimeSignalArchive) ServerOption {
+	return func(server *Server) {
+		server.realtimeScanner = scanner
+		server.realtimeArchive = archive
+	}
+}
+
+func WithRealtimeOutcomes(analyzer realtimeOutcomeAnalyzer) ServerOption {
+	return func(server *Server) {
+		server.realtimeOutcomes = analyzer
+	}
+}
+
 // NewServer uses options so embedders that only need the quote surface do not
 // have to configure the shared CLI watchlist and name cache.
 func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistoryClient, minutes MinuteClient, defaultSymbol string, options ...ServerOption) *Server {
@@ -324,6 +383,7 @@ func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistory
 		minuteCache:   make(map[string]minuteCacheEntry),
 		historyCache:  make(map[string]historyCacheEntry),
 		boardCache:    make(map[string]boardCacheEntry),
+		now:           time.Now,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -340,6 +400,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/indices", s.handleIndices)
 	mux.HandleFunc("/api/stock", s.handleStock)
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
+	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
+	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
 	staticAssets, err := fs.Sub(assets, "dist")
 	if err == nil {
 		mux.Handle("/assets/", http.FileServer(http.FS(staticAssets)))

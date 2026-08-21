@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
 type DailyEngine struct {
@@ -300,18 +301,34 @@ func closeTrade(request Request, state *symbolState, signal SignalSnapshot, reas
 	}
 }
 
-func benchmarkMetrics(ctx context.Context, engine *DailyEngine, request Request) (float64, bool, string) {
+func benchmarkMetrics(ctx context.Context, engine *DailyEngine, request Request) (float64, bool, string, []BenchmarkPoint, []domain.DailyBar) {
 	if strings.TrimSpace(request.Benchmark) == "" {
-		return 0, false, ""
+		return 0, false, "", nil, nil
 	}
-	bars, err := engine.provider.FetchDailyBarsRange(ctx, request.Benchmark, request.Start, request.End, request.Adjustment)
+	warmStart := request.Start.AddDate(0, 0, -marketregime.MinimumBars*3)
+	bars, err := engine.provider.FetchDailyBarsRange(ctx, request.Benchmark, warmStart, request.End, request.Adjustment)
 	if err != nil || len(bars) < 2 {
 		if err == nil {
 			err = fmt.Errorf("有效日K不足")
 		}
-		return 0, false, "基准数据不可用: " + err.Error()
+		return 0, false, "基准数据不可用: " + err.Error(), nil, nil
 	}
-	return (bars[len(bars)-1].Close/bars[0].Close - 1) * 100, true, ""
+	bars = normalizedRegimeBars(bars)
+	curve := make([]BenchmarkPoint, 0, len(bars))
+	base := 0.0
+	for _, bar := range bars {
+		if !dateInRange(bar.Date, request.Start, request.End) {
+			continue
+		}
+		if base == 0 {
+			base = bar.Close
+		}
+		curve = append(curve, BenchmarkPoint{Date: bar.Date, Close: bar.Close, Return: (bar.Close/base - 1) * 100})
+	}
+	if len(curve) < 2 {
+		return 0, false, "基准数据不可用: 回测区间内有效日K不足", nil, bars
+	}
+	return curve[len(curve)-1].Return, true, "", curve, bars
 }
 
 func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, error) {
@@ -525,15 +542,16 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 			UnrealizedProfit: profit, ReturnPercent: profit / position.entryCost * 100,
 		})
 	}
-	benchmarkReturn, benchmarkAvailable, benchmarkWarning := benchmarkMetrics(ctx, engine, request)
+	benchmarkReturn, benchmarkAvailable, benchmarkWarning, benchmarkEquity, benchmarkBars := benchmarkMetrics(ctx, engine, request)
 	if benchmarkWarning != "" {
 		warnings = append(warnings, benchmarkWarning)
 	}
 	metrics := calculateMetrics(request, equity, trades, turnover, totalFees, benchmarkReturn, benchmarkAvailable)
+	regimes := calculateMarketRegimeMetrics(equity, trades, benchmarkBars)
 	generatedAt := engine.now()
 	return Result{
 		RunID: generatedAt.Format("20060102T150405"), GeneratedAt: generatedAt, Request: request,
-		Metrics: metrics, Trades: trades, OpenPositions: openPositions, Equity: equity,
-		DataSources: sources, DataCoverage: coverage, Warnings: warnings,
+		Metrics: metrics, Trades: trades, OpenPositions: openPositions, Equity: equity, BenchmarkEquity: benchmarkEquity,
+		MarketRegimes: regimes, DataSources: sources, DataCoverage: coverage, Warnings: warnings,
 	}, nil
 }

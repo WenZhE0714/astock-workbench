@@ -212,6 +212,18 @@ func renderBacktestMarkdown(result backtest.Result) string {
 		fmt.Fprintf(&builder, "基准收益：%+.2f%%  超额收益：%+.2f%%\n\n", result.Metrics.BenchmarkReturn, result.Metrics.ExcessReturn)
 	}
 	fmt.Fprintf(&builder, "交易：%d 笔，胜率 %.2f%%，盈亏比 %.2f，平均持有 %.1f 天，换手 %.2f%%，费用 %.2f 元\n\n", result.Metrics.Trades, result.Metrics.WinRate, result.Metrics.ProfitFactor, result.Metrics.AverageHoldingDays, result.Metrics.Turnover, result.Metrics.TotalFees)
+	if len(result.MarketRegimes) > 0 {
+		builder.WriteString("## 市场状态分层\n\n| 状态 | 交易日 | 交易 | 策略收益 | 最大回撤 | 基准收益 | 超额收益 |\n|---|---:|---:|---:|---:|---:|---:|\n")
+		for _, item := range result.MarketRegimes {
+			benchmark, excess := "--", "--"
+			if item.BenchmarkAvailable {
+				benchmark = fmt.Sprintf("%+.2f%%", item.BenchmarkReturn)
+				excess = fmt.Sprintf("%+.2f%%", item.ExcessReturn)
+			}
+			fmt.Fprintf(&builder, "| %s | %d | %d | %+.2f%% | %+.2f%% | %s | %s |\n", item.Label, item.Days, item.Trades, item.ReturnPercent, item.MaxDrawdown, benchmark, excess)
+		}
+		builder.WriteString("\n状态标签只使用对应交易日前的沪深300历史；收益和回撤按该状态下的日收益序列复合。\n\n")
+	}
 	builder.WriteString("## 交易记录\n\n| ID | 股票 | 买入 | 卖出 | 净收益 | 收益率 | 持有天数 | 退出原因 |\n|---|---|---|---|---:|---:|---:|---|\n")
 	for _, trade := range result.Trades {
 		fmt.Fprintf(&builder, "| %s | %s %s | %s %.2f | %s %.2f | %+.2f | %+.2f%% | %d | %s |\n", trade.ID, displayStockCode(trade.Symbol), trade.Name, trade.Entry.Date, trade.Entry.Price, trade.Exit.Date, trade.Exit.Price, trade.NetProfit, trade.ReturnPercent, trade.HoldingDays, trade.ExitReason)

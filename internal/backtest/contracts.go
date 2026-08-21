@@ -139,39 +139,68 @@ type EquityPoint struct {
 	Drawdown  float64 `json:"drawdown_percent"`
 }
 
+type BenchmarkPoint struct {
+	Date   string  `json:"date"`
+	Close  float64 `json:"close"`
+	Return float64 `json:"return_percent"`
+}
+
 type Metrics struct {
-	TotalReturn        float64 `json:"total_return_percent"`
-	AnnualizedReturn   float64 `json:"annualized_return_percent"`
+	TotalReturn          float64 `json:"total_return_percent"`
+	AnnualizedReturn     float64 `json:"annualized_return_percent"`
+	AnnualizedVolatility float64 `json:"annualized_volatility_percent"`
+	MaxDrawdown          float64 `json:"max_drawdown_percent"`
+	Sharpe               float64 `json:"sharpe"`
+	Sortino              float64 `json:"sortino"`
+	Calmar               float64 `json:"calmar"`
+	BestDay              float64 `json:"best_day_percent"`
+	WorstDay             float64 `json:"worst_day_percent"`
+	BenchmarkAvailable   bool    `json:"benchmark_available"`
+	BenchmarkReturn      float64 `json:"benchmark_return_percent"`
+	ExcessReturn         float64 `json:"excess_return_percent"`
+	Trades               int     `json:"trades"`
+	Wins                 int     `json:"wins"`
+	Losses               int     `json:"losses"`
+	WinRate              float64 `json:"win_rate_percent"`
+	ProfitFactor         float64 `json:"profit_factor"`
+	AverageTrade         float64 `json:"average_trade_percent"`
+	AverageHoldingDays   float64 `json:"average_holding_days"`
+	Turnover             float64 `json:"turnover_percent"`
+	TotalFees            float64 `json:"total_fees"`
+	FinalEquity          float64 `json:"final_equity"`
+}
+
+// MarketRegimeMetrics compounds only the daily returns observed while the
+// benchmark was in one point-in-time regime. Excess return uses the subset of
+// those days where both strategy and benchmark closes are available.
+type MarketRegimeMetrics struct {
+	Key                string  `json:"key"`
+	Label              string  `json:"label"`
+	Days               int     `json:"days"`
+	Trades             int     `json:"trades"`
+	ReturnPercent      float64 `json:"return_percent"`
 	MaxDrawdown        float64 `json:"max_drawdown_percent"`
-	Sharpe             float64 `json:"sharpe"`
 	BenchmarkAvailable bool    `json:"benchmark_available"`
+	BenchmarkDays      int     `json:"benchmark_days"`
 	BenchmarkReturn    float64 `json:"benchmark_return_percent"`
 	ExcessReturn       float64 `json:"excess_return_percent"`
-	Trades             int     `json:"trades"`
-	Wins               int     `json:"wins"`
-	Losses             int     `json:"losses"`
-	WinRate            float64 `json:"win_rate_percent"`
-	ProfitFactor       float64 `json:"profit_factor"`
-	AverageTrade       float64 `json:"average_trade_percent"`
-	AverageHoldingDays float64 `json:"average_holding_days"`
-	Turnover           float64 `json:"turnover_percent"`
-	TotalFees          float64 `json:"total_fees"`
-	FinalEquity        float64 `json:"final_equity"`
 }
 
 type Result struct {
-	RunID         string                  `json:"run_id"`
-	GeneratedAt   time.Time               `json:"generated_at"`
-	Request       Request                 `json:"request"`
-	Metrics       Metrics                 `json:"metrics"`
-	Trades        []Trade                 `json:"trades"`
-	OpenPositions []OpenPosition          `json:"open_positions,omitempty"`
-	Equity        []EquityPoint           `json:"equity"`
-	DataSources   map[string]string       `json:"data_sources"`
-	DataCoverage  map[string]DataCoverage `json:"data_coverage,omitempty"`
-	Warnings      []string                `json:"warnings,omitempty"`
-	Directory     string                  `json:"-"`
-	ReportPath    string                  `json:"-"`
+	RunID           string                  `json:"run_id"`
+	GeneratedAt     time.Time               `json:"generated_at"`
+	Request         Request                 `json:"request"`
+	Metrics         Metrics                 `json:"metrics"`
+	Trades          []Trade                 `json:"trades"`
+	OpenPositions   []OpenPosition          `json:"open_positions,omitempty"`
+	Equity          []EquityPoint           `json:"equity"`
+	BenchmarkEquity []BenchmarkPoint        `json:"benchmark_equity,omitempty"`
+	MarketRegimes   []MarketRegimeMetrics   `json:"market_regimes,omitempty"`
+	DataSources     map[string]string       `json:"data_sources"`
+	DataCoverage    map[string]DataCoverage `json:"data_coverage,omitempty"`
+	Warnings        []string                `json:"warnings,omitempty"`
+	Directory       string                  `json:"-"`
+	ReportPath      string                  `json:"-"`
 }
 
 type DataCoverage struct {

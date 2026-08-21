@@ -22,6 +22,15 @@ const dailyRangeOptions = [
   { key: "6m", label: "6月", count: 120 },
   { key: "1y", label: "1年", count: 250 },
 ]
+const localDate = value => {
+  const date = new Date(value)
+  const pad = number => String(number).padStart(2, "0")
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+const strategyEndDate = new Date()
+strategyEndDate.setDate(strategyEndDate.getDate() - 1)
+const strategyStartDate = new Date(strategyEndDate)
+strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
   data() {
@@ -29,6 +38,24 @@ createApp({
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
+      workspaceMode: "market",
+      realtimeScope: "leaders",
+      realtimeLoading: false,
+      realtimeSnapshotLoading: false,
+      realtimeError: "",
+      realtimeResult: null,
+      realtimeHistory: [],
+      realtimeAutoAt: 0,
+      realtimeSessionCheckedAt: 0,
+      realtimeMarketState: "",
+      realtimeScanAllowed: false,
+      realtimeFrozen: false,
+      realtimeNextScanAt: "",
+      realtimeOutcomeLoading: false,
+      realtimeOutcomeError: "",
+      realtimeOutcomeReport: null,
+      realtimeOutcomeHorizon: 5,
+      realtimeOutcomeView: "scores",
       chartMode: "intraday",
       chartGeometry: null,
       crosshair: null,
@@ -57,6 +84,23 @@ createApp({
       loading: false,
       error: "",
       timer: null,
+      strategyScope: "current",
+      strategyAdvanced: false,
+      strategyForm: {
+        start: localDate(strategyStartDate), end: localDate(strategyEndDate), entry_mode: "breakout",
+        fast_ma: 20, slow_ma: 60, breakout_days: 20, volume_ratio_min: 1.2,
+        stop_loss_percent: 8, take_profit_percent: 20, max_holding_days: 40, max_position_percent: 20,
+        initial_cash: 1000000, commission_bps: 3, stamp_duty_bps: 5, slippage_bps: 5,
+      },
+      strategyLoading: false,
+      strategyError: "",
+      strategyResult: null,
+      strategyAssessment: null,
+      strategyHistory: [],
+      strategyHistoryLoading: false,
+      strategyHistoryLoaded: false,
+      strategyChartGeometry: null,
+      strategyCrosshair: null,
     }
   },
   computed: {
@@ -84,6 +128,111 @@ createApp({
       }
       const group = this.watchlist.groups.find(item => item.name === this.selectedWatchlistGroup)
       return group && Array.isArray(group.items) ? group.items : []
+    },
+    currentStrategyAsset() {
+      const symbol = String(this.data.symbol || "")
+      if (!symbol || this.data.kind !== "stock" || this.isMarketIndex(symbol)) return null
+      return { symbol, name: this.quote.name || this.data.name || this.displayCode(symbol), kind: "stock" }
+    },
+    strategyPool() {
+      if (this.strategyScope === "current") return this.currentStrategyAsset ? [this.currentStrategyAsset] : []
+      return this.watchlistItems.filter(item => item && item.kind === "stock" && !this.isMarketIndex(item.symbol))
+    },
+    strategyMetrics() { return (this.strategyResult && this.strategyResult.metrics) || {} },
+    strategyRequest() { return (this.strategyResult && this.strategyResult.request) || {} },
+    strategyTrades() { return this.strategyResult && Array.isArray(this.strategyResult.trades) ? this.strategyResult.trades : [] },
+    strategyMarketRegimes() { return this.strategyResult && Array.isArray(this.strategyResult.market_regimes) ? this.strategyResult.market_regimes : [] },
+    strategyMarketRegimeDays() { return this.strategyMarketRegimes.reduce((total, item) => total + Number(item.days || 0), 0) },
+    strategyCoverage() {
+      const coverage = (this.strategyResult && this.strategyResult.data_coverage) || {}
+      return Object.entries(coverage).map(([symbol, item]) => ({ symbol, ...item }))
+    },
+    realtimeSignals() { return this.realtimeResult && Array.isArray(this.realtimeResult.signals) ? this.realtimeResult.signals : [] },
+    realtimeScanButtonText() {
+      if (this.realtimeLoading) return "正在扫描行情与因子…"
+      if (this.realtimeSnapshotLoading) return "正在确认交易状态…"
+      if (this.realtimeFrozen && this.realtimeMarketState === "break") return "午间休市"
+      if (this.realtimeFrozen && this.realtimeMarketState === "closed") return "已收盘 · 已冻结"
+      if (this.realtimeFrozen) return "实时扫描已暂停"
+      return "运行实时扫描"
+    },
+    realtimeSessionSummary() {
+      const state = this.realtimeStateLabel(this.realtimeMarketState || (this.realtimeResult && this.realtimeResult.market_state))
+      const frozen = this.realtimeFrozen ? " · 已冻结" : ""
+      const next = this.realtimeNextScanAt ? ` · ${this.formatDateTime(this.realtimeNextScanAt)} 恢复` : ""
+      return `${state}${frozen}${next}`
+    },
+    realtimeOutcomeSummaries() { return this.realtimeOutcomeReport && Array.isArray(this.realtimeOutcomeReport.summaries) ? this.realtimeOutcomeReport.summaries : [] },
+    realtimeOutcomeSummary() {
+      return this.realtimeOutcomeSummaries.find(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)) || this.realtimeOutcomeSummaries[0] || {}
+    },
+    realtimeOutcomeBreakdowns() {
+      if (!this.realtimeOutcomeReport) return []
+      const key = this.realtimeOutcomeView === "strategies" ? "strategies" : this.realtimeOutcomeView === "regimes" ? "market_regimes" : "score_buckets"
+      return Array.isArray(this.realtimeOutcomeReport[key]) ? this.realtimeOutcomeReport[key] : []
+    },
+    realtimeOutcomeRecent() {
+      const items = this.realtimeOutcomeReport && Array.isArray(this.realtimeOutcomeReport.recent) ? this.realtimeOutcomeReport.recent : []
+      return items.filter(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)).slice(0, 24)
+    },
+    realtimeOutcomeAssessment() { return this.realtimeOutcomeReport && this.realtimeOutcomeReport.assessment ? this.realtimeOutcomeReport.assessment : {} },
+    realtimeComponentAnalysis() {
+      const analysis = this.realtimeOutcomeReport && this.realtimeOutcomeReport.component_analysis
+      return analysis && typeof analysis === "object" ? analysis : { components: [], coverage: [], correlations: [], regime_metrics: [] }
+    },
+    realtimeComponentCoverage() {
+      return Array.isArray(this.realtimeComponentAnalysis.coverage) ? this.realtimeComponentAnalysis.coverage : []
+    },
+    realtimeCorrelationRows() {
+      const components = Array.isArray(this.realtimeComponentAnalysis.components) ? this.realtimeComponentAnalysis.components : []
+      const correlations = Array.isArray(this.realtimeComponentAnalysis.correlations) ? this.realtimeComponentAnalysis.correlations : []
+      return components.map(left => ({
+        ...left,
+        cells: components.map(right => correlations.find(cell => cell.left_key === left.key && cell.right_key === right.key) || {
+          left_key: left.key, right_key: right.key, samples: 0, correlation: 0, rank_correlation: 0, relation: "insufficient", sample_sufficient: false,
+        }),
+      }))
+    },
+    realtimeRegimeRows() {
+      const components = Array.isArray(this.realtimeComponentAnalysis.components) ? this.realtimeComponentAnalysis.components : []
+      const metrics = Array.isArray(this.realtimeComponentAnalysis.regime_metrics) ? this.realtimeComponentAnalysis.regime_metrics : []
+      const horizon = Number(this.realtimeOutcomeHorizon)
+      const regimes = ["牛市", "熊市", "震荡", "高波动"]
+      return components.map(component => ({
+        ...component,
+        cells: regimes.map(regime => metrics.find(item => item.component_key === component.key && item.regime === regime && Number(item.horizon) === horizon) || {
+          component_key: component.key, component_name: component.name, regime, horizon, samples: 0, active_samples: 0, state: "insufficient", sample_sufficient: false,
+        }),
+      }))
+    },
+    realtimeRegimeSummary() {
+      const summary = { sufficient: 0, positive: 0, negative: 0, mixed: 0 }
+      this.realtimeRegimeRows.forEach(row => row.cells.forEach(cell => {
+        if (!cell || !cell.sample_sufficient) return
+        summary.sufficient += 1
+        if (cell.state === "positive") summary.positive += 1
+        else if (cell.state === "negative") summary.negative += 1
+        else summary.mixed += 1
+      }))
+      return summary
+    },
+    strategyResultTitle() {
+      if (!this.strategyResult) return "回测结果"
+      const tickers = this.strategyRequest.tickers || []
+      if (tickers.length === 1) return `${this.strategyName(tickers[0])} · ${this.strategyModeLabel(this.strategyRequest.technical && this.strategyRequest.technical.entry_mode)}`
+      return `${tickers.length} 只股票组合 · ${this.strategyModeLabel(this.strategyRequest.technical && this.strategyRequest.technical.entry_mode)}`
+    },
+    strategyResultPeriod() {
+      if (!this.strategyResult) return ""
+      return `${String(this.strategyRequest.start || "").slice(0, 10)} 至 ${String(this.strategyRequest.end || "").slice(0, 10)} · ${this.strategyResult.equity?.length || 0} 个交易日 · ${this.strategyRequest.benchmark === "sh000300" ? "沪深300" : this.strategyRequest.benchmark || "无基准"}`
+    },
+    strategyParameterSummary() {
+      const technical = this.strategyRequest.technical || {}
+      return `MA${technical.fast_ma || "--"} / MA${technical.slow_ma || "--"} · ${technical.breakout_days || "--"}日 · 量比≥${this.number(technical.volume_ratio_min, 1)}`
+    },
+    costSummary() {
+      const request = this.strategyRequest
+      return `${this.number(Number(request.commission_rate) * 10000, 1)}bp / ${this.number(Number(request.stamp_duty_rate) * 10000, 1)}bp / ${this.number(request.slippage_bps, 1)}bp`
     },
     lastBar() { return this.bars[this.bars.length - 1] || {} },
     lastMinute() { return this.minutes[this.minutes.length - 1] || {} },
@@ -169,6 +318,315 @@ createApp({
       if (absolute >= 1e8) return `${(number / 1e8).toFixed(2)}亿`
       if (absolute >= 1e4) return `${(number / 1e4).toFixed(2)}万`
       return number.toFixed(0)
+    },
+    currency(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return "--"
+      return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 0 }).format(number)
+    },
+    metricClass(value) {
+      const number = Number(value)
+      return !Number.isFinite(number) || number === 0 ? "flat" : number > 0 ? "up" : "down"
+    },
+    formatDateTime(value) {
+      if (!value) return "--"
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return String(value)
+      return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+    },
+    strategyModeLabel(mode) {
+      if (mode === "trend-reclaim") return "趋势收复"
+      if (mode === "ma-pullback") return "均线回踩"
+      return "放量突破"
+    },
+    strategyName(symbol) {
+      const names = (this.strategyRequest && this.strategyRequest.names) || {}
+      if (names[symbol]) return names[symbol]
+      const item = this.watchlistItems.find(candidate => candidate.symbol === symbol)
+      return (item && item.name) || this.displayCode(symbol)
+    },
+    strategyHistoryTitle(item) {
+      const tickers = Array.isArray(item && item.tickers) ? item.tickers : []
+      const names = (item && item.names) || {}
+      if (tickers.length === 1) return names[tickers[0]] || this.displayCode(tickers[0])
+      const first = tickers[0] ? (names[tickers[0]] || this.displayCode(tickers[0])) : "组合"
+      return `${first} 等 ${tickers.length} 只`
+    },
+    realtimeCount(state) { return this.realtimeSignals.filter(item => item.state === state).length },
+    switchWorkspace(mode) {
+      if (mode !== "market" && mode !== "strategy" && mode !== "realtime") return
+      this.workspaceMode = mode
+      this.strategyCrosshair = null
+      if (mode === "strategy") {
+        if (!this.strategyHistoryLoaded) this.loadStrategyHistory()
+        this.$nextTick(() => this.drawStrategyChart())
+      } else if (mode === "realtime") {
+        this.loadRealtimeSnapshot().then(() => {
+          if (this.workspaceMode === "realtime" && this.realtimeScanAllowed && Date.now() - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
+        })
+        this.loadRealtimeHistory()
+        this.loadRealtimeOutcomes()
+      } else {
+        this.$nextTick(() => this.drawChart())
+      }
+    },
+    async loadStrategyHistory() {
+      if (this.strategyHistoryLoading) return
+      this.strategyHistoryLoading = true
+      try {
+        const response = await fetch("/api/strategy/backtests?limit=20", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "回测历史读取失败")
+        this.strategyHistory = Array.isArray(payload.items) ? payload.items : []
+        this.strategyHistoryLoaded = true
+      } catch (error) {
+        this.strategyError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.strategyHistoryLoading = false
+      }
+    },
+    async loadStrategyRun(runID) {
+      if (!runID || this.strategyLoading) return
+      this.strategyLoading = true
+      this.strategyError = ""
+      try {
+        const response = await fetch(`/api/strategy/backtests?id=${encodeURIComponent(runID)}`, { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "回测归档读取失败")
+        this.strategyResult = payload.result || null
+        this.strategyAssessment = payload.assessment || null
+        this.strategyCrosshair = null
+      } catch (error) {
+        this.strategyError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.strategyLoading = false
+        await this.$nextTick()
+        this.drawStrategyChart()
+      }
+    },
+    async runStrategyBacktest() {
+      if (this.strategyLoading || !this.strategyPool.length) return
+      this.strategyLoading = true
+      this.strategyError = ""
+      this.strategyCrosshair = null
+      const payload = { ...this.strategyForm, symbols: this.strategyPool.map(item => item.symbol), benchmark: "sh000300", liquidate_at_end: true }
+      try {
+        const response = await fetch("/api/strategy/backtests", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+        })
+        const body = await response.text()
+        const result = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(result.error || "量化回测失败")
+        this.strategyResult = result.result || null
+        this.strategyAssessment = result.assessment || null
+        await this.loadStrategyHistory()
+      } catch (error) {
+        this.strategyError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.strategyLoading = false
+        await this.$nextTick()
+        this.drawStrategyChart()
+      }
+    },
+    realtimeStateLabel(state) {
+      if (state === "triggered") return "触发"
+      if (state === "watching") return "观察"
+      if (state === "invalid") return "数据不足"
+      if (state === "weak") return "偏弱"
+      if (state === "trading") return "连续竞价"
+      if (state === "auction") return "集合竞价"
+      if (state === "break") return "午间休市"
+      if (state === "closed") return "已收盘"
+      return state || "--"
+    },
+    realtimeStateClass(state) {
+      if (state === "triggered") return "realtime-triggered"
+      if (state === "watching") return "realtime-watching"
+      return "realtime-weak"
+    },
+    outcomeStatusLabel(status) {
+      if (status === "ready") return "已成熟"
+      if (status === "pending") return "待成熟"
+      return "无效"
+    },
+    outcomeStatusClass(status) {
+      if (status === "ready") return "up"
+      if (status === "pending") return "warn-text"
+      return "down"
+    },
+    outcomeHorizonLabel(horizon) { return `${horizon}日` },
+    outcomeBreakdownSummary(item) {
+      const summaries = Array.isArray(item && item.summaries) ? item.summaries : []
+      return summaries.find(summary => Number(summary.horizon) === Number(this.realtimeOutcomeHorizon)) || summaries[0] || {}
+    },
+    outcomeCheckClass(check) {
+      if (!check) return ""
+      if (check.passed) return "pass"
+      return check.required ? "fail required" : "pending"
+    },
+    outcomeWeightText(value) { return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "--" },
+    componentCoverageClass(item) {
+      if (!item || !Number.isFinite(Number(item.available_percent))) return "flat"
+      return Number(item.available_percent) >= 70 ? "up" : "warn-text"
+    },
+    componentCorrelationClass(cell) {
+      if (!cell || !cell.sample_sufficient) return "component-cell-insufficient"
+      if (cell.relation === "overlap") return "component-cell-overlap"
+      if (cell.relation === "inverse") return "component-cell-inverse"
+      return "component-cell-distinct"
+    },
+    componentRelationLabel(relation) {
+      if (relation === "overlap") return "重叠"
+      if (relation === "inverse") return "反向"
+      if (relation === "self") return "自身"
+      if (relation === "distinct") return "区分"
+      return "样本不足"
+    },
+    componentCorrelationText(cell) {
+      if (!cell || !cell.sample_sufficient) return "--"
+      return this.number(cell.rank_correlation, 2)
+    },
+    componentCorrelationTitle(cell) {
+      if (!cell) return "暂无成对样本"
+      const sample = `${cell.samples || 0} 个样本`
+      if (!cell.sample_sufficient) return `${sample} · 至少需要 ${this.realtimeComponentAnalysis.minimum_correlation_samples || 20} 个`
+      return `${this.componentRelationLabel(cell.relation)} · Rank ${this.number(cell.rank_correlation, 3)} · Pearson ${this.number(cell.correlation, 3)} · ${sample}`
+    },
+    componentRegimeClass(cell) {
+      if (!cell || !cell.sample_sufficient) return "component-cell-insufficient"
+      if (cell.state === "positive") return "component-cell-positive"
+      if (cell.state === "negative") return "component-cell-negative"
+      return "component-cell-mixed"
+    },
+    componentRegimeText(cell) {
+      if (!cell || !cell.sample_sufficient) return "--"
+      return this.componentRegimeStateLabel(cell.state)
+    },
+    componentRegimeStateLabel(state) {
+      if (state === "positive") return "正向"
+      if (state === "negative") return "负向"
+      if (state === "mixed") return "混合"
+      return "样本不足"
+    },
+    componentRegimeTitle(cell) {
+      if (!cell || !cell.sample_sufficient) return `可用 ${cell && cell.samples || 0} · 激活 ${cell && cell.active_samples || 0}`
+      return `${this.componentRegimeStateLabel(cell.state)} · Rank IC ${this.number(cell.rank_information_coefficient, 3)} · 超额 ${this.percentText(cell.average_excess_percent)} · ${cell.samples} 个可用 / ${cell.active_samples} 个激活`
+    },
+    signedPercent(value) {
+      if (value == null || !Number.isFinite(Number(value))) return "--"
+      const number = Number(value)
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`
+    },
+    async loadRealtimeSnapshot() {
+      if (this.realtimeSnapshotLoading) return
+      this.realtimeSnapshotLoading = true
+      this.realtimeSessionCheckedAt = Date.now()
+      this.realtimeError = ""
+      try {
+        const response = await fetch("/api/strategy/realtime", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "实时扫描结果读取失败")
+        this.applyRealtimeSession(payload)
+        if (payload.result) this.realtimeResult = payload.result
+      } catch (error) {
+        this.realtimeError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.realtimeSnapshotLoading = false
+      }
+    },
+    applyRealtimeSession(payload) {
+      if (!payload || typeof payload !== "object") return
+      this.realtimeMarketState = payload.market_state || (payload.result && payload.result.market_state) || this.realtimeMarketState
+      if (typeof payload.scan_allowed === "boolean") this.realtimeScanAllowed = payload.scan_allowed
+      if (typeof payload.frozen === "boolean") this.realtimeFrozen = payload.frozen
+      this.realtimeNextScanAt = payload.next_scan_at || ""
+    },
+    async loadRealtimeHistory() {
+      try {
+        const response = await fetch("/api/strategy/realtime?view=history&limit=30", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "实时信号历史读取失败")
+        this.realtimeHistory = Array.isArray(payload.history) ? payload.history : []
+      } catch (error) {
+        this.realtimeError = error instanceof Error ? error.message : String(error)
+      }
+    },
+    async loadRealtimeOutcomes() {
+      if (this.realtimeOutcomeLoading) return
+      this.realtimeOutcomeError = ""
+      try {
+        const response = await fetch("/api/strategy/realtime?view=outcomes&limit=2000", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "前测结果读取失败")
+        this.realtimeOutcomeReport = payload.report || null
+        if (this.realtimeOutcomeReport && Array.isArray(this.realtimeOutcomeReport.horizons) && this.realtimeOutcomeReport.horizons.length && !this.realtimeOutcomeReport.horizons.includes(Number(this.realtimeOutcomeHorizon))) {
+          this.realtimeOutcomeHorizon = Number(this.realtimeOutcomeReport.horizons[0])
+        }
+      } catch (error) {
+        this.realtimeOutcomeError = error instanceof Error ? error.message : String(error)
+      }
+    },
+    async refreshRealtimeOutcomes() {
+      if (this.realtimeOutcomeLoading) return
+      this.realtimeOutcomeLoading = true
+      this.realtimeOutcomeError = ""
+      try {
+        const response = await fetch("/api/strategy/realtime?view=outcomes&limit=2000&horizons=1,3,5,10", { method: "POST", cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "前测结果更新失败")
+        this.realtimeOutcomeReport = payload.report || null
+      } catch (error) {
+        this.realtimeOutcomeError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.realtimeOutcomeLoading = false
+      }
+    },
+    async runRealtimeScan() {
+      if (this.realtimeLoading || !this.realtimeScanAllowed) return
+      this.realtimeLoading = true
+      this.realtimeAutoAt = Date.now()
+      this.realtimeError = ""
+      try {
+        const scope = this.realtimeScope === "watchlist" ? "watchlist" : "leaders"
+        const response = await fetch(`/api/strategy/realtime?scope=${scope}`, { method: "POST", cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "实时策略扫描失败")
+        this.applyRealtimeSession(payload)
+        if (payload.result) this.realtimeResult = payload.result
+        await this.loadRealtimeHistory()
+      } catch (error) {
+        this.realtimeError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.realtimeLoading = false
+      }
+    },
+    pollRealtimeSession() {
+      if (this.workspaceMode !== "realtime" || this.realtimeLoading) return
+      const now = Date.now()
+      if (this.realtimeScanAllowed) {
+        if (now - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
+        return
+      }
+      const nextScanAt = Date.parse(this.realtimeNextScanAt)
+      if (!this.realtimeSnapshotLoading && Number.isFinite(nextScanAt) && now >= nextScanAt && now - this.realtimeSessionCheckedAt >= 10000) {
+        this.loadRealtimeSnapshot().then(() => {
+          if (this.workspaceMode === "realtime" && this.realtimeScanAllowed && Date.now() - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
+        })
+      }
+    },
+    selectRealtimeSignal(signal) {
+      if (!signal || !signal.symbol) return
+      this.workspaceMode = "market"
+      this.query = this.displayCode(signal.symbol)
+      this.requestedSymbol = signal.symbol
+      this.load(signal.symbol)
     },
     movingAverage(bars, index, length) {
       if (index + 1 < length) return null
@@ -470,6 +928,162 @@ createApp({
       } finally {
         this.loading = false
       }
+    },
+    prepareStrategyCanvas() {
+      const canvas = this.$refs.strategyChart
+      if (!canvas) return null
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const pixelWidth = Math.max(1, Math.floor(rect.width * dpr))
+      const pixelHeight = Math.max(1, Math.floor(rect.height * dpr))
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth
+        canvas.height = pixelHeight
+      }
+      const context = canvas.getContext("2d")
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.fillStyle = "#171d21"
+      context.fillRect(0, 0, rect.width, rect.height)
+      return { context, width: rect.width, height: rect.height }
+    },
+    drawStrategyChart() {
+      const canvas = this.prepareStrategyCanvas()
+      if (!canvas || !this.strategyResult) return
+      const { context, width, height } = canvas
+      const equity = Array.isArray(this.strategyResult.equity) ? this.strategyResult.equity.filter(item => Number.isFinite(Number(item.equity))) : []
+      if (equity.length < 2) {
+        context.fillStyle = "#91a0a7"
+        context.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+        context.fillText("净值数据不足", 18, 28)
+        return
+      }
+      const benchmarkMap = new Map((Array.isArray(this.strategyResult.benchmark_equity) ? this.strategyResult.benchmark_equity : []).map(item => [item.date, Number(item.return_percent)]))
+      const initialCash = Number(this.strategyRequest.initial_cash) || Number(equity[0].equity)
+      const points = equity.map(item => ({
+        ...item,
+        strategyReturn: (Number(item.equity) / initialCash - 1) * 100,
+        benchmarkReturn: benchmarkMap.has(item.date) ? benchmarkMap.get(item.date) : null,
+        drawdown: Number(item.drawdown_percent),
+      }))
+      const left = width < 640 ? 44 : 58
+      const right = 18
+      const top = 22
+      const equityBottom = Math.floor(height * .68)
+      const drawdownTop = equityBottom + 38
+      const drawdownBottom = height - 36
+      const plotWidth = Math.max(20, width - left - right)
+      const returns = points.flatMap(item => [item.strategyReturn, item.benchmarkReturn]).filter(Number.isFinite)
+      returns.push(0)
+      let minimum = Math.min(...returns)
+      let maximum = Math.max(...returns)
+      const padding = (maximum - minimum) * .1 || 1
+      minimum -= padding
+      maximum += padding
+      const x = index => left + index / Math.max(1, points.length - 1) * plotWidth
+      const y = value => top + (maximum - value) / (maximum - minimum) * (equityBottom - top)
+      const maxDrawdown = Math.max(1, ...points.map(item => Math.abs(Math.min(0, item.drawdown || 0))))
+      const drawdownY = value => drawdownTop + Math.abs(Math.min(0, value)) / maxDrawdown * (drawdownBottom - drawdownTop)
+
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      context.textAlign = "right"
+      context.fillStyle = "#91a0a7"
+      context.strokeStyle = "#2b363c"
+      for (let index = 0; index < 5; index += 1) {
+        const lineY = top + index * (equityBottom - top) / 4
+        const value = maximum - (maximum - minimum) * index / 4
+        context.beginPath(); context.moveTo(left, lineY); context.lineTo(width - right, lineY); context.stroke()
+        context.fillText(`${value >= 0 ? "+" : ""}${value.toFixed(1)}%`, left - 7, lineY + 4)
+      }
+      context.fillText("0%", left - 7, drawdownTop + 4)
+      context.fillText(`-${maxDrawdown.toFixed(1)}%`, left - 7, drawdownBottom + 4)
+      context.strokeStyle = "#2b363c"
+      context.beginPath(); context.moveTo(left, drawdownTop); context.lineTo(width - right, drawdownTop); context.stroke()
+
+      const drawLine = (field, color, dashed = false) => {
+        context.beginPath()
+        let started = false
+        points.forEach((item, index) => {
+          const value = Number(item[field])
+          if (!Number.isFinite(value)) return
+          if (started) context.lineTo(x(index), y(value))
+          else { context.moveTo(x(index), y(value)); started = true }
+        })
+        context.strokeStyle = color
+        context.lineWidth = field === "strategyReturn" ? 2 : 1.4
+        context.setLineDash(dashed ? [6, 4] : [])
+        context.stroke()
+        context.setLineDash([])
+      }
+      drawLine("benchmarkReturn", "#f0b768", true)
+      drawLine("strategyReturn", "#58b9d7")
+
+      context.beginPath()
+      context.moveTo(x(0), drawdownTop)
+      points.forEach((item, index) => context.lineTo(x(index), drawdownY(item.drawdown)))
+      context.lineTo(x(points.length - 1), drawdownTop)
+      context.closePath()
+      context.fillStyle = "rgba(239, 107, 107, .18)"
+      context.fill()
+      context.strokeStyle = "rgba(239, 107, 107, .7)"
+      context.stroke()
+
+      context.textAlign = "center"
+      context.fillStyle = "#91a0a7"
+      const labelCount = width < 640 ? 3 : 6
+      for (let index = 0; index < labelCount; index += 1) {
+        const pointIndex = Math.round(index * (points.length - 1) / Math.max(1, labelCount - 1))
+        context.fillText(String(points[pointIndex].date || "").slice(0, 10), x(pointIndex), height - 13)
+      }
+
+      this.strategyChartGeometry = { points, left, right: width - right, top, bottom: drawdownBottom, x }
+      if (this.strategyCrosshair != null) {
+        const index = Math.max(0, Math.min(points.length - 1, this.strategyCrosshair))
+        const point = points[index]
+        const crossX = x(index)
+        context.strokeStyle = "#71838c"
+        context.setLineDash([3, 4])
+        context.beginPath(); context.moveTo(crossX, top); context.lineTo(crossX, drawdownBottom); context.stroke()
+        context.setLineDash([])
+        const rows = [
+          ["策略", this.percentText(point.strategyReturn), "#58b9d7"],
+          ["沪深300", this.percentText(point.benchmarkReturn), "#f0b768"],
+          ["回撤", this.percentText(point.drawdown), "#ef6b6b"],
+          ["权益", this.currency(point.equity), "#edf3f5"],
+        ]
+        const boxWidth = 184
+        const boxHeight = 104
+        const boxX = crossX + boxWidth + 12 < width - right ? crossX + 10 : crossX - boxWidth - 10
+        const boxY = top + 8
+        context.fillStyle = "rgba(16, 22, 26, .96)"; context.fillRect(boxX, boxY, boxWidth, boxHeight)
+        context.strokeStyle = "#50626b"; context.strokeRect(boxX + .5, boxY + .5, boxWidth - 1, boxHeight - 1)
+        context.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+        context.textAlign = "left"; context.fillStyle = "#edf3f5"; context.fillText(point.date, boxX + 10, boxY + 17)
+        context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+        rows.forEach((row, rowIndex) => {
+          const rowY = boxY + 38 + rowIndex * 16
+          context.fillStyle = "#91a0a7"; context.textAlign = "left"; context.fillText(row[0], boxX + 10, rowY)
+          context.fillStyle = row[2]; context.textAlign = "right"; context.fillText(row[1], boxX + boxWidth - 10, rowY)
+        })
+      }
+    },
+    handleStrategyChartPointer(event) {
+      const geometry = this.strategyChartGeometry
+      const canvas = this.$refs.strategyChart
+      if (!geometry || !canvas || !geometry.points.length) return
+      const rect = canvas.getBoundingClientRect()
+      const pointerX = event.clientX - rect.left
+      if (pointerX < geometry.left || pointerX > geometry.right) return this.clearStrategyCrosshair()
+      this.strategyCrosshair = Math.round((pointerX - geometry.left) / Math.max(1, geometry.right - geometry.left) * (geometry.points.length - 1))
+      this.drawStrategyChart()
+    },
+    clearStrategyCrosshair() {
+      if (this.strategyCrosshair == null) return
+      this.strategyCrosshair = null
+      this.drawStrategyChart()
+    },
+    handleResize() {
+      if (this.workspaceMode === "strategy") this.drawStrategyChart()
+      else this.drawChart()
     },
     prepareCanvas() {
       const canvas = this.$refs.chart
@@ -1010,12 +1624,13 @@ createApp({
       this.load(this.requestedSymbol)
       this.loadIndices()
       this.loadWatchlist()
+      this.pollRealtimeSession()
     }, 10000)
-    window.addEventListener("resize", this.drawChart)
+    window.addEventListener("resize", this.handleResize)
   },
   beforeUnmount() {
     window.clearInterval(this.timer)
     if (this.crosshairFrame != null) window.cancelAnimationFrame(this.crosshairFrame)
-    window.removeEventListener("resize", this.drawChart)
+    window.removeEventListener("resize", this.handleResize)
   },
 }).mount("#app")

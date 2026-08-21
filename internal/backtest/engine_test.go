@@ -24,6 +24,23 @@ func (mock historyRangeMock) FetchDailyBarsRange(_ context.Context, symbol strin
 	return result, nil
 }
 
+type trackedHistoryRangeMock struct {
+	bars   []domain.DailyBar
+	starts map[string]time.Time
+}
+
+func (mock *trackedHistoryRangeMock) FetchDailyBarsRange(_ context.Context, symbol string, start, _ time.Time, _ PriceAdjustment) ([]domain.DailyBar, error) {
+	if mock.starts == nil {
+		mock.starts = make(map[string]time.Time)
+	}
+	mock.starts[symbol] = start
+	result := append([]domain.DailyBar(nil), mock.bars...)
+	for index := range result {
+		result[index].Symbol = symbol
+	}
+	return result, nil
+}
+
 func testBars() []domain.DailyBar {
 	start := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	bars := make([]domain.DailyBar, 65)
@@ -83,6 +100,10 @@ func TestDailyEngineRecordsNextOpenT1TradeAndFees(t *testing.T) {
 	if len(result.Equity) == 0 || result.Metrics.Trades != 1 || math.IsNaN(result.Metrics.TotalReturn) {
 		t.Fatalf("missing auditable metrics: %#v", result)
 	}
+	if result.Metrics.AnnualizedVolatility <= 0 || result.Metrics.WorstDay >= 0 ||
+		result.Metrics.BestDay < 0 || result.Metrics.Sortino == 0 || result.Metrics.Calmar == 0 {
+		t.Fatalf("missing industry-standard risk metrics: %#v", result.Metrics)
+	}
 }
 
 func TestValidateRequestRejectsAdjustedModeAndBadCosts(t *testing.T) {
@@ -100,6 +121,23 @@ func TestValidateRequestRejectsAdjustedModeAndBadCosts(t *testing.T) {
 	request.Tickers = []string{"sh600519", "sh600519"}
 	if err := validateRequest(request); err == nil {
 		t.Fatal("duplicate ticker should be rejected")
+	}
+}
+
+func TestEnrichRiskMetricsUsesPersistedEquityCurve(t *testing.T) {
+	result := Result{
+		Request: Request{InitialCash: 100000},
+		Metrics: Metrics{AnnualizedReturn: 12, MaxDrawdown: -8},
+		Equity: []EquityPoint{
+			{Date: "2024-01-01", Equity: 100000},
+			{Date: "2024-01-02", Equity: 101000},
+			{Date: "2024-01-03", Equity: 99000},
+			{Date: "2024-01-04", Equity: 100500},
+		},
+	}
+	EnrichRiskMetrics(&result)
+	if result.Metrics.AnnualizedVolatility <= 0 || result.Metrics.BestDay <= 0 || result.Metrics.WorstDay >= 0 || result.Metrics.Sharpe == 0 || result.Metrics.Sortino == 0 || result.Metrics.Calmar == 0 {
+		t.Fatalf("risk metrics were not enriched: %#v", result.Metrics)
 	}
 }
 
@@ -121,5 +159,52 @@ func TestDailyEngineCanonicalizesTickerExecutionOrder(t *testing.T) {
 	if !reflect.DeepEqual(first.Trades, second.Trades) || first.Metrics != second.Metrics ||
 		strings.Join(first.Request.Tickers, ",") != "sh600519,sz000001" {
 		t.Fatalf("ticker input order changed execution: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestDailyEngineFetchesBenchmarkWarmupAndPersistsRegimeMetrics(t *testing.T) {
+	provider := &trackedHistoryRangeMock{bars: testBars()}
+	request := testRequest()
+	request.Benchmark = "sh000300"
+	result, err := NewDailyEngine(provider).Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	benchmarkStart, ok := provider.starts[request.Benchmark]
+	if !ok || !benchmarkStart.Before(request.Start.AddDate(0, 0, -150)) {
+		t.Fatalf("benchmark warmup was not fetched: %v", benchmarkStart)
+	}
+	if !result.Metrics.BenchmarkAvailable || len(result.BenchmarkEquity) < 2 || len(result.MarketRegimes) == 0 {
+		t.Fatalf("benchmark research context was not persisted: %+v", result)
+	}
+}
+
+func TestCalculateMarketRegimeMetricsCompoundsConditionalReturns(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	benchmark := make([]domain.DailyBar, 70)
+	for index := range benchmark {
+		closePrice := 100 + float64(index)*.5
+		benchmark[index] = domain.DailyBar{
+			Date: start.AddDate(0, 0, index).Format("2006-01-02"),
+			Open: closePrice, Close: closePrice, High: closePrice + 1, Low: closePrice - 1,
+		}
+	}
+	equityValues := []float64{100, 102, 101, 104, 105}
+	equity := make([]EquityPoint, len(equityValues))
+	for index, value := range equityValues {
+		equity[index] = EquityPoint{Date: benchmark[65+index].Date, Equity: value}
+	}
+	trades := []Trade{{Entry: Fill{Date: benchmark[68].Date}}}
+	items := calculateMarketRegimeMetrics(equity, trades, benchmark)
+	if len(items) != 1 {
+		t.Fatalf("expected one observed market state, got %+v", items)
+	}
+	item := items[0]
+	if item.Label != "牛市" || item.Days != 4 || item.Trades != 1 || !item.BenchmarkAvailable || item.BenchmarkDays != 4 {
+		t.Fatalf("unexpected regime attribution: %+v", item)
+	}
+	expectedExcess := (1.05 - benchmark[69].Close/benchmark[65].Close) * 100
+	if math.Abs(item.ReturnPercent-5) > 1e-9 || item.MaxDrawdown >= 0 || math.Abs(item.ExcessReturn-expectedExcess) > 1e-9 {
+		t.Fatalf("unexpected conditional performance: %+v", item)
 	}
 }

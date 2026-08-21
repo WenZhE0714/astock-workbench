@@ -202,7 +202,8 @@ func periodRequest(base Request, period Period, parameters TechnicalParameters) 
 
 func finiteMetrics(metrics Metrics) bool {
 	values := []float64{
-		metrics.TotalReturn, metrics.AnnualizedReturn, metrics.MaxDrawdown, metrics.Sharpe,
+		metrics.TotalReturn, metrics.AnnualizedReturn, metrics.AnnualizedVolatility,
+		metrics.MaxDrawdown, metrics.Sharpe, metrics.Sortino, metrics.Calmar, metrics.BestDay, metrics.WorstDay,
 		metrics.BenchmarkReturn, metrics.ExcessReturn, metrics.WinRate, metrics.ProfitFactor,
 		metrics.AverageTrade, metrics.AverageHoldingDays, metrics.Turnover, metrics.TotalFees, metrics.FinalEquity,
 	}

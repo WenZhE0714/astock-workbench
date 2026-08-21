@@ -11,8 +11,10 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
+var stockReportFixtureNow = time.Now()
+
 func stockReportBars(symbol string) []domain.DailyBar {
-	start := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
+	start := stockReportFixtureNow.AddDate(0, 0, -90)
 	bars := make([]domain.DailyBar, 90)
 	for index := range bars {
 		price := 100 + float64(index)*0.5
@@ -29,8 +31,9 @@ func stockReportBars(symbol string) []domain.DailyBar {
 type stockReportQuoteMock struct{}
 
 func (stockReportQuoteMock) Fetch(context.Context, []string) ([]domain.Quote, error) {
+	quoteTime := stockReportFixtureNow.AddDate(0, 0, -1).Format("2006-01-02") + " 15:00:00"
 	return []domain.Quote{
-		{Symbol: "sh600519", Code: "600519", Name: "贵州茅台", Current: "144.50", PreviousClose: "142.00", Open: "143.00", High: "145.00", Low: "141.80", AveragePrice: "143.50", Percent: 1.76, Amount: 20e6, VolumeRatio: "1.50", Turnover: "1.20", PETTM: "20", PB: "7", LimitUp: "156.20", LimitDown: "127.80", QuoteTime: "2026-08-11 15:00:00"},
+		{Symbol: "sh600519", Code: "600519", Name: "贵州茅台", Current: "144.50", PreviousClose: "142.00", Open: "143.00", High: "145.00", Low: "141.80", AveragePrice: "143.50", Percent: 1.76, Amount: 20e6, VolumeRatio: "1.50", Turnover: "1.20", PETTM: "20", PB: "7", LimitUp: "156.20", LimitDown: "127.80", QuoteTime: quoteTime},
 		{Symbol: "sh000001", Name: "上证指数", Current: "3900", Percent: 0.5},
 		{Symbol: "sz399001", Name: "深证成指", Current: "14000", Percent: 0.3},
 		{Symbol: "sz399006", Name: "创业板指", Current: "3500", Percent: -0.2},
@@ -65,7 +68,7 @@ type stockReportDragonMock struct{}
 
 func (stockReportDragonMock) FetchDragonTiger(context.Context, string) (domain.DragonTigerSnapshot, error) {
 	return domain.DragonTigerSnapshot{Loaded: true, WindowDays: 30, Entries: []domain.DragonTigerEntry{{
-		Symbol: "sh600519", TradeDate: "2026-08-08", Reason: "测试异动", NetAmount: 1e8,
+		Symbol: "sh600519", TradeDate: stockReportFixtureNow.AddDate(0, 0, -2).Format("2006-01-02"), Reason: "测试异动", NetAmount: 1e8,
 	}}}, nil
 }
 
@@ -79,14 +82,14 @@ type stockReportScanMock struct{ marketReportScanMock }
 
 func (stockReportScanMock) FetchAnnouncements(context.Context, []string, int) ([]domain.MarketAnnouncement, error) {
 	return []domain.MarketAnnouncement{{
-		Symbol: "sh600519", Name: "贵州茅台", Date: "2026-08-10", Title: "贵州茅台关于回购股份的公告",
+		Symbol: "sh600519", Name: "贵州茅台", Date: stockReportFixtureNow.AddDate(0, 0, -1).Format("2006-01-02"), Title: "贵州茅台关于回购股份的公告",
 	}}, nil
 }
 
 type stockReportNewsMock struct{}
 
 func (stockReportNewsMock) FetchStockNews(context.Context, string, int) ([]domain.StockNewsItem, error) {
-	return []domain.StockNewsItem{{Date: "2026-08-11 10:00:00", Title: "贵州茅台市场关注度上升", Source: "测试媒体"}}, nil
+	return []domain.StockNewsItem{{Date: stockReportFixtureNow.AddDate(0, 0, -1).Format("2006-01-02") + " 10:00:00", Title: "贵州茅台市场关注度上升", Source: "测试媒体"}}, nil
 }
 
 type stockReportResearchMock struct{}
@@ -94,7 +97,7 @@ type stockReportResearchMock struct{}
 func (stockReportResearchMock) FetchBrokerResearch(context.Context, string, time.Time, time.Time, int) ([]domain.BrokerResearchItem, error) {
 	return []domain.BrokerResearchItem{{
 		Symbol: "sh600519", Name: "贵州茅台", Title: "需求根基稳固", Organization: "测试证券",
-		Author: "分析师甲", PublishedAt: "2026-08-10", SourceID: "R1", Rating: "增持",
+		Author: "分析师甲", PublishedAt: stockReportFixtureNow.AddDate(0, 0, -2).Format("2006-01-02"), SourceID: "R1", Rating: "增持",
 	}}, nil
 }
 

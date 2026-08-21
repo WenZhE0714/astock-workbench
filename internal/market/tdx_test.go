@@ -26,6 +26,43 @@ func TestMergeTDXQuoteUsesTCPPricesAndHTTPMetadata(t *testing.T) {
 	}
 }
 
+func TestMergeTDXQuoteRowsFallsBackForZeroAuctionPlaceholder(t *testing.T) {
+	metadata := domain.Quote{
+		Symbol: "sz002080", Source: "腾讯HTTP", Name: "中材科技", Current: "58.80",
+		LimitUp: "59.50", LimitDown: "48.68",
+	}
+	rows := map[string]tdxQuote{
+		"sz002080": {Symbol: "sz002080", Code: "002080", Current: "0.00", PreviousClose: "54.09"},
+	}
+	fallback := map[string]domain.Quote{
+		"sz002080": {Symbol: "sz002080", Source: "腾讯HTTP", Name: "中材科技", Current: "55.32", PreviousClose: "54.09", Percent: 2.27},
+	}
+	if validTDXQuote(rows["sz002080"]) {
+		t.Fatal("zero-priced TDX auction placeholder was considered valid")
+	}
+	if invalid := tdxFallbackSymbols([]string{"sz002080"}, rows); len(invalid) != 1 || invalid[0] != "sz002080" {
+		t.Fatalf("invalid TDX quote did not request HTTP fallback: %#v", invalid)
+	}
+	merged := mergeTDXQuoteRows([]string{"sz002080"}, rows, map[string]domain.Quote{"sz002080": metadata}, fallback)
+	if len(merged) != 1 || merged[0].Current != "55.32" || merged[0].Source != "腾讯HTTP" {
+		t.Fatalf("auction fallback did not replace zero TDX quote: %#v", merged)
+	}
+}
+
+func TestMergeTDXQuoteRowsKeepsValidTCPQuote(t *testing.T) {
+	metadata := domain.Quote{Symbol: "sh600519", Source: "腾讯HTTP", Name: "贵州茅台", LimitUp: "1600.00"}
+	rows := map[string]tdxQuote{
+		"sh600519": {Symbol: "sh600519", Code: "600519", Current: "1498.50", PreviousClose: "1480.00", Percent: 1.25},
+	}
+	fallback := map[string]domain.Quote{
+		"sh600519": {Symbol: "sh600519", Source: "腾讯HTTP", Current: "1499.00"},
+	}
+	merged := mergeTDXQuoteRows([]string{"sh600519"}, rows, map[string]domain.Quote{"sh600519": metadata}, fallback)
+	if len(merged) != 1 || merged[0].Current != "1498.50" || merged[0].Source != "通达信TCP" || merged[0].LimitUp != "1600.00" {
+		t.Fatalf("valid TCP quote should retain TCP price and HTTP metadata: %#v", merged)
+	}
+}
+
 func TestValidTDXMinutePoint(t *testing.T) {
 	valid := domain.MinutePoint{
 		Symbol: "sz002080", Source: "通达信TCP", TradeDate: "2026-08-18",
