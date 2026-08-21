@@ -9,9 +9,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
+
+type shadowAnalyzerStub struct {
+	report paper.Report
+	calls  *int
+}
+
+func (stub shadowAnalyzerStub) Evaluate(context.Context, []realtime.Signal, paper.Options) (paper.Report, error) {
+	if stub.calls != nil {
+		(*stub.calls)++
+	}
+	return stub.report, nil
+}
+
+type shadowArchiveStub struct {
+	report paper.Report
+	saves  int
+}
+
+func (stub *shadowArchiveStub) Save(report paper.Report) error {
+	stub.report = report
+	stub.saves++
+	return nil
+}
+func (stub *shadowArchiveStub) Load() (paper.Report, error) { return stub.report, nil }
 
 type realtimeScannerStub struct {
 	result realtime.ScanResult
@@ -347,5 +372,27 @@ func TestRealtimeOutcomePOSTReadsSignalsAndEvaluates(t *testing.T) {
 	}
 	if archiveCalls != 1 || evaluateCalls != 1 || len(options.Horizons) != 2 || options.Horizons[0] != 1 || options.Horizons[1] != 3 || options.TargetReturn != 6 || options.SignalLimit != 9 {
 		t.Fatalf("POST did not evaluate requested inputs: archive=%d evaluate=%d options=%+v", archiveCalls, evaluateCalls, options)
+	}
+}
+
+func TestShadowExecutionGETAndPOST(t *testing.T) {
+	archive := &shadowArchiveStub{report: paper.Report{CandidateCount: 2}}
+	evaluateCalls := 0
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}),
+		WithShadowExecution(shadowAnalyzerStub{report: paper.Report{CandidateCount: 3, CompletedTrades: 1}, calls: &evaluateCalls}, archive),
+	)
+
+	getRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRecorder, httptest.NewRequest(http.MethodGet, "/api/strategy/shadow", nil))
+	if getRecorder.Code != http.StatusOK || evaluateCalls != 0 {
+		t.Fatalf("GET crossed evaluation boundary: status=%d calls=%d body=%s", getRecorder.Code, evaluateCalls, getRecorder.Body.String())
+	}
+
+	postRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(postRecorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?limit=9&minimum_score=60&holding_days=3", nil))
+	if postRecorder.Code != http.StatusOK || evaluateCalls != 1 || archive.saves != 1 || archive.report.CompletedTrades != 1 {
+		t.Fatalf("unexpected POST result: status=%d calls=%d saves=%d report=%+v body=%s", postRecorder.Code, evaluateCalls, archive.saves, archive.report, postRecorder.Body.String())
 	}
 }

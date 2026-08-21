@@ -14,9 +14,10 @@ import (
 
 func (app *App) runPaper(arguments []string) error {
 	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "status") {
-		fmt.Fprintln(app.out, "模拟盘状态: 领域模型与 Broker/RiskGate 接口已建立，撮合与持仓流水尚未启用。")
-		fmt.Fprintln(app.out, "计划约束: A 股 100 股整手、T+1、涨跌停、停牌、手续费与滑点。")
-		fmt.Fprintf(app.out, "预留账户文件: %s\n", app.paths.PaperFile)
+		fmt.Fprintln(app.out, "模拟盘状态: 影子执行复盘已启用；真实 Broker/RiskGate 仍保持隔离且不会提交订单。")
+		fmt.Fprintln(app.out, "执行约束: 信号次日开盘、A 股 100 股整手、持有窗口、成交额容量、涨跌停/停牌、手续费与滑点。")
+		fmt.Fprintf(app.out, "影子报告: %s\n", app.paths.ShadowReportFile)
+		fmt.Fprintf(app.out, "真实账户预留文件: %s\n", app.paths.PaperFile)
 		return nil
 	}
 	return fmt.Errorf("用法: astock paper status")

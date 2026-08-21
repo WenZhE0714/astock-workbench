@@ -367,6 +367,13 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 .component-portfolio-row > span:not(:first-child),.component-portfolio-row > b,.component-portfolio-row > strong { font-variant-numeric:tabular-nums; text-align:right; }
 .component-portfolio-row > strong { text-align:center; }
 .realtime-outcome-empty { margin:0 14px 14px; }
+.shadow-execution-panel { margin:0 14px 14px; border:1px solid var(--line); background:var(--panel-soft); }
+.shadow-metrics { margin:0; border:0; border-bottom:1px solid var(--line); }
+.shadow-rejection-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; margin-top:1px; background:var(--line); }
+.shadow-rejection-list span { display:grid; grid-template-columns:auto auto; gap:4px 8px; min-width:0; padding:8px 10px; background:var(--panel); font-size:10px; }
+.shadow-rejection-list b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.shadow-rejection-list small { color:var(--muted); font-size:9px; text-align:right; }
+.shadow-rejection-list em { grid-column:1 / -1; overflow:hidden; color:var(--warn); font-size:9px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
 .strategy-header { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; padding:2px 0 17px; border-bottom:1px solid var(--line); }
 .strategy-header h1 { margin:4px 0 2px; }
 .strategy-header p { margin:5px 0 0; color:var(--muted); font-size:12px; }
@@ -496,6 +503,7 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .strategy-evidence-grid { grid-template-columns:1fr; }
   .realtime-layout { grid-template-columns:minmax(0,1fr); }
   .realtime-outcome-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .shadow-rejection-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .assessment-checks { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media (max-width:900px) {
@@ -510,6 +518,8 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .realtime-performance-head { align-items:flex-start; flex-direction:column; gap:10px; }
   .realtime-performance-actions { width:100%; justify-content:space-between; }
   .realtime-outcome-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); margin-right:10px; margin-left:10px; }
+  .shadow-execution-panel { margin-right:10px; margin-left:10px; }
+  .shadow-rejection-list { grid-template-columns:1fr; }
   .realtime-outcome-table,.realtime-outcome-recent,.realtime-assessment,.component-analysis { margin-right:10px; margin-left:10px; }
   .realtime-outcome-tabs { margin-right:10px; margin-left:10px; }
   .assessment-proposal { grid-template-columns:1fr; }

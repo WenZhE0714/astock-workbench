@@ -56,6 +56,9 @@ createApp({
       realtimeOutcomeReport: null,
       realtimeOutcomeHorizon: 5,
       realtimeOutcomeView: "scores",
+      shadowLoading: false,
+      shadowError: "",
+      shadowReport: null,
       chartMode: "intraday",
       chartGeometry: null,
       crosshair: null,
@@ -232,6 +235,9 @@ createApp({
       const horizons = Array.isArray(this.realtimePortfolioAnalysis.horizons) ? this.realtimePortfolioAnalysis.horizons : []
       return horizons.find(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)) || horizons[0] || {}
     },
+    shadowTrades() { return this.shadowReport && Array.isArray(this.shadowReport.trades) ? this.shadowReport.trades : [] },
+    shadowPositions() { return this.shadowReport && Array.isArray(this.shadowReport.positions) ? this.shadowReport.positions : [] },
+    shadowRejections() { return this.shadowReport && Array.isArray(this.shadowReport.rejections) ? this.shadowReport.rejections : [] },
     strategyResultTitle() {
       if (!this.strategyResult) return "回测结果"
       const tickers = this.strategyRequest.tickers || []
@@ -382,6 +388,7 @@ createApp({
         })
         this.loadRealtimeHistory()
         this.loadRealtimeOutcomes()
+        this.loadShadowReport()
       } else {
         this.$nextTick(() => this.drawChart())
       }
@@ -626,6 +633,35 @@ createApp({
         this.realtimeOutcomeError = error instanceof Error ? error.message : String(error)
       } finally {
         this.realtimeOutcomeLoading = false
+      }
+    },
+    async loadShadowReport() {
+      if (this.shadowLoading) return
+      this.shadowError = ""
+      try {
+        const response = await fetch("/api/strategy/shadow", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "影子执行结果读取失败")
+        this.shadowReport = payload.report && payload.report.generated_at ? payload.report : null
+      } catch (error) {
+        this.shadowError = error instanceof Error ? error.message : String(error)
+      }
+    },
+    async refreshShadowReport() {
+      if (this.shadowLoading) return
+      this.shadowLoading = true
+      this.shadowError = ""
+      try {
+        const response = await fetch("/api/strategy/shadow?limit=2000&minimum_score=55&holding_days=5", { method: "POST", cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "影子执行更新失败")
+        this.shadowReport = payload.report || null
+      } catch (error) {
+        this.shadowError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.shadowLoading = false
       }
     },
     async runRealtimeScan() {

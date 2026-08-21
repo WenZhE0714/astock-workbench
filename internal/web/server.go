@@ -21,6 +21,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
@@ -97,6 +98,15 @@ type realtimeOutcomeAnalyzer interface {
 	Report(int, time.Time) (realtime.OutcomeReport, error)
 }
 
+type shadowAnalyzer interface {
+	Evaluate(context.Context, []realtime.Signal, paper.Options) (paper.Report, error)
+}
+
+type shadowArchive interface {
+	Save(paper.Report) error
+	Load() (paper.Report, error)
+}
+
 type Server struct {
 	resolver                 SymbolResolver
 	quotes                   QuoteClient
@@ -109,6 +119,8 @@ type Server struct {
 	realtimeScanner          realtimeScanner
 	realtimeArchive          realtimeSignalArchive
 	realtimeOutcomes         realtimeOutcomeAnalyzer
+	shadowEvaluator          shadowAnalyzer
+	shadowArchive            shadowArchive
 	defaultSymbol            string
 	watchlistFile            string
 	nameCacheFile            string
@@ -370,6 +382,13 @@ func WithRealtimeOutcomes(analyzer realtimeOutcomeAnalyzer) ServerOption {
 	}
 }
 
+func WithShadowExecution(evaluator shadowAnalyzer, archive shadowArchive) ServerOption {
+	return func(server *Server) {
+		server.shadowEvaluator = evaluator
+		server.shadowArchive = archive
+	}
+}
+
 // NewServer uses options so embedders that only need the quote surface do not
 // have to configure the shared CLI watchlist and name cache.
 func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistoryClient, minutes MinuteClient, defaultSymbol string, options ...ServerOption) *Server {
@@ -402,6 +421,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
 	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
+	mux.HandleFunc("/api/strategy/shadow", s.handleShadowExecution)
 	staticAssets, err := fs.Sub(assets, "dist")
 	if err == nil {
 		mux.Handle("/assets/", http.FileServer(http.FS(staticAssets)))

@@ -23,6 +23,7 @@ type Paths struct {
 	RealtimeSignalsDir         string
 	TradingAgentsDir           string
 	PaperFile                  string
+	ShadowReportFile           string
 }
 
 func ResolvePaths() (Paths, error) {
@@ -62,5 +63,6 @@ func ResolvePaths() (Paths, error) {
 		RealtimeSignalsDir:         filepath.Join(dataDir, "realtime-signals"),
 		TradingAgentsDir:           filepath.Join(dataDir, "tradingagents"),
 		PaperFile:                  filepath.Join(dataDir, "paper", "account.json"),
+		ShadowReportFile:           filepath.Join(dataDir, "paper", "shadow-report.json"),
 	}, nil
 }

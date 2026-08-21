@@ -8,6 +8,7 @@ import (
 
 	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 	"github.com/wenzhe/astock-workbench/internal/web"
@@ -68,6 +69,10 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		),
 		web.WithRealtimeOutcomes(
 			realtime.NewOutcomeEvaluator(app.scanHistory, app.scanHistory, storage.NewRealtimeOutcomeStore(app.paths.RealtimeSignalsDir)),
+		),
+		web.WithShadowExecution(
+			paper.NewEvaluator(app.history),
+			storage.NewShadowStore(app.paths.ShadowReportFile),
 		),
 	)
 	fmt.Fprintf(app.out, "ASTOCK Web 已启动: http://%s/\n", *listen)
