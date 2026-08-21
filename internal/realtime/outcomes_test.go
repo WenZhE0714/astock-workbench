@@ -365,6 +365,99 @@ func TestComponentRegimeMetricsRequireAvailableAndActiveSamples(t *testing.T) {
 	}
 }
 
+func TestComponentWalkForwardUsesDateSeparatedFolds(t *testing.T) {
+	items := make([]SignalOutcome, 0, 40)
+	start := time.Date(2026, 1, 5, 15, 0, 0, 0, time.Local)
+	for index := 0; index < 40; index++ {
+		asOf := start.AddDate(0, 0, index)
+		items = append(items, SignalOutcome{
+			Key: fmt.Sprintf("sh600000:%s:5", asOf.Format("2006-01-02")), SignalID: fmt.Sprintf("wf-%02d", index),
+			Symbol: "sh600000", SignalDate: asOf.Format("2006-01-02"), SignalAsOf: asOf,
+			Score: 55 + float64(index), State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady,
+			BenchmarkAvailable: true, ExcessReturn: float64(index+1) / 10,
+			StrategyScores: map[string]float64{"trend-breakout": 10 + float64(index)},
+			StrategyStates: map[string]string{"trend-breakout": "触发"},
+			StrategyNames:  map[string]string{"trend-breakout": "趋势突破"},
+		})
+	}
+
+	report := BuildOutcomeReport(items, start.AddDate(0, 0, 50), nil)
+	metric := report.WalkForward.Metrics[0]
+	if metric.ComponentKey != "trend-breakout" || len(metric.Folds) != 2 {
+		t.Fatalf("unexpected walk-forward metric: %+v", report.WalkForward)
+	}
+	if !metric.SampleSufficient || !metric.WeightStable || metric.State != "positive" {
+		t.Fatalf("expected stable positive component validation, got %+v", metric)
+	}
+	if metric.Folds[0].ValidationEnd >= metric.Folds[1].ValidationStart {
+		t.Fatalf("validation folds overlap or are not ordered: %+v", metric.Folds)
+	}
+	if metric.Folds[0].TrainEnd >= metric.Folds[0].ValidationStart || metric.Folds[1].TrainEnd >= metric.Folds[1].ValidationStart {
+		t.Fatalf("training data leaked into validation window: %+v", metric.Folds)
+	}
+}
+
+func TestPortfolioConstraintAnalysisFlagsIndustryAndComponentConcentration(t *testing.T) {
+	items := make([]SignalOutcome, 0, 5)
+	for index := 0; index < 5; index++ {
+		date := "2026-08-20"
+		items = append(items, SignalOutcome{
+			Key: fmt.Sprintf("sh60000%d:%s:5", index, date), SignalID: fmt.Sprintf("portfolio-%d", index),
+			Symbol: fmt.Sprintf("sh60000%d", index), Name: "测试股票", Industry: "银行", SignalDate: date,
+			SignalAsOf: time.Date(2026, 8, 20, 14, index, 0, 0, time.Local), Score: 70, State: StateTriggered,
+			Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true, ExcessReturn: 1,
+			StrategyScores: map[string]float64{"trend-breakout": 16},
+			StrategyStates: map[string]string{"trend-breakout": "触发"},
+			StrategyNames:  map[string]string{"trend-breakout": "趋势突破"},
+		})
+	}
+
+	report := BuildOutcomeReport(items, time.Date(2026, 8, 28, 16, 0, 0, 0, time.Local), nil)
+	if len(report.Portfolio.Horizons) != 1 {
+		t.Fatalf("unexpected portfolio horizons: %+v", report.Portfolio)
+	}
+	metric := report.Portfolio.Horizons[0]
+	if metric.CandidateDays != 1 || metric.SampleSufficient || metric.Passed {
+		t.Fatalf("five signals on one day should remain below multi-day gate: %+v", metric)
+	}
+	if len(metric.Recent) != 1 || metric.Recent[0].LargestIndustry != "银行" || metric.Recent[0].LargestIndustryPercent != 100 || metric.Recent[0].LargestComponentPercent != 100 {
+		t.Fatalf("unexpected concentration metrics: %+v", metric.Recent)
+	}
+	if len(metric.Recent[0].Violations) < 2 {
+		t.Fatalf("expected industry and component concentration violations: %+v", metric.Recent[0])
+	}
+}
+
+func TestPortfolioConstraintAnalysisPassesDiversifiedCandidateDays(t *testing.T) {
+	items := make([]SignalOutcome, 0, 25)
+	components := []string{"trend-breakout", "ma-pullback", "relative-momentum", "price-volume", "fund-support"}
+	industries := []string{"银行", "半导体", "医药", "食品饮料", "通信"}
+	start := time.Date(2026, 8, 3, 14, 0, 0, 0, time.Local)
+	for dayIndex := 0; dayIndex < 5; dayIndex++ {
+		date := start.AddDate(0, 0, dayIndex).Format("2006-01-02")
+		for itemIndex := 0; itemIndex < 5; itemIndex++ {
+			key := components[itemIndex]
+			items = append(items, SignalOutcome{
+				Key: fmt.Sprintf("sh60%d%d:%s:5", dayIndex, itemIndex, date), SignalID: fmt.Sprintf("diversified-%d-%d", dayIndex, itemIndex),
+				Symbol: fmt.Sprintf("sh60%d%d", dayIndex, itemIndex), Name: "测试股票", Industry: industries[itemIndex], SignalDate: date,
+				SignalAsOf: start.AddDate(0, 0, dayIndex).Add(time.Duration(itemIndex) * time.Minute), Score: 70, State: StateTriggered,
+				Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true, ExcessReturn: 1,
+				StrategyScores: map[string]float64{key: 16}, StrategyStates: map[string]string{key: "触发"}, StrategyNames: map[string]string{key: key},
+			})
+		}
+	}
+
+	report := BuildOutcomeReport(items, time.Date(2026, 8, 20, 16, 0, 0, 0, time.Local), nil)
+	metric := report.Portfolio.Horizons[0]
+	if !metric.SampleSufficient || !metric.Passed || metric.CandidateDays != 5 || metric.PassedDays != 5 || metric.ViolatingDays != 0 {
+		t.Fatalf("diversified portfolio days should pass: %+v", metric)
+	}
+	check := outcomeCheckByKey(t, report.Assessment.Checks, "portfolio-constraints")
+	if !check.Required || !check.Passed {
+		t.Fatalf("portfolio gate did not pass after sufficient diversified days: %+v", check)
+	}
+}
+
 func strategyTestScore(active bool, score float64) float64 {
 	if active {
 		return score

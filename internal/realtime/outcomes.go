@@ -14,15 +14,27 @@ import (
 )
 
 const (
-	defaultOutcomeSignalLimit  = 500
-	defaultTargetReturn        = 5.0
-	minimumResearchSamples     = 35
-	minimumFoldSamples         = 5
-	minimumActiveStrategyScore = 8.0
-	minimumCorrelationSamples  = 20
-	minimumRegimeSamples       = 8
-	minimumComponentCoverage   = 70.0
-	redundantRankCorrelation   = 0.75
+	defaultOutcomeSignalLimit               = 500
+	defaultTargetReturn                     = 5.0
+	minimumResearchSamples                  = 35
+	minimumFoldSamples                      = 5
+	minimumActiveStrategyScore              = 8.0
+	minimumCorrelationSamples               = 20
+	minimumRegimeSamples                    = 8
+	minimumComponentCoverage                = 70.0
+	redundantRankCorrelation                = 0.75
+	minimumComponentValidationSamples       = 35
+	minimumComponentValidationActiveSamples = 5
+	minimumComponentValidationFoldSamples   = 8
+	minimumComponentValidationFolds         = 2
+	maximumComponentWeightDrift             = 0.20
+	minimumPortfolioSignalsPerDay           = 5
+	minimumPortfolioDays                    = 5
+	minimumPortfolioScore                   = 55.0
+	minimumPortfolioIndustryCoverage        = 70.0
+	maximumPortfolioIndustryConcentration   = 40.0
+	maximumPortfolioComponentConcentration  = 60.0
+	maximumPortfolioRedundantPairPercent    = 30.0
 )
 
 const (
@@ -415,7 +427,9 @@ func BuildOutcomeReport(outcomes []SignalOutcome, now time.Time, warnings []stri
 		return []string{regime}
 	})
 	report.ComponentAnalysis = buildComponentAnalysis(outcomes, horizons)
-	report.Assessment = buildOutcomeAssessment(outcomes, horizons, report.ComponentAnalysis)
+	report.WalkForward = buildComponentWalkForwardAnalysis(outcomes, horizons)
+	report.Portfolio = buildPortfolioConstraintAnalysis(outcomes, horizons, report.ComponentAnalysis)
+	report.Assessment = buildOutcomeAssessment(outcomes, horizons, report.ComponentAnalysis, report.WalkForward, report.Portfolio)
 	report.Recent = recentOutcomes(outcomes, 24)
 	return report
 }
@@ -773,6 +787,421 @@ func componentRegimeMetrics(outcomes []SignalOutcome, horizons []int, components
 	return result, sufficient, positive, negative, mixed
 }
 
+func buildComponentWalkForwardAnalysis(outcomes []SignalOutcome, horizons []int) ComponentWalkForwardAnalysis {
+	analysis := ComponentWalkForwardAnalysis{
+		MinimumSamples:       minimumComponentValidationSamples,
+		MinimumActiveSamples: minimumComponentValidationActiveSamples,
+		MinimumFolds:         minimumComponentValidationFolds,
+		MaximumWeightDrift:   maximumComponentWeightDrift,
+		Metrics:              make([]ComponentValidationMetric, 0),
+	}
+	components := componentCatalog(outcomes)
+	for _, horizon := range horizons {
+		observations := uniqueOutcomeObservationsForHorizon(outcomes, horizon)
+		for _, component := range components {
+			items := make([]SignalOutcome, 0)
+			for _, item := range observations {
+				if item.Status == OutcomeReady && item.BenchmarkAvailable {
+					if _, ok := componentAvailable(item, component.Key); ok {
+						items = append(items, item)
+					}
+				}
+			}
+			sort.SliceStable(items, func(i, j int) bool {
+				if items[i].SignalDate == items[j].SignalDate {
+					return items[i].SignalAsOf.Before(items[j].SignalAsOf)
+				}
+				return items[i].SignalDate < items[j].SignalDate
+			})
+			metric := ComponentValidationMetric{ComponentKey: component.Key, ComponentName: component.Name, Horizon: horizon, AvailableSamples: len(items), State: "insufficient"}
+			folds := componentValidationFolds(observations, component.Key, components)
+			metric.Folds = folds
+			weightValues := make([]float64, 0, len(folds))
+			for _, fold := range folds {
+				metric.ValidationSamples += fold.ValidationSamples
+				metric.ValidationActive += fold.ValidationActiveSamples
+				if fold.SampleSufficient {
+					metric.SufficientFolds++
+					if fold.ValidationAverageExcess > 0 {
+						metric.PositiveFolds++
+					} else if fold.ValidationAverageExcess < 0 {
+						metric.NegativeFolds++
+					}
+					if fold.WeightAvailable {
+						weightValues = append(weightValues, fold.CandidateWeight)
+					}
+				}
+				if fold.SampleSufficient {
+					metric.ValidationAverageExcess += fold.ValidationAverageExcess * float64(fold.ValidationActiveSamples)
+					metric.ValidationHitRate += fold.ValidationHitRate * float64(fold.ValidationActiveSamples)
+					metric.ValidationRankIC += fold.ValidationRankIC * float64(fold.ValidationSamples)
+				}
+			}
+			rankDenominator := 0.0
+			if len(folds) > 0 {
+				for _, fold := range folds {
+					if fold.SampleSufficient {
+						rankDenominator += float64(fold.ValidationSamples)
+					}
+				}
+			}
+			if rankDenominator > 0 {
+				metric.ValidationRankIC /= rankDenominator
+			}
+			activeDenominator := 0
+			for _, fold := range folds {
+				if fold.SampleSufficient {
+					activeDenominator += fold.ValidationActiveSamples
+				}
+			}
+			if activeDenominator > 0 {
+				metric.ValidationAverageExcess /= float64(activeDenominator)
+				metric.ValidationHitRate /= float64(activeDenominator)
+			}
+			if len(weightValues) > 0 {
+				metric.MinimumWeight, metric.MaximumWeight = weightValues[0], weightValues[0]
+				for _, value := range weightValues[1:] {
+					metric.MinimumWeight = math.Min(metric.MinimumWeight, value)
+					metric.MaximumWeight = math.Max(metric.MaximumWeight, value)
+				}
+				metric.WeightDrift = metric.MaximumWeight - metric.MinimumWeight
+			}
+			metric.SampleSufficient = len(items) >= minimumComponentValidationSamples && metric.SufficientFolds >= minimumComponentValidationFolds && metric.ValidationActive >= minimumComponentValidationActiveSamples
+			metric.WeightStable = len(weightValues) >= minimumComponentValidationFolds && metric.WeightDrift <= maximumComponentWeightDrift
+			if metric.SampleSufficient && metric.WeightStable {
+				switch {
+				case metric.PositiveFolds >= minimumComponentValidationFolds && metric.ValidationAverageExcess > 0:
+					metric.State = "positive"
+				case metric.NegativeFolds >= minimumComponentValidationFolds && metric.ValidationAverageExcess < 0:
+					metric.State = "negative"
+				default:
+					metric.State = "mixed"
+				}
+			} else if metric.SampleSufficient {
+				metric.State = "unstable"
+			}
+			analysis.Metrics = append(analysis.Metrics, metric)
+		}
+	}
+	return analysis
+}
+
+func componentValidationFolds(items []SignalOutcome, componentKey string, components []ComponentDescriptor) []ComponentValidationFold {
+	if len(items) < minimumComponentValidationSamples {
+		return nil
+	}
+	dates := make([]string, 0)
+	seenDates := make(map[string]bool)
+	for _, item := range items {
+		if !seenDates[item.SignalDate] {
+			seenDates[item.SignalDate] = true
+			dates = append(dates, item.SignalDate)
+		}
+	}
+	if len(dates) < minimumComponentValidationFolds+1 {
+		return nil
+	}
+	trainDays := len(dates) / 2
+	validationDays := (len(dates) - trainDays) / minimumComponentValidationFolds
+	if trainDays < 1 || validationDays < 1 {
+		return nil
+	}
+	folds := make([]ComponentValidationFold, 0, minimumComponentValidationFolds)
+	for index := 0; index < minimumComponentValidationFolds; index++ {
+		trainEnd := trainDays + index*validationDays
+		validationEnd := trainEnd + validationDays
+		if index == minimumComponentValidationFolds-1 || validationEnd > len(dates) {
+			validationEnd = len(dates)
+		}
+		trainWindow := filterComponentDates(items, dates[:trainEnd])
+		validationWindow := filterComponentDates(items, dates[trainEnd:validationEnd])
+		train := availableComponentItems(trainWindow, componentKey)
+		validation := availableComponentItems(validationWindow, componentKey)
+		candidateWeight, weightAvailable := componentCandidateWeight(trainWindow, componentKey, components)
+		validationActive := make([]SignalOutcome, 0)
+		validationScores, validationExcess := make([]float64, 0), make([]float64, 0)
+		for _, item := range validation {
+			score, ok := componentAvailable(item, componentKey)
+			if !ok {
+				continue
+			}
+			validationScores = append(validationScores, score)
+			if score >= minimumActiveStrategyScore {
+				validationActive = append(validationActive, item)
+			}
+			validationExcess = append(validationExcess, item.ExcessReturn)
+		}
+		activeExcess := make([]float64, 0, len(validationActive))
+		positive := 0
+		for _, item := range validationActive {
+			activeExcess = append(activeExcess, item.ExcessReturn)
+			if item.ExcessReturn > 0 {
+				positive++
+			}
+		}
+		average := 0.0
+		if len(activeExcess) > 0 {
+			average, _ = meanMedian(activeExcess)
+		}
+		hitRate := 0.0
+		if len(activeExcess) > 0 {
+			hitRate = float64(positive) / float64(len(activeExcess)) * 100
+		}
+		fold := ComponentValidationFold{
+			Index: index + 1, TrainEnd: dates[trainEnd-1], ValidationStart: dates[trainEnd], ValidationEnd: dates[validationEnd-1],
+			TrainSamples: len(train), ValidationSamples: len(validationScores), ValidationActiveSamples: len(activeExcess),
+			TrainRankIC: componentRankIC(train, componentKey), ValidationRankIC: pearson(averageRanks(validationScores), averageRanks(validationExcess)),
+			ValidationAverageExcess: average, ValidationHitRate: hitRate, CandidateWeight: candidateWeight, WeightAvailable: weightAvailable,
+			SampleSufficient: len(train) >= minimumCorrelationSamples && len(validationScores) >= minimumComponentValidationFoldSamples && len(activeExcess) >= minimumComponentValidationActiveSamples,
+		}
+		folds = append(folds, fold)
+	}
+	return folds
+}
+
+func uniqueOutcomeObservationsForHorizon(outcomes []SignalOutcome, horizon int) []SignalOutcome {
+	bySignal := make(map[string]SignalOutcome)
+	for _, item := range outcomes {
+		if item.Horizon != horizon || item.Status != OutcomeReady || !item.BenchmarkAvailable {
+			continue
+		}
+		key := item.Symbol + "|" + item.SignalDate
+		if strings.Trim(key, "|") == "" {
+			key = item.SignalID
+		}
+		if key == "" {
+			continue
+		}
+		previous, found := bySignal[key]
+		if !found || len(item.StrategyScores) > len(previous.StrategyScores) ||
+			(len(item.StrategyScores) == len(previous.StrategyScores) && item.EvaluatedAt.After(previous.EvaluatedAt)) {
+			bySignal[key] = item
+		}
+	}
+	result := make([]SignalOutcome, 0, len(bySignal))
+	for _, item := range bySignal {
+		result = append(result, item)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].SignalDate == result[j].SignalDate {
+			return result[i].Symbol < result[j].Symbol
+		}
+		return result[i].SignalDate < result[j].SignalDate
+	})
+	return result
+}
+
+func availableComponentItems(items []SignalOutcome, componentKey string) []SignalOutcome {
+	result := make([]SignalOutcome, 0, len(items))
+	for _, item := range items {
+		if _, ok := componentAvailable(item, componentKey); ok {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func filterComponentDates(items []SignalOutcome, dates []string) []SignalOutcome {
+	allowed := make(map[string]bool, len(dates))
+	for _, date := range dates {
+		allowed[date] = true
+	}
+	result := make([]SignalOutcome, 0)
+	for _, item := range items {
+		if allowed[item.SignalDate] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func componentCandidateWeight(items []SignalOutcome, componentKey string, components []ComponentDescriptor) (float64, bool) {
+	weights := make(map[string]float64, len(components))
+	total := 0.0
+	for _, component := range components {
+		values := make([]float64, 0)
+		for _, item := range items {
+			if score, ok := componentAvailable(item, component.Key); ok && score >= minimumActiveStrategyScore {
+				values = append(values, item.ExcessReturn)
+			}
+		}
+		if len(values) < minimumComponentValidationActiveSamples {
+			continue
+		}
+		average, _ := meanMedian(values)
+		rankIC := componentRankIC(items, component.Key)
+		excessQuality := clamp(math.Max(average, 0)/defaultTargetReturn, 0, 1)
+		icQuality := clamp(math.Max(rankIC, 0), 0, 1)
+		quality := (excessQuality + icQuality) / 2
+		if quality == 0 {
+			quality = 0.01
+		}
+		weights[component.Key] = quality
+		total += quality
+	}
+	value, found := weights[componentKey]
+	if !found || total <= 0 {
+		return 0, false
+	}
+	return value / total, true
+}
+
+func componentRankIC(items []SignalOutcome, componentKey string) float64 {
+	scores, excess := make([]float64, 0), make([]float64, 0)
+	for _, item := range items {
+		if score, ok := componentAvailable(item, componentKey); ok {
+			scores = append(scores, score)
+			excess = append(excess, item.ExcessReturn)
+		}
+	}
+	return pearson(averageRanks(scores), averageRanks(excess))
+}
+
+func buildPortfolioConstraintAnalysis(outcomes []SignalOutcome, horizons []int, componentAnalysis ComponentAnalysis) PortfolioConstraintAnalysis {
+	analysis := PortfolioConstraintAnalysis{
+		MinimumSignalsPerDay:           minimumPortfolioSignalsPerDay,
+		MinimumDays:                    minimumPortfolioDays,
+		MinimumScore:                   minimumPortfolioScore,
+		MinimumIndustryCoveragePercent: minimumPortfolioIndustryCoverage,
+		MaximumIndustryConcentration:   maximumPortfolioIndustryConcentration,
+		MaximumComponentConcentration:  maximumPortfolioComponentConcentration,
+		MaximumRedundantPairPercent:    maximumPortfolioRedundantPairPercent,
+		Horizons:                       make([]PortfolioHorizonAnalysis, 0),
+	}
+	for _, candidateHorizon := range horizons {
+		items := make([]SignalOutcome, 0)
+		for _, item := range outcomes {
+			if item.Horizon == candidateHorizon && item.Status == OutcomeReady && item.BenchmarkAvailable && item.Score >= minimumPortfolioScore && (item.State == StateTriggered || item.State == StateWatching) {
+				items = append(items, item)
+			}
+		}
+		byDate := make(map[string][]SignalOutcome)
+		for _, item := range items {
+			byDate[item.SignalDate] = append(byDate[item.SignalDate], item)
+		}
+		metric := PortfolioHorizonAnalysis{Horizon: candidateHorizon, Recent: make([]PortfolioDayMetric, 0)}
+		for date, dayItems := range byDate {
+			if len(dayItems) < minimumPortfolioSignalsPerDay {
+				continue
+			}
+			day := portfolioDayMetric(date, dayItems, componentAnalysis)
+			metric.CandidateDays++
+			if day.Signals >= minimumPortfolioSignalsPerDay && day.IndustryCoveragePercent >= minimumPortfolioIndustryCoverage {
+				metric.SufficientDays++
+			}
+			if day.Passed {
+				metric.PassedDays++
+			} else {
+				metric.ViolatingDays++
+			}
+			metric.AverageIndustryConcentration += day.LargestIndustryPercent
+			metric.MaximumIndustryConcentration = math.Max(metric.MaximumIndustryConcentration, day.LargestIndustryPercent)
+			metric.AverageComponentConcentration += day.LargestComponentPercent
+			metric.MaximumComponentConcentration = math.Max(metric.MaximumComponentConcentration, day.LargestComponentPercent)
+			metric.AverageRedundantPairPercent += day.RedundantPairPercent
+			metric.MaximumRedundantPairPercent = math.Max(metric.MaximumRedundantPairPercent, day.RedundantPairPercent)
+			metric.AverageIndustryCoveragePercent += day.IndustryCoveragePercent
+			metric.Recent = append(metric.Recent, day)
+		}
+		if metric.CandidateDays > 0 {
+			denominator := float64(metric.CandidateDays)
+			metric.AverageIndustryConcentration /= denominator
+			metric.AverageComponentConcentration /= denominator
+			metric.AverageRedundantPairPercent /= denominator
+			metric.AverageIndustryCoveragePercent /= denominator
+		}
+		metric.SampleSufficient = metric.CandidateDays >= minimumPortfolioDays
+		metric.Passed = metric.SampleSufficient && metric.ViolatingDays == 0
+		sort.SliceStable(metric.Recent, func(i, j int) bool { return metric.Recent[i].Date > metric.Recent[j].Date })
+		if len(metric.Recent) > 14 {
+			metric.Recent = metric.Recent[:14]
+		}
+		analysis.Horizons = append(analysis.Horizons, metric)
+	}
+	return analysis
+}
+
+func portfolioDayMetric(date string, items []SignalOutcome, componentAnalysis ComponentAnalysis) PortfolioDayMetric {
+	day := PortfolioDayMetric{Date: date, Signals: len(items), Violations: make([]string, 0)}
+	industries := make(map[string]int)
+	components := make(map[string]int)
+	for _, item := range items {
+		industry := strings.TrimSpace(item.Industry)
+		if industry != "" {
+			industries[industry]++
+		}
+		for key, score := range item.StrategyScores {
+			if score >= minimumActiveStrategyScore && strings.TrimSpace(item.StrategyStates[key]) != "数据不足" {
+				components[key]++
+			}
+		}
+	}
+	day.IndustryLabeledSignals = 0
+	for _, count := range industries {
+		day.IndustryLabeledSignals += count
+	}
+	if day.Signals > 0 {
+		day.IndustryCoveragePercent = float64(day.IndustryLabeledSignals) / float64(day.Signals) * 100
+	}
+	day.LargestIndustry, day.LargestIndustryPercent = largestShare(industries, day.Signals)
+	day.LargestComponentKey, day.LargestComponentPercent = largestShare(components, day.Signals)
+	for _, descriptor := range componentAnalysis.Components {
+		if descriptor.Key == day.LargestComponentKey {
+			day.LargestComponentName = descriptor.Name
+			break
+		}
+	}
+	activePairs := 0
+	for _, item := range items {
+		keys := activeStrategyKeys(item)
+		for leftIndex := 0; leftIndex < len(keys); leftIndex++ {
+			for rightIndex := leftIndex + 1; rightIndex < len(keys); rightIndex++ {
+				left, right := keys[leftIndex], keys[rightIndex]
+				for _, cell := range componentAnalysis.Correlations {
+					if cell.LeftKey == left && cell.RightKey == right && cell.SampleSufficient {
+						day.TotalPairs++
+						if cell.Relation == "overlap" {
+							activePairs++
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+	day.RedundantPairs = activePairs
+	if day.TotalPairs > 0 {
+		day.RedundantPairPercent = float64(activePairs) / float64(day.TotalPairs) * 100
+	}
+	if day.IndustryCoveragePercent < minimumPortfolioIndustryCoverage {
+		day.Violations = append(day.Violations, "行业信息覆盖不足")
+	}
+	if day.LargestIndustryPercent > maximumPortfolioIndustryConcentration {
+		day.Violations = append(day.Violations, "单一行业集中度过高")
+	}
+	if day.LargestComponentPercent > maximumPortfolioComponentConcentration {
+		day.Violations = append(day.Violations, "单一组件集中度过高")
+	}
+	if day.RedundantPairPercent > maximumPortfolioRedundantPairPercent {
+		day.Violations = append(day.Violations, "高相关组件配对过多")
+	}
+	day.Passed = len(day.Violations) == 0
+	return day
+}
+
+func largestShare(values map[string]int, total int) (string, float64) {
+	key, count := "", 0
+	for candidate, value := range values {
+		if value > count || (value == count && candidate < key) {
+			key, count = candidate, value
+		}
+	}
+	if total <= 0 {
+		return key, 0
+	}
+	return key, float64(count) / float64(total) * 100
+}
+
 func breakdownOutcomes(outcomes []SignalOutcome, horizons []int, groups func(SignalOutcome) []OutcomeBreakdown, keys func(SignalOutcome) []string) []OutcomeBreakdown {
 	labels := make(map[string]string)
 	for _, item := range outcomes {
@@ -922,7 +1351,13 @@ func outcomeStateLabel(state SignalState) string {
 	}
 }
 
-func buildOutcomeAssessment(outcomes []SignalOutcome, horizons []int, analysis ComponentAnalysis) OutcomeAssessment {
+func buildOutcomeAssessment(
+	outcomes []SignalOutcome,
+	horizons []int,
+	analysis ComponentAnalysis,
+	walkForward ComponentWalkForwardAnalysis,
+	portfolio PortfolioConstraintAnalysis,
+) OutcomeAssessment {
 	horizon := OutcomeHorizon5D
 	if !containsInt(horizons, horizon) {
 		if len(horizons) > 0 {
@@ -980,11 +1415,42 @@ func buildOutcomeAssessment(outcomes []SignalOutcome, horizons []int, analysis C
 	assessment.Checks = append(assessment.Checks,
 		OutcomeCheck{Key: "regime-samples", Name: "状态稳定性样本", Required: false, Passed: regimePassed, Detail: fmt.Sprintf("%d / %d 个 %d日充分状态单元", regimeSufficient, regimeTarget, horizon)},
 	)
+	validatedComponents, unstableComponents, negativeComponents := 0, 0, 0
+	for _, metric := range walkForward.Metrics {
+		if metric.Horizon != horizon || !metric.SampleSufficient {
+			continue
+		}
+		validatedComponents++
+		if !metric.WeightStable || metric.State == "unstable" {
+			unstableComponents++
+		}
+		if metric.State == "negative" {
+			negativeComponents++
+		}
+	}
+	walkForwardReady := validatedComponents > 0
+	assessment.Checks = append(assessment.Checks, OutcomeCheck{
+		Key: "component-walk-forward", Name: "组件滚动样本外", Required: walkForwardReady,
+		Passed: walkForwardReady && unstableComponents == 0 && negativeComponents == 0,
+		Detail: fmt.Sprintf("%d 个组件充分；负向 %d 个，权重漂移 %d 个", validatedComponents, negativeComponents, unstableComponents),
+	})
+	portfolioMetric := portfolioHorizonMetric(portfolio, horizon)
+	portfolioReady := portfolioMetric != nil && portfolioMetric.SampleSufficient
+	portfolioDetail := fmt.Sprintf("至少需要 %d 个包含 %d 只候选的交易日", minimumPortfolioDays, minimumPortfolioSignalsPerDay)
+	portfolioPassed := false
+	if portfolioMetric != nil {
+		portfolioPassed = portfolioMetric.Passed
+		portfolioDetail = fmt.Sprintf("%d 个组合日；违规 %d 个，行业峰值 %.1f%%，组件峰值 %.1f%%", portfolioMetric.CandidateDays, portfolioMetric.ViolatingDays, portfolioMetric.MaximumIndustryConcentration, portfolioMetric.MaximumComponentConcentration)
+	}
+	assessment.Checks = append(assessment.Checks, OutcomeCheck{
+		Key: "portfolio-constraints", Name: "组合集中度", Required: portfolioReady, Passed: portfolioPassed, Detail: portfolioDetail,
+	})
 	if len(items) < minimumResearchSamples {
 		assessment.Notes = []string{
 			"样本不足时不调整组件权重或阈值；先让每个交易日的代表信号自然成熟。",
 			"同一股票同一交易日只保留最后一次扫描，避免30秒刷新造成重复计数。",
 			fmt.Sprintf("组件相关性至少需要 %d 个成对完整样本；状态稳定性每格至少需要 %d 个可用样本和 %d 个激活样本。", minimumCorrelationSamples, minimumRegimeSamples, minimumFoldSamples),
+			"滚动组件权重只使用此前日期训练，并在后续非重叠日期验证；组合集中度只用于研究门禁，不会自动删票或改分。",
 		}
 		return assessment
 	}
@@ -1010,7 +1476,7 @@ func buildOutcomeAssessment(outcomes []SignalOutcome, horizons []int, analysis C
 			break
 		}
 	}
-	assessment.StrategyWeights = strategyWeightProposals(items)
+	assessment.StrategyWeights = walkForwardWeightProposals(walkForward, horizon)
 	if allRequiredPassed {
 		assessment.Verdict = "可作为下一轮候选"
 		assessment.NextStage = "先接入统一组合策略接口，再做滚动样本外复核"
@@ -1022,8 +1488,42 @@ func buildOutcomeAssessment(outcomes []SignalOutcome, horizons []int, analysis C
 		"阈值候选只在训练窗口选择，再在后续窗口验证；不会使用最终留出结果反向调参。",
 		"组件权重是研究提案；当前回测引擎尚无多组件组合接口，不会自动改变实时评分或伪装成已完成回测验证。",
 		fmt.Sprintf("组件相关性至少需要 %d 个成对完整样本；状态稳定性每格至少需要 %d 个可用样本和 %d 个激活样本。", minimumCorrelationSamples, minimumRegimeSamples, minimumFoldSamples),
+		"组合集中度按每日候选检查行业覆盖、单一行业、活跃组件和高相关组件配对；研究结果不会自动删除候选。",
 	}
 	return assessment
+}
+
+func walkForwardWeightProposals(analysis ComponentWalkForwardAnalysis, horizon int) []StrategyWeightProposal {
+	result := make([]StrategyWeightProposal, 0)
+	for _, metric := range analysis.Metrics {
+		if metric.Horizon != horizon || len(metric.Folds) == 0 {
+			continue
+		}
+		latest := metric.Folds[len(metric.Folds)-1]
+		if !latest.WeightAvailable {
+			continue
+		}
+		result = append(result, StrategyWeightProposal{
+			Key: metric.ComponentKey, Name: metric.ComponentName, Samples: metric.ValidationActive,
+			AverageExcess: metric.ValidationAverageExcess, HitRate: metric.ValidationHitRate, Weight: latest.CandidateWeight,
+		})
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Weight == result[j].Weight {
+			return result[i].Key < result[j].Key
+		}
+		return result[i].Weight > result[j].Weight
+	})
+	return result
+}
+
+func portfolioHorizonMetric(analysis PortfolioConstraintAnalysis, horizon int) *PortfolioHorizonAnalysis {
+	for index := range analysis.Horizons {
+		if analysis.Horizons[index].Horizon == horizon {
+			return &analysis.Horizons[index]
+		}
+	}
+	return nil
 }
 
 func containsInt(values []int, target int) bool {

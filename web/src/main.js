@@ -216,6 +216,22 @@ createApp({
       }))
       return summary
     },
+    realtimeWalkForward() {
+      const analysis = this.realtimeOutcomeReport && this.realtimeOutcomeReport.component_walk_forward
+      return analysis && typeof analysis === "object" ? analysis : { metrics: [] }
+    },
+    realtimeWalkForwardMetrics() {
+      const metrics = Array.isArray(this.realtimeWalkForward.metrics) ? this.realtimeWalkForward.metrics : []
+      return metrics.filter(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon))
+    },
+    realtimePortfolioAnalysis() {
+      const analysis = this.realtimeOutcomeReport && this.realtimeOutcomeReport.portfolio_analysis
+      return analysis && typeof analysis === "object" ? analysis : { horizons: [] }
+    },
+    realtimePortfolioMetric() {
+      const horizons = Array.isArray(this.realtimePortfolioAnalysis.horizons) ? this.realtimePortfolioAnalysis.horizons : []
+      return horizons.find(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)) || horizons[0] || {}
+    },
     strategyResultTitle() {
       if (!this.strategyResult) return "回测结果"
       const tickers = this.strategyRequest.tickers || []
@@ -513,6 +529,31 @@ createApp({
     componentRegimeTitle(cell) {
       if (!cell || !cell.sample_sufficient) return `可用 ${cell && cell.samples || 0} · 激活 ${cell && cell.active_samples || 0}`
       return `${this.componentRegimeStateLabel(cell.state)} · Rank IC ${this.number(cell.rank_information_coefficient, 3)} · 超额 ${this.percentText(cell.average_excess_percent)} · ${cell.samples} 个可用 / ${cell.active_samples} 个激活`
+    },
+    componentValidationStateLabel(state) {
+      if (state === "positive") return "正向"
+      if (state === "negative") return "负向"
+      if (state === "unstable") return "权重漂移"
+      if (state === "mixed") return "混合"
+      return "样本不足"
+    },
+    componentValidationClass(item) {
+      if (!item || !item.sample_sufficient) return "component-cell-insufficient"
+      if (item.state === "positive") return "component-cell-positive"
+      if (item.state === "negative") return "component-cell-negative"
+      if (item.state === "unstable") return "component-cell-overlap"
+      return "component-cell-mixed"
+    },
+    componentValidationTitle(item) {
+      if (!item || !item.sample_sufficient) return `可用 ${item && item.available_samples || 0} · 充分折 ${item && item.sufficient_folds || 0}`
+      return `${this.componentValidationStateLabel(item.state)} · 验证超额 ${this.percentText(item.validation_average_excess_percent)} · Rank IC ${this.number(item.validation_rank_information_coefficient, 3)} · 权重漂移 ${(Number(item.weight_drift || 0) * 100).toFixed(1)}%`
+    },
+    portfolioConstraintClass(value, threshold, inverse = false) {
+      const number = Number(value)
+      const limit = Number(threshold)
+      if (!Number.isFinite(number) || !Number.isFinite(limit)) return "flat"
+      const passed = inverse ? number >= limit : number <= limit
+      return passed ? "up" : "down"
     },
     signedPercent(value) {
       if (value == null || !Number.isFinite(Number(value))) return "--"

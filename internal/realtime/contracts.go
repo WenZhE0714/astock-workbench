@@ -186,19 +186,114 @@ type ComponentAnalysis struct {
 	MixedRegimeCells          int                     `json:"mixed_regime_cells"`
 }
 
+type ComponentValidationFold struct {
+	Index                   int     `json:"index"`
+	TrainEnd                string  `json:"train_end"`
+	ValidationStart         string  `json:"validation_start"`
+	ValidationEnd           string  `json:"validation_end"`
+	TrainSamples            int     `json:"train_samples"`
+	ValidationSamples       int     `json:"validation_samples"`
+	ValidationActiveSamples int     `json:"validation_active_samples"`
+	TrainRankIC             float64 `json:"train_rank_information_coefficient"`
+	ValidationRankIC        float64 `json:"validation_rank_information_coefficient"`
+	ValidationAverageExcess float64 `json:"validation_average_excess_percent"`
+	ValidationHitRate       float64 `json:"validation_hit_rate_percent"`
+	CandidateWeight         float64 `json:"candidate_weight"`
+	WeightAvailable         bool    `json:"weight_available"`
+	SampleSufficient        bool    `json:"sample_sufficient"`
+}
+
+type ComponentValidationMetric struct {
+	ComponentKey            string                    `json:"component_key"`
+	ComponentName           string                    `json:"component_name"`
+	Horizon                 int                       `json:"horizon"`
+	AvailableSamples        int                       `json:"available_samples"`
+	ValidationSamples       int                       `json:"validation_samples"`
+	ValidationActive        int                       `json:"validation_active_samples"`
+	SufficientFolds         int                       `json:"sufficient_folds"`
+	PositiveFolds           int                       `json:"positive_folds"`
+	NegativeFolds           int                       `json:"negative_folds"`
+	ValidationAverageExcess float64                   `json:"validation_average_excess_percent"`
+	ValidationHitRate       float64                   `json:"validation_hit_rate_percent"`
+	ValidationRankIC        float64                   `json:"validation_rank_information_coefficient"`
+	MinimumWeight           float64                   `json:"minimum_weight"`
+	MaximumWeight           float64                   `json:"maximum_weight"`
+	WeightDrift             float64                   `json:"weight_drift"`
+	WeightStable            bool                      `json:"weight_stable"`
+	SampleSufficient        bool                      `json:"sample_sufficient"`
+	State                   string                    `json:"state"`
+	Folds                   []ComponentValidationFold `json:"folds,omitempty"`
+}
+
+type ComponentWalkForwardAnalysis struct {
+	MinimumSamples       int                         `json:"minimum_samples"`
+	MinimumActiveSamples int                         `json:"minimum_active_samples"`
+	MinimumFolds         int                         `json:"minimum_folds"`
+	MaximumWeightDrift   float64                     `json:"maximum_weight_drift"`
+	Metrics              []ComponentValidationMetric `json:"metrics"`
+}
+
+type PortfolioDayMetric struct {
+	Date                    string   `json:"date"`
+	Signals                 int      `json:"signals"`
+	IndustryLabeledSignals  int      `json:"industry_labeled_signals"`
+	IndustryCoveragePercent float64  `json:"industry_coverage_percent"`
+	LargestIndustry         string   `json:"largest_industry"`
+	LargestIndustryPercent  float64  `json:"largest_industry_percent"`
+	LargestComponentKey     string   `json:"largest_component_key"`
+	LargestComponentName    string   `json:"largest_component_name"`
+	LargestComponentPercent float64  `json:"largest_component_percent"`
+	RedundantPairs          int      `json:"redundant_pairs"`
+	TotalPairs              int      `json:"total_pairs"`
+	RedundantPairPercent    float64  `json:"redundant_pair_percent"`
+	Passed                  bool     `json:"passed"`
+	Violations              []string `json:"violations,omitempty"`
+}
+
+type PortfolioHorizonAnalysis struct {
+	Horizon                        int                  `json:"horizon"`
+	CandidateDays                  int                  `json:"candidate_days"`
+	SufficientDays                 int                  `json:"sufficient_days"`
+	PassedDays                     int                  `json:"passed_days"`
+	ViolatingDays                  int                  `json:"violating_days"`
+	AverageIndustryConcentration   float64              `json:"average_industry_concentration_percent"`
+	MaximumIndustryConcentration   float64              `json:"maximum_industry_concentration_percent"`
+	AverageComponentConcentration  float64              `json:"average_component_concentration_percent"`
+	MaximumComponentConcentration  float64              `json:"maximum_component_concentration_percent"`
+	AverageRedundantPairPercent    float64              `json:"average_redundant_pair_percent"`
+	MaximumRedundantPairPercent    float64              `json:"maximum_redundant_pair_percent"`
+	AverageIndustryCoveragePercent float64              `json:"average_industry_coverage_percent"`
+	SampleSufficient               bool                 `json:"sample_sufficient"`
+	Passed                         bool                 `json:"passed"`
+	Recent                         []PortfolioDayMetric `json:"recent,omitempty"`
+}
+
+type PortfolioConstraintAnalysis struct {
+	MinimumSignalsPerDay           int                        `json:"minimum_signals_per_day"`
+	MinimumDays                    int                        `json:"minimum_days"`
+	MinimumScore                   float64                    `json:"minimum_score"`
+	MinimumIndustryCoveragePercent float64                    `json:"minimum_industry_coverage_percent"`
+	MaximumIndustryConcentration   float64                    `json:"maximum_industry_concentration_percent"`
+	MaximumComponentConcentration  float64                    `json:"maximum_component_concentration_percent"`
+	MaximumRedundantPairPercent    float64                    `json:"maximum_redundant_pair_percent"`
+	Horizons                       []PortfolioHorizonAnalysis `json:"horizons"`
+}
+
 type OutcomeReport struct {
-	GeneratedAt       time.Time          `json:"generated_at"`
-	AsOf              string             `json:"as_of"`
-	Horizons          []int              `json:"horizons"`
-	Summaries         []OutcomeSummary   `json:"summaries"`
-	Strategies        []OutcomeBreakdown `json:"strategies"`
-	Scores            []OutcomeBreakdown `json:"score_buckets"`
-	States            []OutcomeBreakdown `json:"states"`
-	Regimes           []OutcomeBreakdown `json:"market_regimes"`
-	ComponentAnalysis ComponentAnalysis  `json:"component_analysis"`
-	Assessment        OutcomeAssessment  `json:"assessment"`
-	Recent            []SignalOutcome    `json:"recent,omitempty"`
-	Warnings          []string           `json:"warnings,omitempty"`
+	GeneratedAt       time.Time                    `json:"generated_at"`
+	AsOf              string                       `json:"as_of"`
+	Horizons          []int                        `json:"horizons"`
+	Summaries         []OutcomeSummary             `json:"summaries"`
+	Strategies        []OutcomeBreakdown           `json:"strategies"`
+	Scores            []OutcomeBreakdown           `json:"score_buckets"`
+	States            []OutcomeBreakdown           `json:"states"`
+	Regimes           []OutcomeBreakdown           `json:"market_regimes"`
+	ComponentAnalysis ComponentAnalysis            `json:"component_analysis"`
+	WalkForward       ComponentWalkForwardAnalysis `json:"component_walk_forward"`
+	Portfolio         PortfolioConstraintAnalysis  `json:"portfolio_analysis"`
+	Assessment        OutcomeAssessment            `json:"assessment"`
+	Recent            []SignalOutcome              `json:"recent,omitempty"`
+	Warnings          []string                     `json:"warnings,omitempty"`
 }
 
 type OutcomeCheck struct {
