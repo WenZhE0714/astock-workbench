@@ -387,7 +387,7 @@ createApp({
     switchRealtimeSection(section) {
       if (!['candidates', 'shadow', 'validation'].includes(section)) return
       this.realtimeSection = section
-      if (section === 'shadow') this.refreshShadowReport()
+      if (section === 'shadow') this.loadShadowReport()
       if (section === 'validation' && !this.realtimeOutcomeReport) this.loadRealtimeOutcomes()
       window.scrollTo({ top: 0, behavior: 'auto' })
     },
@@ -675,7 +675,7 @@ createApp({
       this.shadowLoading = true
       this.shadowError = ""
       try {
-        const response = await fetch("/api/strategy/shadow?limit=2000&minimum_score=55&holding_days=5", { method: "POST", cache: "no-store" })
+        const response = await fetch("/api/strategy/shadow?minimum_score=55&holding_days=5", { method: "POST", cache: "no-store" })
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
         if (!response.ok) throw new Error(payload.error || "影子执行更新失败")

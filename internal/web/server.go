@@ -143,6 +143,7 @@ type Server struct {
 	realtimeCache            realtime.ScanResult
 	realtimeSectorEnriching  bool
 	realtimeSectorEnrichedAt time.Time
+	shadowMu                 sync.Mutex
 	now                      func() time.Time
 }
 

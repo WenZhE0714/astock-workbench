@@ -125,6 +125,7 @@ type PositionQuote struct {
 }
 
 type Report struct {
+	EngineVersion            string               `json:"engine_version,omitempty"`
 	GeneratedAt              time.Time            `json:"generated_at"`
 	ValuedAt                 *time.Time           `json:"valued_at,omitempty"`
 	AsOf                     string               `json:"as_of"`
@@ -149,6 +150,8 @@ type Report struct {
 	Rejections               []ShadowRejection    `json:"rejections,omitempty"`
 	Warnings                 []string             `json:"warnings,omitempty"`
 }
+
+const ShadowEngineVersion = "tplus1-v2"
 
 // RevaluePositions updates only mark-to-market fields. It never changes fills,
 // quantities, cash or completed trades, so an intraday quote cannot become a
@@ -190,6 +193,127 @@ func RevaluePositions(report Report, quotes []PositionQuote, valuedAt time.Time)
 	return report
 }
 
+// ValidateTransition protects the account ledger from retroactive replay
+// changes. A later daily advance may add new events, but it cannot rewrite any
+// order or trade already settled through the previous report date.
+func ValidateTransition(previous, next Report) error {
+	if previous.AsOf == "" || executionLedgerEmpty(previous) {
+		return nil
+	}
+	if next.AsOf < previous.AsOf {
+		return fmt.Errorf("候选账户日期 %s 早于现有账户日期 %s", next.AsOf, previous.AsOf)
+	}
+	previousOrders := ordersThrough(previous.Orders, previous.AsOf)
+	nextOrders := ordersThrough(next.Orders, previous.AsOf)
+	if len(previousOrders) != len(nextOrders) {
+		return fmt.Errorf("截至 %s 的成交单数量从 %d 变为 %d", previous.AsOf, len(previousOrders), len(nextOrders))
+	}
+	for index := range previousOrders {
+		if !sameSettledOrder(previousOrders[index], nextOrders[index]) {
+			return fmt.Errorf("截至 %s 的成交单被改写: %s", previous.AsOf, previousOrders[index].ID)
+		}
+	}
+	previousTrades := tradesThrough(previous.Trades, previous.AsOf)
+	nextTrades := tradesThrough(next.Trades, previous.AsOf)
+	if len(previousTrades) != len(nextTrades) {
+		return fmt.Errorf("截至 %s 的完成交易数量从 %d 变为 %d", previous.AsOf, len(previousTrades), len(nextTrades))
+	}
+	for index := range previousTrades {
+		if !sameSettledTrade(previousTrades[index], nextTrades[index]) {
+			return fmt.Errorf("截至 %s 的完成交易被改写: %s", previous.AsOf, previousTrades[index].ID)
+		}
+	}
+	for _, position := range previous.Positions {
+		if nextPosition, found := matchingPosition(next.Positions, position); found {
+			if !samePositionBasis(position, nextPosition) {
+				return fmt.Errorf("持仓成本或数量被改写: %s", position.Symbol)
+			}
+			continue
+		}
+		if !positionClosedAfter(next.Trades, position, previous.AsOf) {
+			return fmt.Errorf("已有持仓无后续卖出记录却消失: %s", position.Symbol)
+		}
+	}
+	return nil
+}
+
+func executionLedgerEmpty(report Report) bool {
+	return len(report.Orders) == 0 && len(report.Trades) == 0 && len(report.Positions) == 0
+}
+
+func ordersThrough(orders []ShadowOrder, date string) []ShadowOrder {
+	result := make([]ShadowOrder, 0, len(orders))
+	for _, order := range orders {
+		if order.AttemptDate != "" && order.AttemptDate <= date {
+			result = append(result, order)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].AttemptDate == result[j].AttemptDate {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].AttemptDate < result[j].AttemptDate
+	})
+	return result
+}
+
+func tradesThrough(trades []ShadowTrade, date string) []ShadowTrade {
+	result := make([]ShadowTrade, 0, len(trades))
+	for _, trade := range trades {
+		if trade.ExitDate != "" && trade.ExitDate <= date {
+			result = append(result, trade)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].ExitDate == result[j].ExitDate {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].ExitDate < result[j].ExitDate
+	})
+	return result
+}
+
+func sameSettledOrder(left, right ShadowOrder) bool {
+	return left.ID == right.ID && left.Symbol == right.Symbol && left.Side == right.Side &&
+		left.SignalDate == right.SignalDate && left.AttemptDate == right.AttemptDate &&
+		left.Quantity == right.Quantity && sameFloat(left.RawPrice, right.RawPrice) &&
+		sameFloat(left.Price, right.Price) && sameFloat(left.Amount, right.Amount) && left.Status == right.Status
+}
+
+func sameSettledTrade(left, right ShadowTrade) bool {
+	return left.ID == right.ID && left.Symbol == right.Symbol && left.SignalDate == right.SignalDate &&
+		left.EntryDate == right.EntryDate && left.ExitDate == right.ExitDate && left.Quantity == right.Quantity &&
+		sameFloat(left.EntryPrice, right.EntryPrice) && sameFloat(left.ExitPrice, right.ExitPrice) &&
+		sameFloat(left.NetProfit, right.NetProfit) && sameFloat(left.TotalFee, right.TotalFee)
+}
+
+func matchingPosition(positions []ShadowOpenPosition, target ShadowOpenPosition) (ShadowOpenPosition, bool) {
+	for _, position := range positions {
+		if position.Symbol == target.Symbol && position.EntryDate == target.EntryDate {
+			return position, true
+		}
+	}
+	return ShadowOpenPosition{}, false
+}
+
+func samePositionBasis(left, right ShadowOpenPosition) bool {
+	return left.Symbol == right.Symbol && left.SignalDate == right.SignalDate && left.EntryDate == right.EntryDate &&
+		left.Quantity == right.Quantity && sameFloat(left.EntryPrice, right.EntryPrice)
+}
+
+func positionClosedAfter(trades []ShadowTrade, position ShadowOpenPosition, date string) bool {
+	for _, trade := range trades {
+		if trade.Symbol == position.Symbol && trade.EntryDate == position.EntryDate && trade.Quantity == position.Quantity && trade.ExitDate > date {
+			return true
+		}
+	}
+	return false
+}
+
+func sameFloat(left, right float64) bool {
+	return math.Abs(left-right) <= 1e-8*math.Max(1, math.Max(math.Abs(left), math.Abs(right)))
+}
+
 type Evaluator struct {
 	history HistoryClient
 	now     func() time.Time
@@ -229,11 +353,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 		now = time.Now
 	}
 	limit := options.Limit
-	if limit <= 0 {
+	if limit < 0 {
 		limit = 500
 	}
 	selected := representativeSignals(signals, limit)
-	report := Report{GeneratedAt: now(), AsOf: now().Format("2006-01-02"), Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
+	report := Report{EngineVersion: ShadowEngineVersion, GeneratedAt: now(), AsOf: now().Format("2006-01-02"), Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
 	if len(selected) == 0 {
 		return report, nil
 	}

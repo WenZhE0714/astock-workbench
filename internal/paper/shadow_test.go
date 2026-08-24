@@ -91,6 +91,16 @@ func TestRepresentativeSignalsIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRepresentativeSignalsZeroLimitKeepsAllDates(t *testing.T) {
+	first := shadowSignal("first", "sh600000", "2026-08-20", 60)
+	second := shadowSignal("second", "sh600000", "2026-08-21", 70)
+	second.AsOf = time.Date(2026, 8, 21, 14, 30, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	selected := representativeSignals([]realtime.Signal{first, second}, 0)
+	if len(selected) != 2 {
+		t.Fatalf("zero limit unexpectedly truncated archived signals: %+v", selected)
+	}
+}
+
 func TestEvaluatorKeepsImmatureWindowPending(t *testing.T) {
 	symbol := "sh600000"
 	signal := shadowSignal("pending", symbol, "2026-08-20", 80)
@@ -227,5 +237,51 @@ func TestRevaluePositionsIgnoresInvalidOrUnknownQuotes(t *testing.T) {
 	updated := RevaluePositions(report, []PositionQuote{{Symbol: "sh600001", Price: 12}, {Symbol: "sh600000", Price: 0}}, time.Now())
 	if updated.ValuedAt != nil || updated.Positions[0].LastPrice != 10 || updated.Positions[0].RealtimeValuation {
 		t.Fatalf("invalid quote changed report: %+v", updated)
+	}
+}
+
+func TestValidateTransitionRejectsRetroactiveLedgerChanges(t *testing.T) {
+	baseOrder := ShadowOrder{ID: "signal-buy", Symbol: "sh600000", Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 100, RawPrice: 10, Price: 10.005, Amount: 1000.5, Status: OrderFilled}
+	basePosition := ShadowOpenPosition{Symbol: "sh600000", SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10.005}
+	previous := Report{AsOf: "2026-08-21", Orders: []ShadowOrder{baseOrder}, Positions: []ShadowOpenPosition{basePosition}}
+
+	tests := []struct {
+		name string
+		next Report
+	}{
+		{name: "missing order", next: Report{AsOf: "2026-08-22"}},
+		{name: "changed quantity", next: Report{AsOf: "2026-08-22", Orders: []ShadowOrder{func() ShadowOrder { item := baseOrder; item.Quantity = 200; return item }()}, Positions: []ShadowOpenPosition{basePosition}}},
+		{name: "position disappeared", next: Report{AsOf: "2026-08-22", Orders: []ShadowOrder{baseOrder}}},
+		{name: "past order added", next: Report{AsOf: "2026-08-22", Orders: []ShadowOrder{baseOrder, {ID: "other-buy", Symbol: "sh600001", Side: "buy", AttemptDate: "2026-08-21", Quantity: 100, Status: OrderFilled}}, Positions: []ShadowOpenPosition{basePosition}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := ValidateTransition(previous, test.next); err == nil {
+				t.Fatalf("retroactive ledger change was accepted: %+v", test.next)
+			}
+		})
+	}
+}
+
+func TestValidateTransitionAllowsMarkToMarketAndFutureExit(t *testing.T) {
+	order := ShadowOrder{ID: "signal-buy", Symbol: "sh600000", Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 100, RawPrice: 10, Price: 10.005, Amount: 1000.5, Status: OrderFilled}
+	position := ShadowOpenPosition{Symbol: "sh600000", SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10.005, LastPrice: 10.2}
+	previous := Report{AsOf: "2026-08-21", Orders: []ShadowOrder{order}, Positions: []ShadowOpenPosition{position}}
+
+	marked := previous
+	marked.AsOf = "2026-08-22"
+	marked.Positions = append([]ShadowOpenPosition(nil), position)
+	marked.Positions[0].LastPrice = 10.8
+	if err := ValidateTransition(previous, marked); err != nil {
+		t.Fatalf("mark-to-market was rejected: %v", err)
+	}
+
+	exited := Report{
+		AsOf:   "2026-08-25",
+		Orders: []ShadowOrder{order, {ID: "signal-sell", Symbol: "sh600000", Side: "sell", SignalDate: "2026-08-20", AttemptDate: "2026-08-25", Quantity: 100, RawPrice: 11, Price: 10.9945, Amount: 1099.45, Status: OrderFilled}},
+		Trades: []ShadowTrade{{ID: "ST0001", Symbol: "sh600000", SignalDate: "2026-08-20", EntryDate: "2026-08-21", ExitDate: "2026-08-25", Quantity: 100, EntryPrice: 10.005, ExitPrice: 10.9945}},
+	}
+	if err := ValidateTransition(previous, exited); err != nil {
+		t.Fatalf("future exit was rejected: %v", err)
 	}
 }

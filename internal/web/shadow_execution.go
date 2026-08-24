@@ -13,8 +13,9 @@ import (
 const shadowExecutionTimeout = 2 * time.Minute
 
 type shadowResponse struct {
-	Report *paper.Report `json:"report,omitempty"`
-	Cached bool          `json:"cached,omitempty"`
+	Report    *paper.Report `json:"report,omitempty"`
+	Cached    bool          `json:"cached,omitempty"`
+	Preserved bool          `json:"preserved,omitempty"`
 }
 
 func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http.Request) {
@@ -41,6 +42,27 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
 			return
 		}
+		s.shadowMu.Lock()
+		defer s.shadowMu.Unlock()
+		previous, loadErr := s.shadowArchive.Load()
+		if loadErr != nil {
+			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取影子执行结果失败: " + loadErr.Error()})
+			return
+		}
+		if !shadowRebuildRequested(request) {
+			if shadowReportAsOfCurrentDay(previous, s.currentTime()) {
+				if previous.EngineVersion != paper.ShadowEngineVersion {
+					previous.EngineVersion = paper.ShadowEngineVersion
+					if saveErr := s.shadowArchive.Save(previous); saveErr != nil {
+						writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "升级影子账户版本失败: " + saveErr.Error()})
+						return
+					}
+				}
+				previous = s.markShadowPositions(request.Context(), previous)
+				writeJSON(writer, http.StatusOK, shadowResponse{Report: &previous, Cached: true})
+				return
+			}
+		}
 		signals, err := s.realtimeArchive.List(options.Limit)
 		if err != nil {
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取实时信号失败: " + err.Error()})
@@ -51,6 +73,12 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 		report, err := s.shadowEvaluator.Evaluate(ctx, signals, options)
 		if err != nil {
 			writeJSON(writer, http.StatusBadGateway, errorResponse{Error: err.Error()})
+			return
+		}
+		if err := paper.ValidateTransition(previous, report); err != nil {
+			previous.Warnings = append(previous.Warnings, "账户连续性保护：本次同步未覆盖持仓，"+err.Error())
+			previous = s.markShadowPositions(request.Context(), previous)
+			writeJSON(writer, http.StatusOK, shadowResponse{Report: &previous, Cached: true, Preserved: true})
 			return
 		}
 		if err := s.shadowArchive.Save(report); err != nil {
@@ -104,13 +132,15 @@ func (s *Server) markShadowPositions(ctx context.Context, report paper.Report) p
 }
 
 func shadowOptions(request *http.Request) (paper.Options, error) {
-	options := paper.Options{Config: paper.DefaultConfig(), Limit: 500}
+	// A zero limit means all archived signals. The shadow account must not let
+	// frequent intraday scans crowd older T+1 signals out of the replay set.
+	options := paper.Options{Config: paper.DefaultConfig(), Limit: 0}
 	values := request.URL.Query()
 	var err error
 	if raw := strings.TrimSpace(values.Get("limit")); raw != "" {
 		options.Limit, err = strconv.Atoi(raw)
-		if err != nil || options.Limit < 1 || options.Limit > 5000 {
-			return paper.Options{}, &queryError{"影子评估信号数量必须在 1 到 5000 之间"}
+		if err != nil || options.Limit < 0 || options.Limit > 20000 {
+			return paper.Options{}, &queryError{"影子评估信号数量必须在 0 到 20000 之间，0 表示全部归档"}
 		}
 	}
 	if raw := strings.TrimSpace(values.Get("minimum_score")); raw != "" {
@@ -126,6 +156,15 @@ func shadowOptions(request *http.Request) (paper.Options, error) {
 		}
 	}
 	return options, nil
+}
+
+func shadowRebuildRequested(request *http.Request) bool {
+	value := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("rebuild")))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func shadowReportAsOfCurrentDay(report paper.Report, now time.Time) bool {
+	return report.AsOf != "" && report.AsOf == now.In(realtimeWebLocation).Format("2006-01-02")
 }
 
 type queryError struct{ message string }

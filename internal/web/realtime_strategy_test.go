@@ -76,12 +76,16 @@ type realtimeArchiveStub struct {
 	items       []realtime.Signal
 	latest      realtime.ScanResult
 	listCalls   *int
+	listLimit   *int
 	latestCalls *int
 }
 
-func (stub realtimeArchiveStub) List(int) ([]realtime.Signal, error) {
+func (stub realtimeArchiveStub) List(limit int) ([]realtime.Signal, error) {
 	if stub.listCalls != nil {
 		(*stub.listCalls)++
+	}
+	if stub.listLimit != nil {
+		*stub.listLimit = limit
 	}
 	return stub.items, nil
 }
@@ -430,5 +434,39 @@ func TestShadowExecutionGETAndPOST(t *testing.T) {
 	}
 	if archive.report.Positions[0].LastPrice != 10 || archive.report.Positions[0].RealtimeValuation || archive.report.ValuedAt != nil {
 		t.Fatalf("realtime valuation leaked into saved execution report: %+v", archive.report)
+	}
+}
+
+func TestShadowExecutionPOSTCachesCurrentDayUnlessRebuildRequested(t *testing.T) {
+	archive := &shadowArchiveStub{report: paper.Report{
+		EngineVersion: paper.ShadowEngineVersion,
+		AsOf:          "2026-08-21",
+		Config:        paper.DefaultConfig(),
+	}}
+	evaluateCalls, listLimit := 0, -1
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{listLimit: &listLimit}),
+		WithShadowExecution(shadowAnalyzerStub{report: paper.Report{EngineVersion: paper.ShadowEngineVersion, AsOf: "2026-08-21"}, calls: &evaluateCalls}, archive),
+	)
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 21, 10, 15) }
+
+	cached := httptest.NewRecorder()
+	server.Handler().ServeHTTP(cached, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow", nil))
+	if cached.Code != http.StatusOK || evaluateCalls != 0 {
+		t.Fatalf("same-day POST rebuilt account: status=%d calls=%d body=%s", cached.Code, evaluateCalls, cached.Body.String())
+	}
+	var cachedPayload shadowResponse
+	if err := json.Unmarshal(cached.Body.Bytes(), &cachedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if !cachedPayload.Cached || cachedPayload.Report == nil || cachedPayload.Report.AsOf != "2026-08-21" {
+		t.Fatalf("same-day POST did not return cached report: %+v", cachedPayload)
+	}
+
+	rebuilt := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rebuilt, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?rebuild=1", nil))
+	if rebuilt.Code != http.StatusOK || evaluateCalls != 1 || archive.saves != 1 || listLimit != 0 {
+		t.Fatalf("explicit rebuild was not honored: status=%d calls=%d saves=%d limit=%d body=%s", rebuilt.Code, evaluateCalls, archive.saves, listLimit, rebuilt.Body.String())
 	}
 }
