@@ -56,9 +56,11 @@ createApp({
       realtimeOutcomeReport: null,
       realtimeOutcomeHorizon: 5,
       realtimeOutcomeView: "scores",
+      realtimeSection: "candidates",
       shadowLoading: false,
       shadowError: "",
       shadowReport: null,
+      shadowCheckedAt: 0,
       chartMode: "intraday",
       chartGeometry: null,
       crosshair: null,
@@ -237,6 +239,7 @@ createApp({
     },
     shadowTrades() { return this.shadowReport && Array.isArray(this.shadowReport.trades) ? this.shadowReport.trades : [] },
     shadowPositions() { return this.shadowReport && Array.isArray(this.shadowReport.positions) ? this.shadowReport.positions : [] },
+    shadowOrders() { return this.shadowReport && Array.isArray(this.shadowReport.orders) ? this.shadowReport.orders : [] },
     shadowRejections() { return this.shadowReport && Array.isArray(this.shadowReport.rejections) ? this.shadowReport.rejections : [] },
     strategyResultTitle() {
       if (!this.strategyResult) return "回测结果"
@@ -375,6 +378,19 @@ createApp({
       return `${first} 等 ${tickers.length} 只`
     },
     realtimeCount(state) { return this.realtimeSignals.filter(item => item.state === state).length },
+    shadowValuationLabel(position) {
+      if (!position) return "--"
+      const quoteTime = position.valuation_time || position.last_date || "--"
+      const source = position.realtime_valuation ? (position.valuation_source || "实时行情") : "日 K"
+      return `${quoteTime} · ${source}`
+    },
+    switchRealtimeSection(section) {
+      if (!['candidates', 'shadow', 'validation'].includes(section)) return
+      this.realtimeSection = section
+      if (section === 'shadow') this.refreshShadowReport()
+      if (section === 'validation' && !this.realtimeOutcomeReport) this.loadRealtimeOutcomes()
+      window.scrollTo({ top: 0, behavior: 'auto' })
+    },
     switchWorkspace(mode) {
       if (mode !== "market" && mode !== "strategy" && mode !== "realtime") return
       this.workspaceMode = mode
@@ -621,6 +637,7 @@ createApp({
     },
     async refreshRealtimeOutcomes() {
       if (this.realtimeOutcomeLoading) return
+      const scrollY = window.scrollY
       this.realtimeOutcomeLoading = true
       this.realtimeOutcomeError = ""
       try {
@@ -633,10 +650,13 @@ createApp({
         this.realtimeOutcomeError = error instanceof Error ? error.message : String(error)
       } finally {
         this.realtimeOutcomeLoading = false
+        await this.$nextTick()
+        window.scrollTo({ top: scrollY, behavior: 'auto' })
       }
     },
     async loadShadowReport() {
       if (this.shadowLoading) return
+      this.shadowCheckedAt = Date.now()
       this.shadowError = ""
       try {
         const response = await fetch("/api/strategy/shadow", { cache: "no-store" })
@@ -650,6 +670,8 @@ createApp({
     },
     async refreshShadowReport() {
       if (this.shadowLoading) return
+      const scrollY = window.scrollY
+      this.shadowCheckedAt = Date.now()
       this.shadowLoading = true
       this.shadowError = ""
       try {
@@ -662,6 +684,8 @@ createApp({
         this.shadowError = error instanceof Error ? error.message : String(error)
       } finally {
         this.shadowLoading = false
+        await this.$nextTick()
+        window.scrollTo({ top: scrollY, behavior: 'auto' })
       }
     },
     async runRealtimeScan() {
@@ -687,6 +711,7 @@ createApp({
     pollRealtimeSession() {
       if (this.workspaceMode !== "realtime" || this.realtimeLoading) return
       const now = Date.now()
+      if (this.realtimeSection === 'shadow' && !this.shadowLoading && now - this.shadowCheckedAt >= 30000) this.loadShadowReport()
       if (this.realtimeScanAllowed) {
         if (now - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
         return

@@ -185,3 +185,47 @@ func TestEvaluatorKeepsEnteredButImmatureTradeAsOpenPosition(t *testing.T) {
 		t.Fatalf("unexpected open position: %+v", report.Positions[0])
 	}
 }
+
+func TestRevaluePositionsOnlyUpdatesMarkToMarketFields(t *testing.T) {
+	generated := time.Date(2026, 8, 21, 15, 0, 0, 0, time.Local)
+	valued := time.Date(2026, 8, 21, 15, 1, 0, 0, time.Local)
+	report := Report{
+		GeneratedAt:   generated,
+		Config:        DefaultConfig(),
+		RemainingCash: 12345,
+		FilledEntries: 1,
+		Positions: []ShadowOpenPosition{{
+			Symbol: "sh600000", Quantity: 100, EntryPrice: 10,
+			LastDate: "2026-08-21", LastPrice: 10.5, MarketValue: 1050,
+			UnrealizedProfit: 1, UnrealizedReturnPercent: .1,
+		}},
+		Orders: []ShadowOrder{{ID: "buy-1", Symbol: "sh600000", Quantity: 100, Status: OrderFilled}},
+	}
+	updated := RevaluePositions(report, []PositionQuote{{
+		Symbol: "sh600000", Price: 11.2, QuoteTime: "2026-08-21 15:01:00", Source: "test-l1",
+	}}, valued)
+	if updated.RemainingCash != report.RemainingCash || updated.FilledEntries != report.FilledEntries || len(updated.Orders) != len(report.Orders) {
+		t.Fatalf("revaluation changed execution state: before=%+v after=%+v", report, updated)
+	}
+	if len(updated.Positions) != 1 || updated.Positions[0].LastPrice != 11.2 || updated.Positions[0].MarketValue != 1120 {
+		t.Fatalf("quote was not applied: %+v", updated.Positions)
+	}
+	position := updated.Positions[0]
+	if position.ValuationTime != "2026-08-21 15:01:00" || position.ValuationSource != "test-l1" || !position.RealtimeValuation {
+		t.Fatalf("missing realtime valuation metadata: %+v", position)
+	}
+	if updated.ValuedAt == nil || !updated.ValuedAt.Equal(valued) {
+		t.Fatalf("unexpected valued_at: %v", updated.ValuedAt)
+	}
+	if report.Positions[0].LastPrice != 10.5 {
+		t.Fatalf("input report was mutated: %+v", report.Positions[0])
+	}
+}
+
+func TestRevaluePositionsIgnoresInvalidOrUnknownQuotes(t *testing.T) {
+	report := Report{Config: DefaultConfig(), Positions: []ShadowOpenPosition{{Symbol: "sh600000", Quantity: 100, EntryPrice: 10, LastPrice: 10}}}
+	updated := RevaluePositions(report, []PositionQuote{{Symbol: "sh600001", Price: 12}, {Symbol: "sh600000", Price: 0}}, time.Now())
+	if updated.ValuedAt != nil || updated.Positions[0].LastPrice != 10 || updated.Positions[0].RealtimeValuation {
+		t.Fatalf("invalid quote changed report: %+v", updated)
+	}
+}

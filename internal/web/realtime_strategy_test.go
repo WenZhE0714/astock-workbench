@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
@@ -37,6 +38,14 @@ func (stub *shadowArchiveStub) Save(report paper.Report) error {
 	return nil
 }
 func (stub *shadowArchiveStub) Load() (paper.Report, error) { return stub.report, nil }
+
+type shadowQuoteStub struct {
+	quotes []domain.Quote
+}
+
+func (stub shadowQuoteStub) Fetch(context.Context, []string) ([]domain.Quote, error) {
+	return stub.quotes, nil
+}
 
 type realtimeScannerStub struct {
 	result realtime.ScanResult
@@ -376,23 +385,50 @@ func TestRealtimeOutcomePOSTReadsSignalsAndEvaluates(t *testing.T) {
 }
 
 func TestShadowExecutionGETAndPOST(t *testing.T) {
-	archive := &shadowArchiveStub{report: paper.Report{CandidateCount: 2}}
+	basePosition := paper.ShadowOpenPosition{
+		Symbol: "sh600519", Quantity: 100, EntryPrice: 10,
+		LastDate: "2026-08-20", LastPrice: 10, MarketValue: 1000,
+	}
+	archive := &shadowArchiveStub{report: paper.Report{CandidateCount: 2, Config: paper.DefaultConfig(), Positions: []paper.ShadowOpenPosition{basePosition}}}
 	evaluateCalls := 0
+	valuedAt := realtimeWebTime(2026, 8, 21, 10, 15)
+	evaluated := paper.Report{CandidateCount: 3, CompletedTrades: 1, Config: paper.DefaultConfig(), Positions: []paper.ShadowOpenPosition{basePosition}}
 	server := NewServer(
-		resolverStub{}, nil, nil, nil, "",
+		resolverStub{}, shadowQuoteStub{quotes: []domain.Quote{{Symbol: "sh600519", Current: "12.34", QuoteTime: "2026-08-21 10:15:00", Source: "test-l1"}}}, nil, nil, "",
 		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}),
-		WithShadowExecution(shadowAnalyzerStub{report: paper.Report{CandidateCount: 3, CompletedTrades: 1}, calls: &evaluateCalls}, archive),
+		WithShadowExecution(shadowAnalyzerStub{report: evaluated, calls: &evaluateCalls}, archive),
 	)
+	server.now = func() time.Time { return valuedAt }
 
 	getRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(getRecorder, httptest.NewRequest(http.MethodGet, "/api/strategy/shadow", nil))
 	if getRecorder.Code != http.StatusOK || evaluateCalls != 0 {
 		t.Fatalf("GET crossed evaluation boundary: status=%d calls=%d body=%s", getRecorder.Code, evaluateCalls, getRecorder.Body.String())
 	}
+	var getPayload shadowResponse
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &getPayload); err != nil {
+		t.Fatal(err)
+	}
+	if getPayload.Report == nil || len(getPayload.Report.Positions) != 1 || getPayload.Report.Positions[0].LastPrice != 12.34 || !getPayload.Report.Positions[0].RealtimeValuation {
+		t.Fatalf("GET did not mark positions with realtime quote: %+v", getPayload.Report)
+	}
+	if getPayload.Report.ValuedAt == nil || !getPayload.Report.ValuedAt.Equal(valuedAt) || getPayload.Report.Positions[0].ValuationSource != "test-l1" {
+		t.Fatalf("GET valuation metadata mismatch: %+v", getPayload.Report)
+	}
 
 	postRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(postRecorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?limit=9&minimum_score=60&holding_days=3", nil))
 	if postRecorder.Code != http.StatusOK || evaluateCalls != 1 || archive.saves != 1 || archive.report.CompletedTrades != 1 {
 		t.Fatalf("unexpected POST result: status=%d calls=%d saves=%d report=%+v body=%s", postRecorder.Code, evaluateCalls, archive.saves, archive.report, postRecorder.Body.String())
+	}
+	var postPayload shadowResponse
+	if err := json.Unmarshal(postRecorder.Body.Bytes(), &postPayload); err != nil {
+		t.Fatal(err)
+	}
+	if postPayload.Report == nil || len(postPayload.Report.Positions) != 1 || postPayload.Report.Positions[0].LastPrice != 12.34 {
+		t.Fatalf("POST response did not include realtime valuation: %+v", postPayload.Report)
+	}
+	if archive.report.Positions[0].LastPrice != 10 || archive.report.Positions[0].RealtimeValuation || archive.report.ValuedAt != nil {
+		t.Fatalf("realtime valuation leaked into saved execution report: %+v", archive.report)
 	}
 }

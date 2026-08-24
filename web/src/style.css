@@ -192,6 +192,15 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 
 .strategy-view { min-width:0; }
 .realtime-view { min-width:0; }
+.realtime-section-nav { position:sticky; z-index:8; top:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:14px 0 16px; border:1px solid var(--line); background:#171d21; box-shadow:0 7px 18px rgba(8,12,14,.28); }
+.realtime-section-nav button { position:relative; display:flex; min-width:0; min-height:54px; align-items:flex-start; justify-content:center; flex-direction:column; padding:8px 14px; border:0; border-right:1px solid var(--line); border-radius:0; background:transparent; color:var(--muted); text-align:left; }
+.realtime-section-nav button:last-child { border-right:0; }
+.realtime-section-nav button:hover { background:#20292e; color:var(--text); filter:none; }
+.realtime-section-nav button.active { background:#1d2a30; color:var(--text); }
+.realtime-section-nav button.active::after { position:absolute; right:12px; bottom:0; left:12px; height:2px; background:var(--accent); content:""; }
+.realtime-section-nav strong,.realtime-section-nav small { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.realtime-section-nav strong { font-size:12px; }
+.realtime-section-nav small { margin-top:3px; color:var(--muted); font-size:9px; font-variant-numeric:tabular-nums; }
 .realtime-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:16px 0; }
 .realtime-toolbar .scope-control { display:grid; grid-template-columns:1fr 1fr; margin:0; }
 .realtime-toolbar .scope-control button { min-width:132px; }
@@ -245,6 +254,7 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 .realtime-history-list small { margin-top:2px; color:var(--muted); font-size:9px; }
 .realtime-history-list b { font-size:12px; font-variant-numeric:tabular-nums; }
 .realtime-performance-panel { margin-top:18px; border:1px solid var(--line); background:var(--panel); }
+.realtime-refresh-status { margin:0 14px 12px; padding:7px 10px; border-left:2px solid var(--accent); background:#18252b; color:#b8dbe5; font-size:10px; }
 .realtime-performance-head { align-items:flex-end; }
 .realtime-performance-head h2 { margin:2px 0 0; font-size:17px; }
 .realtime-panel-note { margin:3px 0 0; color:var(--muted); font-size:10px; }
@@ -529,6 +539,9 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .workspace-tabs { width:100%; }
   .workspace-tabs button { min-width:0; flex:1; }
   .workspace-context { padding:7px 12px; border-top:1px solid var(--line); }
+  .realtime-section-nav button { min-height:50px; padding:7px 8px; }
+  .realtime-section-nav strong { font-size:11px; }
+  .realtime-section-nav small { font-size:8px; }
   .strategy-header h1 { font-size:23px; }
   .strategy-form { grid-template-columns:1fr; }
   .field.wide,.strategy-form .wide { grid-column:1; }

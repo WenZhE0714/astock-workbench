@@ -29,6 +29,7 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取影子执行结果失败: " + err.Error()})
 			return
 		}
+		report = s.markShadowPositions(request.Context(), report)
 		writeJSON(writer, http.StatusOK, shadowResponse{Report: &report, Cached: true})
 	case http.MethodPost:
 		if s.realtimeArchive == nil {
@@ -56,10 +57,50 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "保存影子执行结果失败: " + err.Error()})
 			return
 		}
+		report = s.markShadowPositions(request.Context(), report)
 		writeJSON(writer, http.StatusOK, shadowResponse{Report: &report})
 	default:
 		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "影子执行只支持 GET、POST"})
 	}
+}
+
+func (s *Server) markShadowPositions(ctx context.Context, report paper.Report) paper.Report {
+	if s == nil || s.quotes == nil || len(report.Positions) == 0 {
+		return report
+	}
+	symbols := make([]string, 0, len(report.Positions))
+	seen := make(map[string]struct{}, len(report.Positions))
+	for _, position := range report.Positions {
+		if position.Symbol == "" {
+			continue
+		}
+		if _, ok := seen[position.Symbol]; ok {
+			continue
+		}
+		seen[position.Symbol] = struct{}{}
+		symbols = append(symbols, position.Symbol)
+	}
+	if len(symbols) == 0 {
+		return report
+	}
+	quoteContext, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	quotes, err := s.quotes.Fetch(quoteContext, symbols)
+	if err != nil {
+		return report
+	}
+	items := make([]paper.PositionQuote, 0, len(quotes))
+	for _, quote := range quotes {
+		price, parseErr := strconv.ParseFloat(strings.TrimSpace(quote.Current), 64)
+		if parseErr != nil || price <= 0 {
+			continue
+		}
+		items = append(items, paper.PositionQuote{
+			Symbol: quote.Symbol, Price: price,
+			QuoteTime: strings.TrimSpace(quote.QuoteTime), Source: strings.TrimSpace(quote.Source),
+		})
+	}
+	return paper.RevaluePositions(report, items, s.currentTime())
 }
 
 func shadowOptions(request *http.Request) (paper.Options, error) {

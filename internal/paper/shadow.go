@@ -112,10 +112,21 @@ type ShadowOpenPosition struct {
 	UnrealizedProfit        float64 `json:"unrealized_profit"`
 	UnrealizedReturnPercent float64 `json:"unrealized_return_percent"`
 	TargetExitDate          string  `json:"target_exit_date,omitempty"`
+	ValuationTime           string  `json:"valuation_time,omitempty"`
+	ValuationSource         string  `json:"valuation_source,omitempty"`
+	RealtimeValuation       bool    `json:"realtime_valuation,omitempty"`
+}
+
+type PositionQuote struct {
+	Symbol    string
+	Price     float64
+	QuoteTime string
+	Source    string
 }
 
 type Report struct {
 	GeneratedAt              time.Time            `json:"generated_at"`
+	ValuedAt                 *time.Time           `json:"valued_at,omitempty"`
 	AsOf                     string               `json:"as_of"`
 	Config                   Config               `json:"config"`
 	SignalCount              int                  `json:"signal_count"`
@@ -137,6 +148,46 @@ type Report struct {
 	Orders                   []ShadowOrder        `json:"orders,omitempty"`
 	Rejections               []ShadowRejection    `json:"rejections,omitempty"`
 	Warnings                 []string             `json:"warnings,omitempty"`
+}
+
+// RevaluePositions updates only mark-to-market fields. It never changes fills,
+// quantities, cash or completed trades, so an intraday quote cannot become a
+// simulated execution retroactively.
+func RevaluePositions(report Report, quotes []PositionQuote, valuedAt time.Time) Report {
+	bySymbol := make(map[string]PositionQuote, len(quotes))
+	for _, quote := range quotes {
+		if quote.Symbol != "" && quote.Price > 0 && finite(quote.Price) {
+			bySymbol[quote.Symbol] = quote
+		}
+	}
+	report.Positions = append([]ShadowOpenPosition(nil), report.Positions...)
+	updated := false
+	for index := range report.Positions {
+		position := &report.Positions[index]
+		quote, found := bySymbol[position.Symbol]
+		if !found {
+			continue
+		}
+		entryAmount := position.EntryPrice * float64(position.Quantity)
+		entryCost := entryAmount + transactionFee(entryAmount, "buy", report.Config)
+		marketValue := quote.Price * float64(position.Quantity)
+		exitFee := transactionFee(marketValue, "sell", report.Config)
+		profit := marketValue - exitFee - entryCost
+		position.LastPrice = quote.Price
+		position.MarketValue = marketValue
+		position.UnrealizedProfit = profit
+		if entryCost > 0 {
+			position.UnrealizedReturnPercent = profit / entryCost * 100
+		}
+		position.ValuationTime = quote.QuoteTime
+		position.ValuationSource = quote.Source
+		position.RealtimeValuation = true
+		updated = true
+	}
+	if updated {
+		report.ValuedAt = &valuedAt
+	}
+	return report
 }
 
 type Evaluator struct {
