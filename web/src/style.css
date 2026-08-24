@@ -279,6 +279,10 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 .outcome-row strong { overflow:hidden; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
 .outcome-row small { margin-top:2px; color:var(--muted); font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .realtime-outcome-recent .outcome-row { grid-template-columns:minmax(160px,1.6fr) 70px 75px 85px 85px minmax(180px,1fr); min-width:730px; }
+.shadow-positions .outcome-row { grid-template-columns:minmax(180px,1.55fr) 105px 90px minmax(170px,1.25fr) minmax(135px,1fr) minmax(155px,1.1fr); min-width:835px; }
+.shadow-positions .valuation-cell { display:flex; min-width:0; align-items:flex-end; flex-direction:column; }
+.shadow-positions .valuation-cell b { display:block; font-size:11px; font-variant-numeric:tabular-nums; }
+.shadow-positions .valuation-cell small { display:block; max-width:100%; text-align:right; }
 .realtime-assessment { margin:0 14px 14px; border:1px solid var(--line); background:var(--panel-soft); }
 .realtime-assessment .research-section-head { background:var(--panel); }
 .assessment-checks { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; background:var(--line); }
