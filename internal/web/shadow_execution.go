@@ -2,7 +2,9 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,20 +46,18 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 		}
 		s.shadowMu.Lock()
 		defer s.shadowMu.Unlock()
+		checkpoint, checkpointErr := s.shadowCheckpoint(request.Context())
+		if checkpointErr != nil {
+			writeJSON(writer, http.StatusBadGateway, errorResponse{Error: "读取影子账户交易日历失败: " + checkpointErr.Error()})
+			return
+		}
 		previous, loadErr := s.shadowArchive.Load()
 		if loadErr != nil {
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取影子执行结果失败: " + loadErr.Error()})
 			return
 		}
 		if !shadowRebuildRequested(request) {
-			if shadowReportAsOfCurrentDay(previous, s.currentTime()) {
-				if previous.EngineVersion != paper.ShadowEngineVersion {
-					previous.EngineVersion = paper.ShadowEngineVersion
-					if saveErr := s.shadowArchive.Save(previous); saveErr != nil {
-						writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "升级影子账户版本失败: " + saveErr.Error()})
-						return
-					}
-				}
+			if shadowReportMatches(previous, options, checkpoint) {
 				previous = s.markShadowPositions(request.Context(), previous)
 				writeJSON(writer, http.StatusOK, shadowResponse{Report: &previous, Cached: true})
 				return
@@ -70,7 +70,20 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 		}
 		ctx, cancel := context.WithTimeout(request.Context(), shadowExecutionTimeout)
 		defer cancel()
-		report, err := s.shadowEvaluator.Evaluate(ctx, signals, options)
+		var report paper.Report
+		var evaluateErr error
+		if !shadowRebuildRequested(request) && shadowCanAdvance(previous, options) {
+			if advancer, ok := s.shadowEvaluator.(shadowAdvancer); ok {
+				report, evaluateErr = advancer.Advance(ctx, previous, signals, options)
+			} else {
+				report, evaluateErr = s.shadowEvaluator.Evaluate(ctx, signals, options)
+			}
+		} else {
+			report, evaluateErr = s.shadowEvaluator.Evaluate(ctx, signals, options)
+		}
+		if evaluateErr != nil {
+			err = evaluateErr
+		}
 		if err != nil {
 			writeJSON(writer, http.StatusBadGateway, errorResponse{Error: err.Error()})
 			return
@@ -118,9 +131,14 @@ func (s *Server) markShadowPositions(ctx context.Context, report paper.Report) p
 		return report
 	}
 	items := make([]paper.PositionQuote, 0, len(quotes))
+	stale := 0
 	for _, quote := range quotes {
 		price, parseErr := strconv.ParseFloat(strings.TrimSpace(quote.Current), 64)
 		if parseErr != nil || price <= 0 {
+			continue
+		}
+		if !shadowQuoteFresh(quote.QuoteTime, s.currentTime()) {
+			stale++
 			continue
 		}
 		items = append(items, paper.PositionQuote{
@@ -128,7 +146,30 @@ func (s *Server) markShadowPositions(ctx context.Context, report paper.Report) p
 			QuoteTime: strings.TrimSpace(quote.QuoteTime), Source: strings.TrimSpace(quote.Source),
 		})
 	}
+	if stale > 0 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("%d 只持仓行情超过 30 分钟，保留日线估值", stale))
+	}
 	return paper.RevaluePositions(report, items, s.currentTime())
+}
+
+func (s *Server) shadowCheckpoint(ctx context.Context) (paper.Checkpoint, error) {
+	if s == nil || s.history == nil {
+		return paper.TradingCheckpointAt(s.currentTime(), nil), nil
+	}
+	calendarContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	bars, err := s.history.FetchDailyBars(calendarContext, "sh000300")
+	if err != nil {
+		return paper.Checkpoint{}, err
+	}
+	dates := make([]string, 0, len(bars))
+	for _, bar := range bars {
+		if bar.Date != "" {
+			dates = append(dates, bar.Date)
+		}
+	}
+	sort.Strings(dates)
+	return paper.TradingCheckpointAt(s.currentTime(), dates), nil
 }
 
 func shadowOptions(request *http.Request) (paper.Options, error) {
@@ -163,8 +204,34 @@ func shadowRebuildRequested(request *http.Request) bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
-func shadowReportAsOfCurrentDay(report paper.Report, now time.Time) bool {
-	return report.AsOf != "" && report.AsOf == now.In(realtimeWebLocation).Format("2006-01-02")
+func shadowReportMatches(report paper.Report, options paper.Options, checkpoint paper.Checkpoint) bool {
+	return report.EngineVersion == paper.ShadowEngineVersion && report.ConfigFingerprint == paper.OptionsFingerprint(options.Config, options.Limit) && report.AsOf == checkpoint.Date && report.CheckpointPhase == checkpoint.Phase
+}
+
+func shadowCanAdvance(report paper.Report, options paper.Options) bool {
+	if report.ConfigFingerprint != "" && report.ConfigFingerprint != paper.OptionsFingerprint(options.Config, options.Limit) {
+		return false
+	}
+	if report.ConfigFingerprint == "" && paper.ConfigFingerprint(report.Config) != paper.ConfigFingerprint(options.Config) {
+		return false
+	}
+	return report.EngineVersion == paper.ShadowEngineVersion || len(report.Orders) > 0 || len(report.Positions) > 0 || len(report.Trades) > 0
+}
+
+func shadowQuoteFresh(raw string, now time.Time) bool {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return false
+	}
+	quoteTime, err := time.ParseInLocation("2006-01-02 15:04:05", value, realtimeWebLocation)
+	if err != nil {
+		quoteTime, err = time.ParseInLocation("2006-01-02 15:04", value, realtimeWebLocation)
+	}
+	if err != nil {
+		return false
+	}
+	delta := now.In(realtimeWebLocation).Sub(quoteTime)
+	return delta >= -2*time.Minute && delta <= 30*time.Minute
 }
 
 type queryError struct{ message string }

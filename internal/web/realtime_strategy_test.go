@@ -443,6 +443,8 @@ func TestShadowExecutionPOSTCachesCurrentDayUnlessRebuildRequested(t *testing.T)
 		AsOf:          "2026-08-21",
 		Config:        paper.DefaultConfig(),
 	}}
+	archive.report.ConfigFingerprint = paper.OptionsFingerprint(archive.report.Config, 0)
+	archive.report.CheckpointPhase = paper.CheckpointOpen
 	evaluateCalls, listLimit := 0, -1
 	server := NewServer(
 		resolverStub{}, nil, nil, nil, "",
@@ -468,5 +470,25 @@ func TestShadowExecutionPOSTCachesCurrentDayUnlessRebuildRequested(t *testing.T)
 	server.Handler().ServeHTTP(rebuilt, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?rebuild=1", nil))
 	if rebuilt.Code != http.StatusOK || evaluateCalls != 1 || archive.saves != 1 || listLimit != 0 {
 		t.Fatalf("explicit rebuild was not honored: status=%d calls=%d saves=%d limit=%d body=%s", rebuilt.Code, evaluateCalls, archive.saves, listLimit, rebuilt.Body.String())
+	}
+}
+
+func TestShadowHelpersRejectStaleQuotesAndMismatchedCache(t *testing.T) {
+	now := realtimeWebTime(2026, 8, 24, 10, 0)
+	if shadowQuoteFresh("2026-08-24 09:00:00", now) {
+		t.Fatal("stale quote was accepted")
+	}
+	if !shadowQuoteFresh("2026-08-24 09:45:00", now) {
+		t.Fatal("fresh quote was rejected")
+	}
+	options := paper.Options{Config: paper.DefaultConfig(), Limit: 0}
+	checkpoint := paper.Checkpoint{Date: "2026-08-24", Phase: paper.CheckpointOpen}
+	report := paper.Report{EngineVersion: paper.ShadowEngineVersion, ConfigFingerprint: paper.OptionsFingerprint(options.Config, options.Limit), AsOf: checkpoint.Date, CheckpointPhase: checkpoint.Phase}
+	if !shadowReportMatches(report, options, checkpoint) {
+		t.Fatal("matching cache was rejected")
+	}
+	options.Config.HoldingDays++
+	if shadowReportMatches(report, options, checkpoint) {
+		t.Fatal("cache ignored execution config change")
 	}
 }

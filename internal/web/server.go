@@ -102,6 +102,10 @@ type shadowAnalyzer interface {
 	Evaluate(context.Context, []realtime.Signal, paper.Options) (paper.Report, error)
 }
 
+type shadowAdvancer interface {
+	Advance(context.Context, paper.Report, []realtime.Signal, paper.Options) (paper.Report, error)
+}
+
 type shadowArchive interface {
 	Save(paper.Report) error
 	Load() (paper.Report, error)

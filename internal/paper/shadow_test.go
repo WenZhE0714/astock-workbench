@@ -194,6 +194,30 @@ func TestEvaluatorKeepsEnteredButImmatureTradeAsOpenPosition(t *testing.T) {
 	if report.Positions[0].EntryDate != "2026-08-21" || report.Positions[0].LastDate != "2026-08-24" {
 		t.Fatalf("unexpected open position: %+v", report.Positions[0])
 	}
+	if report.Positions[0].AvailableQuantity != report.Positions[0].Quantity {
+		t.Fatalf("T+1 position did not become sellable on the next trading day: %+v", report.Positions[0])
+	}
+}
+
+func TestTPlusOneDoesNotSellOnEntryDate(t *testing.T) {
+	symbol := "sh600000"
+	bars := []domain.DailyBar{
+		shadowBar(symbol, "2026-08-19", 9.8, 9.9, 10, 9.7, 1_000_000),
+		shadowBar(symbol, "2026-08-20", 10, 10, 10, 10, 1_000_000),
+		shadowBar(symbol, "2026-08-21", 10, 11, 11, 10, 1_000_000),
+	}
+	calendar := append([]domain.DailyBar(nil), bars...)
+	for index := range calendar {
+		calendar[index].Symbol = "sh000300"
+	}
+	signal := shadowSignal("same-day", symbol, "2026-08-20", 80)
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Evaluate(context.Background(), []realtime.Signal{signal}, Options{Config: func() Config { cfg := DefaultConfig(); cfg.HoldingDays = 1; return cfg }(), Now: func() time.Time { return time.Date(2026, 8, 21, 16, 0, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CompletedTrades != 0 || report.OpenPositions != 1 {
+		t.Fatalf("same-day T+1 sell occurred: %+v", report)
+	}
 }
 
 func TestRevaluePositionsOnlyUpdatesMarkToMarketFields(t *testing.T) {
@@ -283,5 +307,126 @@ func TestValidateTransitionAllowsMarkToMarketAndFutureExit(t *testing.T) {
 	}
 	if err := ValidateTransition(previous, exited); err != nil {
 		t.Fatalf("future exit was rejected: %v", err)
+	}
+}
+
+func TestTradingCheckpointAtSeparatesOpenAndClose(t *testing.T) {
+	calendar := []string{"2026-08-21", "2026-08-24"}
+	open := TradingCheckpointAt(time.Date(2026, 8, 24, 10, 0, 0, 0, shanghaiLocation), calendar)
+	if open.Date != "2026-08-24" || open.Phase != CheckpointOpen {
+		t.Fatalf("unexpected open checkpoint: %+v", open)
+	}
+	close := TradingCheckpointAt(time.Date(2026, 8, 24, 15, 6, 0, 0, shanghaiLocation), calendar)
+	if close.Date != "2026-08-24" || close.Phase != CheckpointClose {
+		t.Fatalf("unexpected close checkpoint: %+v", close)
+	}
+	weekend := TradingCheckpointAt(time.Date(2026, 8, 23, 10, 0, 0, 0, shanghaiLocation), calendar)
+	if weekend.Date != "2026-08-21" || weekend.Phase != CheckpointClose {
+		t.Fatalf("weekend advanced account: %+v", weekend)
+	}
+}
+
+func TestConfigFingerprintChangesWithExecutionAssumptions(t *testing.T) {
+	base := DefaultConfig()
+	changed := base
+	changed.HoldingDays++
+	if ConfigFingerprint(base) == ConfigFingerprint(changed) {
+		t.Fatal("holding window did not change config fingerprint")
+	}
+}
+
+func TestAdvancePreservesLedgerAndClosesOnlyAtCloseCheckpoint(t *testing.T) {
+	symbol := "sh600000"
+	bars := []domain.DailyBar{
+		shadowBar(symbol, "2026-08-20", 10, 10, 10.2, 9.8, 1_000_000),
+		shadowBar(symbol, "2026-08-21", 10.5, 10.8, 10.9, 10.4, 1_000_000),
+		shadowBar(symbol, "2026-08-24", 11, 11.2, 11.3, 10.9, 1_000_000),
+	}
+	calendar := append([]domain.DailyBar(nil), bars...)
+	for index := range calendar {
+		calendar[index].Symbol = "sh000300"
+	}
+	cfg := DefaultConfig()
+	amount := 10.5 * 100
+	fee := transactionFee(amount, "buy", cfg)
+	previous := Report{
+		EngineVersion: ShadowEngineVersion, Config: cfg, ConfigFingerprint: OptionsFingerprint(cfg, 0),
+		AsOf: "2026-08-21", CheckpointPhase: CheckpointClose, InitialCash: cfg.InitialCash,
+		RemainingCash: cfg.InitialCash - amount - fee, FilledEntries: 1, TotalTurnover: amount, TotalFees: fee,
+		Orders:    []ShadowOrder{{ID: "signal-buy", Symbol: symbol, Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 100, RawPrice: 10.5, Price: 10.5, Amount: amount, Status: OrderFilled}},
+		Positions: []ShadowOpenPosition{{SignalID: "signal", Symbol: symbol, SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 100, AvailableQuantity: 100, EntryPrice: 10.5, EntryAmount: amount, EntryFee: fee, SignalClose: 10, TargetExitDate: "2026-08-24"}},
+	}
+	evaluator := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}})
+	openReport, err := evaluator.Advance(context.Background(), previous, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 24, 10, 0, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openReport.CompletedTrades != 0 || len(openReport.Positions) != 1 || openReport.CheckpointPhase != CheckpointOpen {
+		t.Fatalf("position closed before daily close: %+v", openReport)
+	}
+	closeReport, err := evaluator.Advance(context.Background(), openReport, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 24, 15, 6, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeReport.CompletedTrades != 1 || len(closeReport.Positions) != 0 || len(closeReport.Orders) != 2 || closeReport.TotalTurnover <= openReport.TotalTurnover {
+		t.Fatalf("close checkpoint did not append exit: %+v", closeReport)
+	}
+	if closeReport.Orders[0] != previous.Orders[0] {
+		t.Fatalf("previous order was rewritten: before=%+v after=%+v", previous.Orders[0], closeReport.Orders[0])
+	}
+}
+
+func TestAdvanceKeepsPositionWhenHistoricalBarsAreUnavailable(t *testing.T) {
+	cfg := DefaultConfig()
+	previous := Report{
+		EngineVersion: ShadowEngineVersion, Config: cfg, AsOf: "2026-08-21", RemainingCash: 500,
+		Positions: []ShadowOpenPosition{{Symbol: "sh600000", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10, LastDate: "2026-08-21", LastPrice: 10}},
+	}
+	calendar := []domain.DailyBar{shadowBar("sh000300", "2026-08-21", 1, 1, 1, 1, 1), shadowBar("sh000300", "2026-08-24", 1, 1, 1, 1, 1)}
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{"sh000300": calendar}}).Advance(context.Background(), previous, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 24, 16, 0, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Positions) != 1 || report.Positions[0].Symbol != "sh600000" {
+		t.Fatalf("missing historical bars dropped position: %+v", report.Positions)
+	}
+}
+
+func TestAdvanceRetriesFailedExitOnCurrentCloseOnce(t *testing.T) {
+	symbol := "sh600000"
+	bars := []domain.DailyBar{
+		shadowBar(symbol, "2026-08-20", 10, 10, 10, 10, 1_000_000),
+		shadowBar(symbol, "2026-08-21", 10, 11, 11, 11, 1_000_000),
+		shadowBar(symbol, "2026-08-24", 11, 12, 12, 11, 1_000_000),
+	}
+	calendar := append([]domain.DailyBar(nil), bars...)
+	for index := range calendar {
+		calendar[index].Symbol = "sh000300"
+	}
+	cfg := DefaultConfig()
+	amount := 10 * 100
+	fee := transactionFee(float64(amount), "buy", cfg)
+	previous := Report{
+		EngineVersion: ShadowEngineVersion, Config: cfg, AsOf: "2026-08-21", CheckpointPhase: CheckpointClose,
+		InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash - float64(amount) - fee,
+		TotalTurnover: float64(amount), TotalFees: fee, FilledEntries: 1, RejectedOrders: 1,
+		Orders:     []ShadowOrder{{ID: "signal-buy", Symbol: symbol, Side: "buy", AttemptDate: "2026-08-21", Quantity: 100, Price: 10, RawPrice: 10, Amount: 1000, Status: OrderFilled}},
+		Rejections: []ShadowRejection{{OrderID: "signal-sell", Symbol: symbol, Side: "sell", AttemptDate: "2026-08-21", Reason: "卖出日一字板或停牌，无法执行"}},
+		Positions:  []ShadowOpenPosition{{SignalID: "signal", Symbol: symbol, EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10, EntryAmount: 1000, EntryFee: fee, SignalClose: 10, TargetExitDate: "2026-08-21"}},
+	}
+	evaluator := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}})
+	report, err := evaluator.Advance(context.Background(), previous, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 24, 16, 0, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CompletedTrades != 1 || len(report.Positions) != 0 || len(report.Orders) != 2 {
+		t.Fatalf("failed exit was not retried at current close: %+v", report)
+	}
+	second, err := evaluator.Advance(context.Background(), report, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 24, 16, 0, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Orders) != len(report.Orders) || len(second.Trades) != len(report.Trades) {
+		t.Fatalf("same close checkpoint duplicated exit: before=%d/%d after=%d/%d", len(report.Orders), len(report.Trades), len(second.Orders), len(second.Trades))
 	}
 }

@@ -2,6 +2,9 @@ package paper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -100,12 +103,17 @@ type ShadowTrade struct {
 }
 
 type ShadowOpenPosition struct {
+	SignalID                string  `json:"signal_id,omitempty"`
 	Symbol                  string  `json:"symbol"`
 	Name                    string  `json:"name,omitempty"`
 	SignalDate              string  `json:"signal_date"`
 	EntryDate               string  `json:"entry_date"`
 	Quantity                int     `json:"quantity"`
 	EntryPrice              float64 `json:"entry_price"`
+	EntryAmount             float64 `json:"entry_amount,omitempty"`
+	EntryFee                float64 `json:"entry_fee,omitempty"`
+	SignalClose             float64 `json:"signal_close,omitempty"`
+	AvailableQuantity       int     `json:"available_quantity"`
 	LastDate                string  `json:"last_date"`
 	LastPrice               float64 `json:"last_price"`
 	MarketValue             float64 `json:"market_value"`
@@ -126,6 +134,9 @@ type PositionQuote struct {
 
 type Report struct {
 	EngineVersion            string               `json:"engine_version,omitempty"`
+	ConfigFingerprint        string               `json:"config_fingerprint,omitempty"`
+	SignalLimit              int                  `json:"signal_limit,omitempty"`
+	CheckpointPhase          string               `json:"checkpoint_phase,omitempty"`
 	GeneratedAt              time.Time            `json:"generated_at"`
 	ValuedAt                 *time.Time           `json:"valued_at,omitempty"`
 	AsOf                     string               `json:"as_of"`
@@ -151,7 +162,71 @@ type Report struct {
 	Warnings                 []string             `json:"warnings,omitempty"`
 }
 
-const ShadowEngineVersion = "tplus1-v2"
+const (
+	ShadowEngineVersion = "tplus1-v3"
+	CheckpointOpen      = "open"
+	CheckpointClose     = "close"
+)
+
+var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+// ConfigFingerprint identifies the execution assumptions that produced a
+// report. It lets the web layer reject a cached account when the user changes
+// minimum score, holding window or any future execution parameter.
+func ConfigFingerprint(cfg Config) string {
+	return OptionsFingerprint(cfg, 0)
+}
+
+func OptionsFingerprint(cfg Config, limit int) string {
+	canonical := canonicalConfig(cfg)
+	data, _ := json.Marshal(struct {
+		Config Config `json:"config"`
+		Limit  int    `json:"limit"`
+	}{Config: canonical, Limit: limit})
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+type Checkpoint struct {
+	Date  string `json:"date"`
+	Phase string `json:"phase"`
+}
+
+// TradingCheckpointAt separates events known at the open from exits that need
+// a completed close. The benchmark calendar prevents weekend/holiday advances.
+func TradingCheckpointAt(now time.Time, calendarDates []string) Checkpoint {
+	local := now.In(shanghaiLocation)
+	today := local.Format("2006-01-02")
+	todayIndex := sort.SearchStrings(calendarDates, today)
+	todayIsTrading := todayIndex < len(calendarDates) && calendarDates[todayIndex] == today
+	marketOpen := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, shanghaiLocation)
+	closeSettled := time.Date(local.Year(), local.Month(), local.Day(), 15, 5, 0, 0, shanghaiLocation)
+	if todayIsTrading && !local.Before(marketOpen) {
+		phase := CheckpointOpen
+		if !local.Before(closeSettled) {
+			phase = CheckpointClose
+		}
+		return Checkpoint{Date: today, Phase: phase}
+	}
+	for index := len(calendarDates) - 1; index >= 0; index-- {
+		date := calendarDates[index]
+		if date != "" && date < today {
+			return Checkpoint{Date: date, Phase: CheckpointClose}
+		}
+	}
+	if len(calendarDates) > 0 {
+		return Checkpoint{Date: calendarDates[0], Phase: CheckpointClose}
+	}
+	phase := CheckpointClose
+	if !local.Before(marketOpen) && local.Before(closeSettled) {
+		phase = CheckpointOpen
+	}
+	return Checkpoint{Date: today, Phase: phase}
+}
+
+func TradingCheckpointDate(now time.Time, calendarDates []string) string {
+	return TradingCheckpointAt(now, calendarDates).Date
+}
 
 // RevaluePositions updates only mark-to-market fields. It never changes fills,
 // quantities, cash or completed trades, so an intraday quote cannot become a
@@ -171,8 +246,14 @@ func RevaluePositions(report Report, quotes []PositionQuote, valuedAt time.Time)
 		if !found {
 			continue
 		}
-		entryAmount := position.EntryPrice * float64(position.Quantity)
-		entryCost := entryAmount + transactionFee(entryAmount, "buy", report.Config)
+		entryAmount := position.EntryAmount
+		if entryAmount <= 0 {
+			entryAmount = position.EntryPrice * float64(position.Quantity)
+		}
+		entryCost := entryAmount + position.EntryFee
+		if entryCost <= entryAmount {
+			entryCost = entryAmount + transactionFee(entryAmount, "buy", report.Config)
+		}
 		marketValue := quote.Price * float64(position.Quantity)
 		exitFee := transactionFee(marketValue, "sell", report.Config)
 		profit := marketValue - exitFee - entryCost
@@ -221,6 +302,27 @@ func ValidateTransition(previous, next Report) error {
 	for index := range previousTrades {
 		if !sameSettledTrade(previousTrades[index], nextTrades[index]) {
 			return fmt.Errorf("截至 %s 的完成交易被改写: %s", previous.AsOf, previousTrades[index].ID)
+		}
+	}
+	previousRejections := rejectionsThrough(previous.Rejections, previous.AsOf)
+	nextRejections := rejectionsThrough(next.Rejections, previous.AsOf)
+	if len(previousRejections) != len(nextRejections) {
+		return fmt.Errorf("截至 %s 的拒绝记录数量从 %d 变为 %d", previous.AsOf, len(previousRejections), len(nextRejections))
+	}
+	for index := range previousRejections {
+		if !sameRejection(previousRejections[index], nextRejections[index]) {
+			return fmt.Errorf("截至 %s 的拒绝记录被改写: %s", previous.AsOf, previousRejections[index].OrderID)
+		}
+	}
+	if previous.EngineVersion == ShadowEngineVersion {
+		metrics := ledgerMetricsThrough(next, previous.AsOf)
+		if !sameFloat(previous.RemainingCash, metrics.remainingCash) ||
+			!sameFloat(previous.TotalTurnover, metrics.totalTurnover) ||
+			!sameFloat(previous.TotalFees, metrics.totalFees) ||
+			previous.FilledEntries != metrics.filledEntries ||
+			previous.CompletedTrades != metrics.completedTrades ||
+			previous.RejectedOrders != metrics.rejectedOrders {
+			return fmt.Errorf("截至 %s 的账户现金、费用或成交统计被改写", previous.AsOf)
 		}
 	}
 	for _, position := range previous.Positions {
@@ -273,6 +375,33 @@ func tradesThrough(trades []ShadowTrade, date string) []ShadowTrade {
 	return result
 }
 
+func rejectionsThrough(rejections []ShadowRejection, date string) []ShadowRejection {
+	result := make([]ShadowRejection, 0, len(rejections))
+	for _, rejection := range rejections {
+		eventDate := rejection.AttemptDate
+		if eventDate == "" {
+			eventDate = rejection.SignalDate
+		}
+		if eventDate != "" && eventDate <= date {
+			result = append(result, rejection)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		leftDate, rightDate := result[i].AttemptDate, result[j].AttemptDate
+		if leftDate == "" {
+			leftDate = result[i].SignalDate
+		}
+		if rightDate == "" {
+			rightDate = result[j].SignalDate
+		}
+		if leftDate == rightDate {
+			return result[i].OrderID < result[j].OrderID
+		}
+		return leftDate < rightDate
+	})
+	return result
+}
+
 func sameSettledOrder(left, right ShadowOrder) bool {
 	return left.ID == right.ID && left.Symbol == right.Symbol && left.Side == right.Side &&
 		left.SignalDate == right.SignalDate && left.AttemptDate == right.AttemptDate &&
@@ -285,6 +414,47 @@ func sameSettledTrade(left, right ShadowTrade) bool {
 		left.EntryDate == right.EntryDate && left.ExitDate == right.ExitDate && left.Quantity == right.Quantity &&
 		sameFloat(left.EntryPrice, right.EntryPrice) && sameFloat(left.ExitPrice, right.ExitPrice) &&
 		sameFloat(left.NetProfit, right.NetProfit) && sameFloat(left.TotalFee, right.TotalFee)
+}
+
+func sameRejection(left, right ShadowRejection) bool {
+	return left.OrderID == right.OrderID && left.Symbol == right.Symbol && left.Side == right.Side &&
+		left.SignalDate == right.SignalDate && left.AttemptDate == right.AttemptDate && left.Reason == right.Reason
+}
+
+type ledgerMetrics struct {
+	remainingCash   float64
+	totalTurnover   float64
+	totalFees       float64
+	filledEntries   int
+	completedTrades int
+	rejectedOrders  int
+}
+
+func ledgerMetricsThrough(report Report, date string) ledgerMetrics {
+	cfg := canonicalConfig(report.Config)
+	cash := report.InitialCash
+	if cash <= 0 || !finite(cash) {
+		cash = cfg.InitialCash
+	}
+	metrics := ledgerMetrics{remainingCash: cash}
+	for _, order := range ordersThrough(report.Orders, date) {
+		if order.Status != OrderFilled {
+			continue
+		}
+		fee := transactionFee(order.Amount, order.Side, cfg)
+		metrics.totalTurnover += order.Amount
+		metrics.totalFees += fee
+		if order.Side == "sell" {
+			cash += order.Amount - fee
+		} else {
+			cash -= order.Amount + fee
+			metrics.filledEntries++
+		}
+	}
+	metrics.remainingCash = cash
+	metrics.completedTrades = len(tradesThrough(report.Trades, date))
+	metrics.rejectedOrders = len(rejectionsThrough(report.Rejections, date))
+	return metrics
 }
 
 func matchingPosition(positions []ShadowOpenPosition, target ShadowOpenPosition) (ShadowOpenPosition, bool) {
@@ -324,20 +494,335 @@ func NewEvaluator(history HistoryClient) *Evaluator {
 }
 
 type shadowPlan struct {
-	signal      realtime.Signal
-	bars        []domain.DailyBar
-	signalClose float64
-	capacity    float64
-	entryIndex  int
-	exitIndex   int
-	entryDate   string
-	exitDate    string
+	signal         realtime.Signal
+	bars           []domain.DailyBar
+	signalClose    float64
+	capacity       float64
+	entryIndex     int
+	exitIndex      int
+	entryDate      string
+	exitDate       string
+	targetExitDate string
 }
 
 type shadowPosition struct {
 	plan      shadowPlan
 	entry     ShadowOrder
 	entryCost float64
+	fallback  *ShadowOpenPosition
+}
+
+func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []realtime.Signal, options Options) (Report, error) {
+	if e == nil || e.history == nil {
+		return Report{}, fmt.Errorf("影子执行评估器未初始化")
+	}
+	cfg := canonicalConfig(options.Config)
+	now := e.now
+	if options.Now != nil {
+		now = options.Now
+	}
+	if now == nil {
+		now = time.Now
+	}
+	calendarBars, calendarError := e.history.FetchDailyBars(ctx, "sh000300")
+	calendarDates := barDates(normalizedBars(calendarBars))
+	checkpoint := TradingCheckpointAt(now(), calendarDates)
+	if calendarError != nil || len(calendarDates) == 0 {
+		previous.Warnings = append(previous.Warnings, "沪深300交易日历不可用，停牌识别将退化为个股交易日")
+	}
+	report := cloneReport(previous)
+	report.EngineVersion = ShadowEngineVersion
+	report.Config = cfg
+	report.ConfigFingerprint = OptionsFingerprint(cfg, options.Limit)
+	report.SignalLimit = options.Limit
+	report.GeneratedAt = now()
+	report.AsOf = checkpoint.Date
+	report.CheckpointPhase = checkpoint.Phase
+	report.SignalCount = len(signals)
+	if report.AsOf < previous.AsOf {
+		return previous, fmt.Errorf("影子账户检查点倒退: %s -> %s", previous.AsOf, report.AsOf)
+	}
+	active := make(map[string]shadowPosition, len(previous.Positions))
+	for _, position := range previous.Positions {
+		bars, err := e.history.FetchDailyBars(ctx, position.Symbol)
+		if err != nil || len(bars) == 0 {
+			report.Warnings = append(report.Warnings, position.Symbol+" 持仓日K不可用，保留原持仓")
+			preserved := position
+			active[position.Symbol] = shadowPosition{fallback: &preserved}
+			continue
+		}
+		bars = normalizedBars(bars)
+		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Price: position.SignalClose}
+		if signal.ID == "" {
+			signal.ID = position.Symbol + "-" + position.EntryDate
+		}
+		if position.SignalDate != "" {
+			signal.AsOf = parseShanghaiDate(position.SignalDate)
+		}
+		entry := ShadowOrder{ID: orderID(signal, "buy"), Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled}
+		if entry.Amount <= 0 {
+			entry.Amount = position.EntryPrice * float64(position.Quantity)
+		}
+		entryCost := entry.Amount + position.EntryFee
+		if entryCost <= 0 {
+			entryCost = entry.Amount + transactionFee(entry.Amount, "buy", cfg)
+		}
+		plan := shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose, entryDate: "", exitDate: position.TargetExitDate, targetExitDate: position.TargetExitDate}
+		plan.entryIndex = barIndex(bars, position.EntryDate)
+		plan.exitIndex = barIndex(bars, position.TargetExitDate)
+		active[position.Symbol] = shadowPosition{plan: plan, entry: entry, entryCost: entryCost}
+	}
+	newPlans, err := e.plansAfter(ctx, signals, cfg, previous.AsOf, checkpoint, calendarDates)
+	if err != nil {
+		return previous, err
+	}
+	for symbol, position := range active {
+		if position.fallback != nil {
+			continue
+		}
+		if position.plan.exitDate == "" || checkpoint.Phase != CheckpointClose || position.plan.exitDate > checkpoint.Date {
+			position.plan.exitDate = ""
+			position.plan.exitIndex = -1
+		} else if position.plan.exitDate < checkpoint.Date {
+			// A limit-locked/停牌 exit is retried on the current settled close,
+			// rather than replaying the historical target date forever.
+			position.plan.exitDate = checkpoint.Date
+			position.plan.exitIndex = barIndex(position.plan.bars, checkpoint.Date)
+		}
+		active[symbol] = position
+		newPlans = append(newPlans, position.plan)
+	}
+	if previous.EngineVersion != ShadowEngineVersion && report.TotalTurnover <= 0 {
+		report.TotalTurnover = filledOrderTurnover(report.Orders)
+	}
+	report = simulateFrom(report, newPlans, cfg, report.RemainingCash, active)
+	return report, nil
+}
+
+func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, cfg Config, after string, checkpoint Checkpoint, calendarDates []string) ([]shadowPlan, error) {
+	selected := representativeSignals(signals, 0)
+	bySymbol := make(map[string][]realtime.Signal)
+	for _, signal := range selected {
+		bySymbol[signal.Symbol] = append(bySymbol[signal.Symbol], signal)
+	}
+	plans := make([]shadowPlan, 0, len(selected))
+	for symbol, items := range bySymbol {
+		bars, err := e.history.FetchDailyBars(ctx, symbol)
+		if err != nil || len(bars) == 0 {
+			continue
+		}
+		bars = normalizedBars(bars)
+		for _, signal := range items {
+			if signal.State != realtime.StateTriggered && signal.State != realtime.StateWatching || signal.Score < cfg.MinimumScore {
+				continue
+			}
+			plan, reason, pending := makePlan(signal, bars, calendarDates, cfg.HoldingDays)
+			if reason != "" {
+				if pending {
+					continue
+				}
+				continue
+			}
+			if plan.entryDate <= after || plan.entryDate > checkpoint.Date {
+				continue
+			}
+			if plan.exitDate > checkpoint.Date || plan.exitDate == checkpoint.Date && checkpoint.Phase != CheckpointClose {
+				plan.exitDate = ""
+				plan.exitIndex = -1
+			}
+			plans = append(plans, plan)
+		}
+	}
+	sort.SliceStable(plans, func(i, j int) bool {
+		if plans[i].entryDate == plans[j].entryDate {
+			return plans[i].signal.Score > plans[j].signal.Score
+		}
+		return plans[i].entryDate < plans[j].entryDate
+	})
+	return plans, nil
+}
+
+func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, active map[string]shadowPosition) Report {
+	if !finite(cash) {
+		cash = report.RemainingCash
+	}
+	if executionLedgerEmpty(report) && cash <= 0 {
+		cash = cfg.InitialCash
+	}
+	events := make(map[string][]int)
+	for index, plan := range plans {
+		if plan.entryDate != "" {
+			events[plan.entryDate] = append(events[plan.entryDate], index)
+		}
+		if plan.exitDate != "" {
+			events[plan.exitDate] = append(events[plan.exitDate], index)
+		}
+	}
+	dates := make([]string, 0, len(events))
+	for date := range events {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	for _, date := range dates {
+		indexes := events[date]
+		for _, index := range indexes {
+			plan := plans[index]
+			if plan.exitDate != date {
+				continue
+			}
+			position, ok := active[plan.signal.Symbol]
+			if !ok {
+				continue
+			}
+			if date <= position.entry.AttemptDate {
+				continue
+			}
+			if plan.exitIndex < 0 || plan.exitIndex >= len(plan.bars) {
+				continue
+			}
+			bar := plan.bars[plan.exitIndex]
+			if onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.exitIndex) || bar.Close <= 0 {
+				rejection := ShadowRejection{OrderID: orderID(plan.signal, "sell"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "sell", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "卖出日一字板或停牌，无法执行"}
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
+				continue
+			}
+			sell := makeOrder(plan.signal, "sell", date, bar.Close, position.entry.Quantity, cfg, 0)
+			sell.Status = OrderFilled
+			fee := transactionFee(sell.Amount, "sell", cfg)
+			cash += sell.Amount - fee
+			report.Orders = append(report.Orders, sell)
+			theoretical := 0.0
+			if plan.signalClose > 0 {
+				theoretical = (bar.Close/plan.signalClose - 1) * 100
+			}
+			executable := safeReturnPercent(sell.Amount-fee-position.entryCost, position.entryCost)
+			report.Trades = append(report.Trades, ShadowTrade{ID: fmt.Sprintf("ST%04d", len(report.Trades)+1), Symbol: plan.signal.Symbol, Name: plan.signal.Name, SignalDate: signalDate(plan.signal), EntryDate: position.entry.AttemptDate, ExitDate: date, Quantity: position.entry.Quantity, SignalClose: plan.signalClose, ExitClose: bar.Close, EntryPrice: position.entry.Price, ExitPrice: sell.Price, TheoreticalReturnPercent: theoretical, ExecutableReturnPercent: executable, ExecutionGapPercent: executable - theoretical, GrossProfit: (sell.Price - position.entry.Price) * float64(sell.Quantity), NetProfit: sell.Amount - fee - position.entryCost, TotalFee: position.entryCost - position.entry.Amount + fee, HoldingDays: plan.exitIndex - plan.entryIndex + 1})
+			report.CompletedTrades++
+			report.TotalTurnover += sell.Amount
+			report.TotalFees += fee
+			delete(active, plan.signal.Symbol)
+		}
+		for _, index := range indexes {
+			plan := plans[index]
+			if plan.entryDate != date {
+				continue
+			}
+			if _, exists := active[plan.signal.Symbol]; exists || plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
+				rejection := ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "已有同股票影子持仓，拒绝重叠开仓"}
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
+				continue
+			}
+			bar := plan.bars[plan.entryIndex]
+			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
+				rejection := ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "次日开盘一字板或停牌，无法执行"}
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
+				continue
+			}
+			capacity := plan.capacity * cfg.MaxParticipationPercent / 100
+			budget := math.Min(cash, cfg.InitialCash*cfg.MaxPositionPercent/100)
+			price := bar.Open * (1 + cfg.SlippageBPS/10000)
+			quantity := int(budget/price/float64(cfg.LotSize)) * cfg.LotSize
+			if capacity > 0 {
+				quantity = minInt(quantity, int(capacity/price/float64(cfg.LotSize))*cfg.LotSize)
+			}
+			if quantity < cfg.LotSize {
+				rejection := ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "资金不足或不足一手"}
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
+				continue
+			}
+			buy := makeOrder(plan.signal, "buy", date, bar.Open, quantity, cfg, capacity)
+			fee := transactionFee(buy.Amount, "buy", cfg)
+			if buy.Amount+fee > cash {
+				continue
+			}
+			buy.Status = OrderFilled
+			cash -= buy.Amount + fee
+			report.Orders = append(report.Orders, buy)
+			report.FilledEntries++
+			report.TotalTurnover += buy.Amount
+			report.TotalFees += fee
+			active[plan.signal.Symbol] = shadowPosition{plan: plan, entry: buy, entryCost: buy.Amount + fee}
+		}
+	}
+	recomputeTradeStats(&report)
+	report.RemainingCash = cash
+	report.OpenPositions = len(active)
+	report.Positions = report.Positions[:0]
+	for _, position := range active {
+		if position.fallback != nil {
+			report.Positions = append(report.Positions, *position.fallback)
+			continue
+		}
+		lastBar := latestBar(position.plan.bars, report.AsOf)
+		marketValue := lastBar.Close * float64(position.entry.Quantity)
+		exitFee := transactionFee(marketValue, "sell", cfg)
+		profit := marketValue - exitFee - position.entryCost
+		report.Positions = append(report.Positions, ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal), EntryDate: position.entry.AttemptDate, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price, EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate})
+	}
+	return report
+}
+
+func tPlusOneAvailableQuantity(entryDate, asOf string, quantity int) int {
+	if entryDate != "" && asOf > entryDate {
+		return quantity
+	}
+	return 0
+}
+
+func hasRejection(rejections []ShadowRejection, target ShadowRejection) bool {
+	for _, rejection := range rejections {
+		if sameRejection(rejection, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func recomputeTradeStats(report *Report) {
+	report.TheoreticalAverageReturn = 0
+	report.ExecutableAverageReturn = 0
+	report.ExecutionGapPercent = 0
+	if len(report.Trades) == 0 {
+		return
+	}
+	for _, trade := range report.Trades {
+		report.TheoreticalAverageReturn += trade.TheoreticalReturnPercent
+		report.ExecutableAverageReturn += trade.ExecutableReturnPercent
+	}
+	report.TheoreticalAverageReturn /= float64(len(report.Trades))
+	report.ExecutableAverageReturn /= float64(len(report.Trades))
+	report.ExecutionGapPercent = report.ExecutableAverageReturn - report.TheoreticalAverageReturn
+}
+
+func filledOrderTurnover(orders []ShadowOrder) float64 {
+	var turnover float64
+	for _, order := range orders {
+		if order.Status == OrderFilled && order.Amount > 0 && finite(order.Amount) {
+			turnover += order.Amount
+		}
+	}
+	return turnover
+}
+
+func cloneReport(report Report) Report {
+	report.Trades = append([]ShadowTrade(nil), report.Trades...)
+	report.Positions = append([]ShadowOpenPosition(nil), report.Positions...)
+	report.Orders = append([]ShadowOrder(nil), report.Orders...)
+	report.Rejections = append([]ShadowRejection(nil), report.Rejections...)
+	report.Warnings = append([]string(nil), report.Warnings...)
+	return report
 }
 
 func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, options Options) (Report, error) {
@@ -357,12 +842,16 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 		limit = 500
 	}
 	selected := representativeSignals(signals, limit)
-	report := Report{EngineVersion: ShadowEngineVersion, GeneratedAt: now(), AsOf: now().Format("2006-01-02"), Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
+	calendarBars, calendarError := e.history.FetchDailyBars(ctx, "sh000300")
+	calendarDates := barDates(normalizedBars(calendarBars))
+	if calendarError != nil || len(calendarDates) == 0 {
+		calendarDates = nil
+	}
+	checkpoint := TradingCheckpointAt(now(), calendarDates)
+	report := Report{EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, options.Limit), SignalLimit: options.Limit, CheckpointPhase: checkpoint.Phase, GeneratedAt: now(), AsOf: checkpoint.Date, Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
 	if len(selected) == 0 {
 		return report, nil
 	}
-	calendarBars, calendarError := e.history.FetchDailyBars(ctx, "sh000300")
-	calendarDates := barDates(normalizedBars(calendarBars))
 	if calendarError != nil || len(calendarDates) == 0 {
 		report.Warnings = append(report.Warnings, "沪深300交易日历不可用，停牌识别将退化为个股交易日")
 	}
@@ -401,6 +890,15 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 					report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(signal, "buy"), Symbol: signal.Symbol, Name: signal.Name, Side: "buy", SignalDate: signalDate(signal), Reason: reason})
 				}
 				continue
+			}
+			if plan.entryDate > report.AsOf {
+				report.PendingCandidates++
+				report.Warnings = append(report.Warnings, signal.Symbol+" "+signalDate(signal)+" 影子窗口待成熟: 次日交易日尚未到达")
+				continue
+			}
+			if plan.exitDate > report.AsOf || (plan.exitDate == report.AsOf && report.CheckpointPhase != CheckpointClose) {
+				plan.exitDate = ""
+				plan.exitIndex = -1
 			}
 			plans = append(plans, plan)
 		}
@@ -547,7 +1045,7 @@ func makePlan(signal realtime.Signal, bars []domain.DailyBar, calendarDates []st
 	if exitDate != "" {
 		exitIndex = barIndex(bars, exitDate)
 	}
-	return shadowPlan{signal: signal, bars: bars, signalClose: signalClose, capacity: capacity, entryIndex: entryIndex, exitIndex: exitIndex, entryDate: entryDate, exitDate: exitDate}, "", false
+	return shadowPlan{signal: signal, bars: bars, signalClose: signalClose, capacity: capacity, entryIndex: entryIndex, exitIndex: exitIndex, entryDate: entryDate, exitDate: exitDate, targetExitDate: exitDate}, "", false
 }
 
 func simulate(report Report, plans []shadowPlan, cfg Config) Report {
@@ -577,8 +1075,11 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 			if !ok || position.plan.signal.ID != plan.signal.ID {
 				continue
 			}
+			if date <= position.entry.AttemptDate {
+				continue
+			}
 			bar := plan.bars[plan.exitIndex]
-			if onePriceBar(bar) || bar.Close <= 0 {
+			if onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.exitIndex) || bar.Close <= 0 {
 				report.RejectedOrders++
 				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(plan.signal, "sell"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "sell", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "卖出日一字板或停牌，无法执行"})
 				continue
@@ -596,7 +1097,7 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 			trade.ExecutionGapPercent = trade.ExecutableReturnPercent - trade.TheoreticalReturnPercent
 			report.Trades = append(report.Trades, trade)
 			report.CompletedTrades++
-			report.TotalTurnover += position.entry.Amount + sell.Amount
+			report.TotalTurnover += sell.Amount
 			report.TotalFees += fee
 			delete(positions, plan.signal.Symbol)
 		}
@@ -611,7 +1112,7 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 				continue
 			}
 			bar := plan.bars[plan.entryIndex]
-			if onePriceBar(bar) || bar.Open <= 0 {
+			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
 				report.RejectedOrders++
 				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "次日开盘一字板或停牌，无法执行"})
 				continue
@@ -643,6 +1144,7 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 			report.Orders = append(report.Orders, buy)
 			cash -= buy.Amount + fee
 			report.FilledEntries++
+			report.TotalTurnover += buy.Amount
 			positions[plan.signal.Symbol] = shadowPosition{plan: plan, entry: buy, entryCost: buy.Amount + fee}
 			report.TotalFees += fee
 		}
@@ -651,17 +1153,15 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 	report.OpenPositions = len(positions)
 	for _, position := range positions {
 		lastBar := latestBar(position.plan.bars, report.AsOf)
-		if lastBar.Close <= 0 {
-			continue
-		}
 		marketValue := lastBar.Close * float64(position.entry.Quantity)
 		exitFee := transactionFee(marketValue, "sell", cfg)
 		profit := marketValue - exitFee - position.entryCost
 		report.Positions = append(report.Positions, ShadowOpenPosition{
-			Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal),
+			SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal),
 			EntryDate: position.entry.AttemptDate, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price,
+			EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity),
 			LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit,
-			UnrealizedReturnPercent: profit / position.entryCost * 100, TargetExitDate: position.plan.exitDate,
+			UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate,
 		})
 	}
 	sort.SliceStable(report.Positions, func(i, j int) bool { return report.Positions[i].EntryDate > report.Positions[j].EntryDate })
@@ -700,6 +1200,14 @@ func signalDate(signal realtime.Signal) string {
 		return signal.AsOf.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02")
 	}
 	return signal.DataDate
+}
+
+func parseShanghaiDate(value string) time.Time {
+	parsed, err := time.ParseInLocation("2006-01-02", value, shanghaiLocation)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 func normalizedBars(bars []domain.DailyBar) []domain.DailyBar {
 	result := append([]domain.DailyBar(nil), bars...)
@@ -752,6 +1260,48 @@ func latestBar(bars []domain.DailyBar, asOf string) domain.DailyBar {
 	return domain.DailyBar{}
 }
 func onePriceBar(bar domain.DailyBar) bool { return bar.High > 0 && math.Abs(bar.High-bar.Low) < 1e-9 }
+
+func safeReturnPercent(profit, cost float64) float64 {
+	if cost <= 0 || !finite(cost) || !finite(profit) {
+		return 0
+	}
+	return profit / cost * 100
+}
+
+// DailyBar has no explicit limit-price fields. This conservative approximation
+// rejects an opening/closing bar that is pinned to the inferred board limit,
+// while leaving ordinary volatile bars executable.
+func limitLockedAtEntry(signal realtime.Signal, bars []domain.DailyBar, index int) bool {
+	return limitLockedAtBar(signal.Symbol, bars, index, true)
+}
+
+func limitLockedAtExit(signal realtime.Signal, bars []domain.DailyBar, index int) bool {
+	return limitLockedAtBar(signal.Symbol, bars, index, false)
+}
+
+func limitLockedAtBar(symbol string, bars []domain.DailyBar, index int, opening bool) bool {
+	if index <= 0 || index >= len(bars) {
+		return false
+	}
+	bar, previous := bars[index], bars[index-1]
+	if previous.Close <= 0 || bar.Open <= 0 || bar.Close <= 0 {
+		return false
+	}
+	limitPercent := 0.10
+	code := strings.TrimPrefix(strings.TrimPrefix(symbol, "sh"), "sz")
+	if strings.HasPrefix(code, "30") || strings.HasPrefix(code, "68") {
+		limitPercent = 0.20
+	}
+	if strings.HasPrefix(code, "8") || strings.HasPrefix(code, "4") {
+		limitPercent = 0.30
+	}
+	upper, lower := previous.Close*(1+limitPercent), previous.Close*(1-limitPercent)
+	price := bar.Open
+	if !opening {
+		price = bar.Close
+	}
+	return onePriceBar(bar) && (math.Abs(price-upper) <= math.Max(.01, upper*.001) || math.Abs(price-lower) <= math.Max(.01, lower*.001))
+}
 func minInt(a, b int) int {
 	if a < b {
 		return a
