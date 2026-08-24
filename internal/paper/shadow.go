@@ -51,19 +51,24 @@ type Options struct {
 }
 
 type ShadowOrder struct {
-	ID             string  `json:"id"`
-	Symbol         string  `json:"symbol"`
-	Name           string  `json:"name,omitempty"`
-	Side           string  `json:"side"`
-	SignalDate     string  `json:"signal_date"`
-	AttemptDate    string  `json:"attempt_date"`
-	Quantity       int     `json:"quantity"`
-	RawPrice       float64 `json:"raw_price"`
-	Price          float64 `json:"price"`
-	Amount         float64 `json:"amount"`
-	CapacityAmount float64 `json:"capacity_amount,omitempty"`
-	Status         string  `json:"status"`
-	Reason         string  `json:"reason,omitempty"`
+	ID                string   `json:"id"`
+	Symbol            string   `json:"symbol"`
+	Name              string   `json:"name,omitempty"`
+	Side              string   `json:"side"`
+	SignalDate        string   `json:"signal_date"`
+	AttemptDate       string   `json:"attempt_date"`
+	Quantity          int      `json:"quantity"`
+	RawPrice          float64  `json:"raw_price"`
+	Price             float64  `json:"price"`
+	Amount            float64  `json:"amount"`
+	CapacityAmount    float64  `json:"capacity_amount,omitempty"`
+	Status            string   `json:"status"`
+	Reason            string   `json:"reason,omitempty"`
+	ExecutionTime     string   `json:"execution_time,omitempty"`
+	SignalScore       float64  `json:"signal_score,omitempty"`
+	TriggerPrice      float64  `json:"trigger_price,omitempty"`
+	InvalidationPrice float64  `json:"invalidation_price,omitempty"`
+	SignalReasons     []string `json:"signal_reasons,omitempty"`
 }
 
 const (
@@ -72,13 +77,15 @@ const (
 )
 
 type ShadowRejection struct {
-	OrderID     string `json:"order_id"`
-	Symbol      string `json:"symbol"`
-	Name        string `json:"name,omitempty"`
-	Side        string `json:"side"`
-	SignalDate  string `json:"signal_date"`
-	AttemptDate string `json:"attempt_date,omitempty"`
-	Reason      string `json:"reason"`
+	OrderID       string   `json:"order_id"`
+	Symbol        string   `json:"symbol"`
+	Name          string   `json:"name,omitempty"`
+	Side          string   `json:"side"`
+	SignalDate    string   `json:"signal_date"`
+	AttemptDate   string   `json:"attempt_date,omitempty"`
+	Reason        string   `json:"reason"`
+	SignalScore   float64  `json:"signal_score,omitempty"`
+	SignalReasons []string `json:"signal_reasons,omitempty"`
 }
 
 type ShadowTrade struct {
@@ -103,26 +110,31 @@ type ShadowTrade struct {
 }
 
 type ShadowOpenPosition struct {
-	SignalID                string  `json:"signal_id,omitempty"`
-	Symbol                  string  `json:"symbol"`
-	Name                    string  `json:"name,omitempty"`
-	SignalDate              string  `json:"signal_date"`
-	EntryDate               string  `json:"entry_date"`
-	Quantity                int     `json:"quantity"`
-	EntryPrice              float64 `json:"entry_price"`
-	EntryAmount             float64 `json:"entry_amount,omitempty"`
-	EntryFee                float64 `json:"entry_fee,omitempty"`
-	SignalClose             float64 `json:"signal_close,omitempty"`
-	AvailableQuantity       int     `json:"available_quantity"`
-	LastDate                string  `json:"last_date"`
-	LastPrice               float64 `json:"last_price"`
-	MarketValue             float64 `json:"market_value"`
-	UnrealizedProfit        float64 `json:"unrealized_profit"`
-	UnrealizedReturnPercent float64 `json:"unrealized_return_percent"`
-	TargetExitDate          string  `json:"target_exit_date,omitempty"`
-	ValuationTime           string  `json:"valuation_time,omitempty"`
-	ValuationSource         string  `json:"valuation_source,omitempty"`
-	RealtimeValuation       bool    `json:"realtime_valuation,omitempty"`
+	SignalID                string   `json:"signal_id,omitempty"`
+	Symbol                  string   `json:"symbol"`
+	Name                    string   `json:"name,omitempty"`
+	SignalDate              string   `json:"signal_date"`
+	EntryDate               string   `json:"entry_date"`
+	Quantity                int      `json:"quantity"`
+	EntryPrice              float64  `json:"entry_price"`
+	EntryAmount             float64  `json:"entry_amount,omitempty"`
+	EntryFee                float64  `json:"entry_fee,omitempty"`
+	SignalClose             float64  `json:"signal_close,omitempty"`
+	AvailableQuantity       int      `json:"available_quantity"`
+	LastDate                string   `json:"last_date"`
+	LastPrice               float64  `json:"last_price"`
+	MarketValue             float64  `json:"market_value"`
+	UnrealizedProfit        float64  `json:"unrealized_profit"`
+	UnrealizedReturnPercent float64  `json:"unrealized_return_percent"`
+	TargetExitDate          string   `json:"target_exit_date,omitempty"`
+	EntryTime               string   `json:"entry_time,omitempty"`
+	SignalScore             float64  `json:"signal_score,omitempty"`
+	TriggerPrice            float64  `json:"trigger_price,omitempty"`
+	InvalidationPrice       float64  `json:"invalidation_price,omitempty"`
+	SignalReasons           []string `json:"signal_reasons,omitempty"`
+	ValuationTime           string   `json:"valuation_time,omitempty"`
+	ValuationSource         string   `json:"valuation_source,omitempty"`
+	RealtimeValuation       bool     `json:"realtime_valuation,omitempty"`
 }
 
 type PositionQuote struct {
@@ -152,6 +164,12 @@ type Report struct {
 	RemainingCash            float64              `json:"remaining_cash"`
 	TotalTurnover            float64              `json:"total_turnover"`
 	TotalFees                float64              `json:"total_fees"`
+	TotalMarketValue         float64              `json:"total_market_value"`
+	TotalEquity              float64              `json:"total_equity"`
+	RealizedProfit           float64              `json:"realized_profit"`
+	UnrealizedProfit         float64              `json:"unrealized_profit"`
+	TotalProfit              float64              `json:"total_profit"`
+	TotalReturnPercent       float64              `json:"total_return_percent"`
 	TheoreticalAverageReturn float64              `json:"theoretical_average_return_percent"`
 	ExecutableAverageReturn  float64              `json:"executable_average_return_percent"`
 	ExecutionGapPercent      float64              `json:"execution_gap_percent"`
@@ -163,7 +181,7 @@ type Report struct {
 }
 
 const (
-	ShadowEngineVersion = "tplus1-v3"
+	ShadowEngineVersion = "tplus1-v6"
 	CheckpointOpen      = "open"
 	CheckpointClose     = "close"
 )
@@ -255,8 +273,7 @@ func RevaluePositions(report Report, quotes []PositionQuote, valuedAt time.Time)
 			entryCost = entryAmount + transactionFee(entryAmount, "buy", report.Config)
 		}
 		marketValue := quote.Price * float64(position.Quantity)
-		exitFee := transactionFee(marketValue, "sell", report.Config)
-		profit := marketValue - exitFee - entryCost
+		profit := marketValue - entryCost
 		position.LastPrice = quote.Price
 		position.MarketValue = marketValue
 		position.UnrealizedProfit = profit
@@ -271,6 +288,7 @@ func RevaluePositions(report Report, quotes []PositionQuote, valuedAt time.Time)
 	if updated {
 		report.ValuedAt = &valuedAt
 	}
+	recomputeAccountMetrics(&report)
 	return report
 }
 
@@ -421,6 +439,10 @@ func sameRejection(left, right ShadowRejection) bool {
 		left.SignalDate == right.SignalDate && left.AttemptDate == right.AttemptDate && left.Reason == right.Reason
 }
 
+func makeRejection(signal realtime.Signal, side, attemptDate, reason string) ShadowRejection {
+	return ShadowRejection{OrderID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Side: side, SignalDate: signalDate(signal), AttemptDate: attemptDate, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...)}
+}
+
 type ledgerMetrics struct {
 	remainingCash   float64
 	totalTurnover   float64
@@ -543,6 +565,16 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		return previous, fmt.Errorf("影子账户检查点倒退: %s -> %s", previous.AsOf, report.AsOf)
 	}
 	active := make(map[string]shadowPosition, len(previous.Positions))
+	archivedSignals := representativeSignals(signals, 0)
+	for index := range report.Rejections {
+		if report.Rejections[index].SignalScore > 0 && len(report.Rejections[index].SignalReasons) > 0 {
+			continue
+		}
+		if signal, found := matchingArchivedRejectionSignal(archivedSignals, report.Rejections[index]); found {
+			report.Rejections[index].SignalScore = signal.Score
+			report.Rejections[index].SignalReasons = append([]string(nil), signal.Reasons...)
+		}
+	}
 	for _, position := range previous.Positions {
 		bars, err := e.history.FetchDailyBars(ctx, position.Symbol)
 		if err != nil || len(bars) == 0 {
@@ -553,23 +585,64 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		}
 		bars = normalizedBars(bars)
 		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Price: position.SignalClose}
+		if enriched, found := matchingArchivedSignal(archivedSignals, position); found {
+			signal.ID = enriched.ID
+			if signal.Name == "" {
+				signal.Name = enriched.Name
+			}
+			if signal.Price <= 0 {
+				signal.Price = enriched.Price
+			}
+			signal.Score = enriched.Score
+			signal.TriggerPrice = enriched.TriggerPrice
+			signal.InvalidationPrice = enriched.InvalidationPrice
+			signal.Reasons = append([]string(nil), enriched.Reasons...)
+		}
 		if signal.ID == "" {
 			signal.ID = position.Symbol + "-" + position.EntryDate
 		}
 		if position.SignalDate != "" {
 			signal.AsOf = parseShanghaiDate(position.SignalDate)
 		}
-		entry := ShadowOrder{ID: orderID(signal, "buy"), Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled}
+		entry := ShadowOrder{ID: orderID(signal, "buy"), Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled, ExecutionTime: position.EntryTime, SignalScore: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, SignalReasons: append([]string(nil), position.SignalReasons...)}
+		if existing, found := matchingFilledOrder(report.Orders, position); found {
+			entry = existing
+		}
+		if entry.SignalScore <= 0 {
+			entry.SignalScore = signal.Score
+			entry.TriggerPrice = signal.TriggerPrice
+			entry.InvalidationPrice = signal.InvalidationPrice
+			entry.SignalReasons = append([]string(nil), signal.Reasons...)
+		}
+		if entry.ExecutionTime == "" {
+			entry.ExecutionTime = simulatedExecutionTime("buy", position.EntryDate)
+		}
+		if index := matchingOrderIndex(report.Orders, entry); index >= 0 {
+			report.Orders[index].ExecutionTime = entry.ExecutionTime
+			if report.Orders[index].SignalScore <= 0 {
+				report.Orders[index].SignalScore = entry.SignalScore
+				report.Orders[index].TriggerPrice = entry.TriggerPrice
+				report.Orders[index].InvalidationPrice = entry.InvalidationPrice
+				report.Orders[index].SignalReasons = append([]string(nil), entry.SignalReasons...)
+			}
+		}
 		if entry.Amount <= 0 {
 			entry.Amount = position.EntryPrice * float64(position.Quantity)
 		}
 		entryCost := entry.Amount + position.EntryFee
-		if entryCost <= 0 {
+		if entryCost <= entry.Amount {
 			entryCost = entry.Amount + transactionFee(entry.Amount, "buy", cfg)
 		}
-		plan := shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose, entryDate: "", exitDate: position.TargetExitDate, targetExitDate: position.TargetExitDate}
+		targetExitDate := position.TargetExitDate
+		if targetExitDate == "" {
+			targetExitDate = holdingExitDate(calendarDates, position.EntryDate, cfg.HoldingDays)
+		}
+		if targetExitDate == "" {
+			targetExitDate = holdingExitDate(barDates(bars), position.EntryDate, cfg.HoldingDays)
+		}
+		plan := shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose, entryDate: "", exitDate: targetExitDate, targetExitDate: targetExitDate}
 		plan.entryIndex = barIndex(bars, position.EntryDate)
-		plan.exitIndex = barIndex(bars, position.TargetExitDate)
+		plan.exitIndex = barIndex(bars, targetExitDate)
 		active[position.Symbol] = shadowPosition{plan: plan, entry: entry, entryCost: entryCost}
 	}
 	newPlans, err := e.plansAfter(ctx, signals, cfg, previous.AsOf, checkpoint, calendarDates)
@@ -642,6 +715,74 @@ func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, c
 	return plans, nil
 }
 
+func matchingArchivedSignal(signals []realtime.Signal, position ShadowOpenPosition) (realtime.Signal, bool) {
+	var best realtime.Signal
+	found := false
+	for _, signal := range signals {
+		if signal.Symbol != position.Symbol || signalDate(signal) != position.SignalDate {
+			continue
+		}
+		if !found || signal.Score > best.Score || (signal.Score == best.Score && signal.AsOf.After(best.AsOf)) {
+			best = signal
+			found = true
+		}
+	}
+	return best, found
+}
+
+func matchingArchivedRejectionSignal(signals []realtime.Signal, rejection ShadowRejection) (realtime.Signal, bool) {
+	for _, signal := range signals {
+		if orderID(signal, rejection.Side) == rejection.OrderID {
+			return signal, true
+		}
+	}
+	var best realtime.Signal
+	found := false
+	for _, signal := range signals {
+		if signal.Symbol != rejection.Symbol || signalDate(signal) != rejection.SignalDate {
+			continue
+		}
+		if !found || signal.Score > best.Score || (signal.Score == best.Score && signal.AsOf.After(best.AsOf)) {
+			best = signal
+			found = true
+		}
+	}
+	return best, found
+}
+
+func matchingFilledOrder(orders []ShadowOrder, position ShadowOpenPosition) (ShadowOrder, bool) {
+	for _, order := range orders {
+		if order.Status == OrderFilled && order.Side == "buy" && order.Symbol == position.Symbol && order.AttemptDate == position.EntryDate && order.Quantity == position.Quantity {
+			return order, true
+		}
+	}
+	return ShadowOrder{}, false
+}
+
+func matchingOrderIndex(orders []ShadowOrder, target ShadowOrder) int {
+	for index, order := range orders {
+		if order.Side == target.Side && order.Symbol == target.Symbol && order.AttemptDate == target.AttemptDate && order.Quantity == target.Quantity {
+			return index
+		}
+	}
+	return -1
+}
+
+func holdingExitDate(calendarDates []string, entryDate string, holdingDays int) string {
+	if entryDate == "" || holdingDays <= 0 || len(calendarDates) == 0 {
+		return ""
+	}
+	entryIndex := sort.SearchStrings(calendarDates, entryDate)
+	if entryIndex >= len(calendarDates) || calendarDates[entryIndex] != entryDate {
+		return ""
+	}
+	exitIndex := entryIndex + holdingDays - 1
+	if exitIndex >= len(calendarDates) {
+		return ""
+	}
+	return calendarDates[exitIndex]
+}
+
 func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, active map[string]shadowPosition) Report {
 	if !finite(cash) {
 		cash = report.RemainingCash
@@ -682,7 +823,7 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 			}
 			bar := plan.bars[plan.exitIndex]
 			if onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.exitIndex) || bar.Close <= 0 {
-				rejection := ShadowRejection{OrderID: orderID(plan.signal, "sell"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "sell", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "卖出日一字板或停牌，无法执行"}
+				rejection := makeRejection(plan.signal, "sell", date, "卖出日一字板或停牌，无法执行")
 				if !hasRejection(report.Rejections, rejection) {
 					report.RejectedOrders++
 					report.Rejections = append(report.Rejections, rejection)
@@ -711,7 +852,7 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 				continue
 			}
 			if _, exists := active[plan.signal.Symbol]; exists || plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
-				rejection := ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "已有同股票影子持仓，拒绝重叠开仓"}
+				rejection := makeRejection(plan.signal, "buy", date, "已有同股票影子持仓，拒绝重叠开仓")
 				if !hasRejection(report.Rejections, rejection) {
 					report.RejectedOrders++
 					report.Rejections = append(report.Rejections, rejection)
@@ -720,7 +861,7 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 			}
 			bar := plan.bars[plan.entryIndex]
 			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
-				rejection := ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "次日开盘一字板或停牌，无法执行"}
+				rejection := makeRejection(plan.signal, "buy", date, "次日开盘一字板或停牌，无法执行")
 				if !hasRejection(report.Rejections, rejection) {
 					report.RejectedOrders++
 					report.Rejections = append(report.Rejections, rejection)
@@ -735,7 +876,7 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 				quantity = minInt(quantity, int(capacity/price/float64(cfg.LotSize))*cfg.LotSize)
 			}
 			if quantity < cfg.LotSize {
-				rejection := ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "资金不足或不足一手"}
+				rejection := makeRejection(plan.signal, "buy", date, "资金不足或不足一手")
 				if !hasRejection(report.Rejections, rejection) {
 					report.RejectedOrders++
 					report.Rejections = append(report.Rejections, rejection)
@@ -767,10 +908,10 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 		}
 		lastBar := latestBar(position.plan.bars, report.AsOf)
 		marketValue := lastBar.Close * float64(position.entry.Quantity)
-		exitFee := transactionFee(marketValue, "sell", cfg)
-		profit := marketValue - exitFee - position.entryCost
-		report.Positions = append(report.Positions, ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal), EntryDate: position.entry.AttemptDate, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price, EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate})
+		profit := marketValue - position.entryCost
+		report.Positions = append(report.Positions, ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal), EntryDate: position.entry.AttemptDate, EntryTime: position.entry.ExecutionTime, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price, EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity), SignalScore: position.plan.signal.Score, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate})
 	}
+	recomputeAccountMetrics(&report)
 	return report
 }
 
@@ -804,6 +945,34 @@ func recomputeTradeStats(report *Report) {
 	report.TheoreticalAverageReturn /= float64(len(report.Trades))
 	report.ExecutableAverageReturn /= float64(len(report.Trades))
 	report.ExecutionGapPercent = report.ExecutableAverageReturn - report.TheoreticalAverageReturn
+}
+
+func recomputeAccountMetrics(report *Report) {
+	initialCash := report.InitialCash
+	if initialCash <= 0 || !finite(initialCash) {
+		initialCash = canonicalConfig(report.Config).InitialCash
+		report.InitialCash = initialCash
+	}
+	marketValue := 0.0
+	for _, position := range report.Positions {
+		if finite(position.MarketValue) {
+			marketValue += position.MarketValue
+		}
+	}
+	realized := 0.0
+	for _, trade := range report.Trades {
+		if finite(trade.NetProfit) {
+			realized += trade.NetProfit
+		}
+	}
+	report.TotalMarketValue = marketValue
+	report.TotalEquity = report.RemainingCash + marketValue
+	report.RealizedProfit = realized
+	report.TotalProfit = report.TotalEquity - initialCash
+	report.UnrealizedProfit = report.TotalProfit - realized
+	if initialCash > 0 {
+		report.TotalReturnPercent = report.TotalProfit / initialCash * 100
+	}
 }
 
 func filledOrderTurnover(orders []ShadowOrder) float64 {
@@ -887,7 +1056,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 					report.Warnings = append(report.Warnings, signal.Symbol+" "+signalDate(signal)+" 影子窗口待成熟: "+reason)
 				} else {
 					report.RejectedOrders++
-					report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(signal, "buy"), Symbol: signal.Symbol, Name: signal.Name, Side: "buy", SignalDate: signalDate(signal), Reason: reason})
+					report.Rejections = append(report.Rejections, makeRejection(signal, "buy", "", reason))
 				}
 				continue
 			}
@@ -1081,7 +1250,7 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 			bar := plan.bars[plan.exitIndex]
 			if onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.exitIndex) || bar.Close <= 0 {
 				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(plan.signal, "sell"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "sell", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "卖出日一字板或停牌，无法执行"})
+				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "sell", date, "卖出日一字板或停牌，无法执行"))
 				continue
 			}
 			sell := makeOrder(plan.signal, "sell", date, bar.Close, position.entry.Quantity, cfg, 0)
@@ -1108,13 +1277,13 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 			}
 			if _, exists := positions[plan.signal.Symbol]; exists {
 				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "已有同股票影子持仓，拒绝重叠开仓"})
+				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, "已有同股票影子持仓，拒绝重叠开仓"))
 				continue
 			}
 			bar := plan.bars[plan.entryIndex]
 			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
 				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: "次日开盘一字板或停牌，无法执行"})
+				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, "次日开盘一字板或停牌，无法执行"))
 				continue
 			}
 			capacity := plan.capacity * cfg.MaxParticipationPercent / 100
@@ -1130,14 +1299,14 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 					reason = "成交额容量不足一手"
 				}
 				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: orderID(plan.signal, "buy"), Symbol: plan.signal.Symbol, Name: plan.signal.Name, Side: "buy", SignalDate: signalDate(plan.signal), AttemptDate: date, Reason: reason})
+				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, reason))
 				continue
 			}
 			buy := makeOrder(plan.signal, "buy", date, bar.Open, quantity, cfg, capacity)
 			fee := transactionFee(buy.Amount, "buy", cfg)
 			if buy.Amount+fee > cash {
 				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, ShadowRejection{OrderID: buy.ID, Symbol: buy.Symbol, Name: buy.Name, Side: "buy", SignalDate: buy.SignalDate, AttemptDate: date, Reason: "资金不足"})
+				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, "资金不足"))
 				continue
 			}
 			buy.Status = OrderFilled
@@ -1154,26 +1323,19 @@ func simulate(report Report, plans []shadowPlan, cfg Config) Report {
 	for _, position := range positions {
 		lastBar := latestBar(position.plan.bars, report.AsOf)
 		marketValue := lastBar.Close * float64(position.entry.Quantity)
-		exitFee := transactionFee(marketValue, "sell", cfg)
-		profit := marketValue - exitFee - position.entryCost
+		profit := marketValue - position.entryCost
 		report.Positions = append(report.Positions, ShadowOpenPosition{
 			SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal),
-			EntryDate: position.entry.AttemptDate, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price,
+			EntryDate: position.entry.AttemptDate, EntryTime: position.entry.ExecutionTime, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price,
 			EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity),
+			SignalScore: position.plan.signal.Score, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...),
 			LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit,
 			UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate,
 		})
 	}
 	sort.SliceStable(report.Positions, func(i, j int) bool { return report.Positions[i].EntryDate > report.Positions[j].EntryDate })
-	if len(report.Trades) > 0 {
-		for _, trade := range report.Trades {
-			report.TheoreticalAverageReturn += trade.TheoreticalReturnPercent
-			report.ExecutableAverageReturn += trade.ExecutableReturnPercent
-		}
-		report.TheoreticalAverageReturn /= float64(len(report.Trades))
-		report.ExecutableAverageReturn /= float64(len(report.Trades))
-		report.ExecutionGapPercent = report.ExecutableAverageReturn - report.TheoreticalAverageReturn
-	}
+	recomputeTradeStats(&report)
+	recomputeAccountMetrics(&report)
 	return report
 }
 
@@ -1183,7 +1345,17 @@ func makeOrder(signal realtime.Signal, side, date string, rawPrice float64, quan
 		direction = -1
 	}
 	price := rawPrice * (1 + direction*cfg.SlippageBPS/10000)
-	return ShadowOrder{ID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Side: side, SignalDate: signalDate(signal), AttemptDate: date, Quantity: quantity, RawPrice: rawPrice, Price: price, Amount: price * float64(quantity), CapacityAmount: capacity, Status: "pending"}
+	return ShadowOrder{ID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Side: side, SignalDate: signalDate(signal), AttemptDate: date, Quantity: quantity, RawPrice: rawPrice, Price: price, Amount: price * float64(quantity), CapacityAmount: capacity, Status: "pending", ExecutionTime: simulatedExecutionTime(side, date), SignalScore: signal.Score, TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...)}
+}
+
+func simulatedExecutionTime(side, date string) string {
+	if date == "" {
+		return ""
+	}
+	if side == "sell" {
+		return date + " 15:00:00"
+	}
+	return date + " 09:30:00"
 }
 
 func transactionFee(amount float64, side string, cfg Config) float64 {

@@ -384,6 +384,15 @@ createApp({
       const source = position.realtime_valuation ? (position.valuation_source || "实时行情") : "日 K"
       return `${quoteTime} · ${source}`
     },
+    shadowRejectionDetail(item) {
+      if (!item) return ""
+      const position = this.shadowPositions.find(candidate => candidate.symbol === item.symbol)
+      if (String(item.reason || "").includes("同股票影子持仓") && position) {
+        const exitPlan = position.target_exit_date ? `计划 ${position.target_exit_date} 收盘退出` : `按 ${this.shadowReport?.config?.holding_days || 5} 个交易日持有窗口退出`
+        return `已有持仓：${position.entry_time || `${position.entry_date} 09:30`}，${position.quantity || 0} 股，${exitPlan}；单股单仓约束下保留原仓，本次信号不重复加仓。`
+      }
+      return item.reason || ""
+    },
     switchRealtimeSection(section) {
       if (!['candidates', 'shadow', 'validation'].includes(section)) return
       this.realtimeSection = section

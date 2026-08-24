@@ -279,7 +279,8 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 .outcome-row strong { overflow:hidden; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
 .outcome-row small { margin-top:2px; color:var(--muted); font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .realtime-outcome-recent .outcome-row { grid-template-columns:minmax(160px,1.6fr) 70px 75px 85px 85px minmax(180px,1fr); min-width:730px; }
-.shadow-positions .outcome-row { grid-template-columns:minmax(180px,1.55fr) 105px 90px minmax(170px,1.25fr) minmax(135px,1fr) minmax(155px,1.1fr); min-width:835px; }
+.shadow-positions .outcome-row { grid-template-columns:minmax(180px,1.45fr) minmax(145px,1.05fr) 100px minmax(170px,1.2fr) minmax(135px,1fr) minmax(155px,1.1fr); min-width:900px; }
+.shadow-orders .outcome-row { grid-template-columns:minmax(160px,1.35fr) 65px minmax(145px,1fr) 75px 85px minmax(190px,1.45fr); min-width:850px; }
 .shadow-positions .valuation-cell { display:flex; min-width:0; align-items:flex-end; flex-direction:column; }
 .shadow-positions .valuation-cell b { display:block; font-size:11px; font-variant-numeric:tabular-nums; }
 .shadow-positions .valuation-cell small { display:block; max-width:100%; text-align:right; }
@@ -383,11 +384,17 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 .realtime-outcome-empty { margin:0 14px 14px; }
 .shadow-execution-panel { margin:0 14px 14px; border:1px solid var(--line); background:var(--panel-soft); }
 .shadow-metrics { margin:0; border:0; border-bottom:1px solid var(--line); }
+.shadow-account-metrics > div { min-height:88px; }
+.shadow-account-metrics .metric-primary { box-shadow:inset 3px 0 0 var(--accent); background:#18242a; }
+.shadow-account-metrics .metric-primary strong { color:#e5f5fa; font-size:18px; }
+.shadow-execution-metrics strong { font-size:15px; }
+.shadow-orders .reason-inline { display:block; max-width:180px; margin-left:auto; white-space:normal; line-height:1.35; }
 .shadow-rejection-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; margin-top:1px; background:var(--line); }
 .shadow-rejection-list span { display:grid; grid-template-columns:auto auto; gap:4px 8px; min-width:0; padding:8px 10px; background:var(--panel); font-size:10px; }
 .shadow-rejection-list b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .shadow-rejection-list small { color:var(--muted); font-size:9px; text-align:right; }
 .shadow-rejection-list em { grid-column:1 / -1; overflow:hidden; color:var(--warn); font-size:9px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
+.shadow-rejection-list i { grid-column:1 / -1; overflow:hidden; color:var(--muted); font-size:9px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
 .strategy-header { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; padding:2px 0 17px; border-bottom:1px solid var(--line); }
 .strategy-header h1 { margin:4px 0 2px; }
 .strategy-header p { margin:5px 0 0; color:var(--muted); font-size:12px; }
@@ -562,4 +569,27 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .realtime-evidence { grid-template-columns:1fr; }
   .component-analysis-head { align-items:flex-start; flex-direction:column; gap:5px; }
   .component-analysis-head .symbol { max-width:100%; text-align:left; }
+  .shadow-positions .outcome-row,
+  .shadow-orders .outcome-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; min-width:0; min-height:0; padding:10px; }
+  .shadow-positions .outcome-row.heading,
+  .shadow-orders .outcome-row.heading { display:none; }
+  .shadow-positions .outcome-row > span,
+  .shadow-orders .outcome-row > span { min-width:0; text-align:left; white-space:normal; }
+  .shadow-positions .outcome-row > span:first-child,
+  .shadow-orders .outcome-row > span:first-child { grid-column:1 / -1; }
+  .shadow-positions .outcome-row > span:nth-child(6),
+  .shadow-orders .outcome-row > span:nth-child(6) { grid-column:1 / -1; }
+  .shadow-positions .outcome-row > span:not(:first-child)::before,
+  .shadow-orders .outcome-row > span:not(:first-child)::before { display:block; margin-bottom:2px; color:var(--muted); font-size:8px; font-weight:500; letter-spacing:.2px; }
+  .shadow-positions .outcome-row > span:nth-child(2)::before { content:'模拟开仓时点'; }
+  .shadow-positions .outcome-row > span:nth-child(3)::before { content:'数量 / 可卖'; }
+  .shadow-positions .outcome-row > span:nth-child(4)::before { content:'最新估值'; }
+  .shadow-positions .outcome-row > span:nth-child(5)::before { content:'市值'; }
+  .shadow-positions .outcome-row > span:nth-child(6)::before { content:'未实现收益'; }
+  .shadow-orders .outcome-row > span:nth-child(2)::before { content:'方向'; }
+  .shadow-orders .outcome-row > span:nth-child(3)::before { content:'模拟成交时点'; }
+  .shadow-orders .outcome-row > span:nth-child(4)::before { content:'数量'; }
+  .shadow-orders .outcome-row > span:nth-child(5)::before { content:'成交价'; }
+  .shadow-orders .outcome-row > span:nth-child(6)::before { content:'触发依据'; }
+  .shadow-orders .reason-inline { max-width:none; margin-left:0; }
 }

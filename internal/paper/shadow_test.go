@@ -264,6 +264,33 @@ func TestRevaluePositionsIgnoresInvalidOrUnknownQuotes(t *testing.T) {
 	}
 }
 
+func TestRevaluePositionsComputesAccountEquityAndTotalReturn(t *testing.T) {
+	cfg := DefaultConfig()
+	entryAmount := 490_000.0
+	entryFee := 152.0
+	report := Report{
+		Config: cfg, InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash - entryAmount - entryFee,
+		Positions: []ShadowOpenPosition{{Symbol: "sh600000", Quantity: 10_000, EntryPrice: 49, EntryAmount: entryAmount, EntryFee: entryFee, LastPrice: 49, MarketValue: entryAmount}},
+	}
+	updated := RevaluePositions(report, []PositionQuote{{Symbol: "sh600000", Price: 50, QuoteTime: "2026-08-24 10:00:00", Source: "test"}}, time.Now())
+	if math.Abs(updated.TotalMarketValue-500_000) > 1e-6 || math.Abs(updated.TotalEquity-1_009_848) > 1e-6 {
+		t.Fatalf("unexpected account totals: %+v", updated)
+	}
+	if updated.UnrealizedProfit == 0 || updated.TotalProfit != updated.UnrealizedProfit || updated.TotalReturnPercent == 0 {
+		t.Fatalf("open-position return was not included: %+v", updated)
+	}
+}
+
+func TestMakeOrderCarriesExecutionTimeAndSignalReasons(t *testing.T) {
+	signal := shadowSignal("signal", "sh600000", "2026-08-20", 82)
+	signal.Reasons = []string{"趋势突破: 站上前高"}
+	signal.TriggerPrice = 10.5
+	order := makeOrder(signal, "buy", "2026-08-21", 11, 100, DefaultConfig(), 1_000_000)
+	if order.ExecutionTime != "2026-08-21 09:30:00" || order.SignalScore != 82 || len(order.SignalReasons) != 1 || order.TriggerPrice != 10.5 {
+		t.Fatalf("missing execution context: %+v", order)
+	}
+}
+
 func TestValidateTransitionRejectsRetroactiveLedgerChanges(t *testing.T) {
 	baseOrder := ShadowOrder{ID: "signal-buy", Symbol: "sh600000", Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 100, RawPrice: 10, Price: 10.005, Amount: 1000.5, Status: OrderFilled}
 	basePosition := ShadowOpenPosition{Symbol: "sh600000", SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10.005}
@@ -371,7 +398,7 @@ func TestAdvancePreservesLedgerAndClosesOnlyAtCloseCheckpoint(t *testing.T) {
 	if closeReport.CompletedTrades != 1 || len(closeReport.Positions) != 0 || len(closeReport.Orders) != 2 || closeReport.TotalTurnover <= openReport.TotalTurnover {
 		t.Fatalf("close checkpoint did not append exit: %+v", closeReport)
 	}
-	if closeReport.Orders[0] != previous.Orders[0] {
+	if !sameSettledOrder(closeReport.Orders[0], previous.Orders[0]) {
 		t.Fatalf("previous order was rewritten: before=%+v after=%+v", previous.Orders[0], closeReport.Orders[0])
 	}
 }
@@ -404,7 +431,7 @@ func TestAdvanceRetriesFailedExitOnCurrentCloseOnce(t *testing.T) {
 		calendar[index].Symbol = "sh000300"
 	}
 	cfg := DefaultConfig()
-	amount := 10 * 100
+	amount := 10.0 * 100
 	fee := transactionFee(float64(amount), "buy", cfg)
 	previous := Report{
 		EngineVersion: ShadowEngineVersion, Config: cfg, AsOf: "2026-08-21", CheckpointPhase: CheckpointClose,
@@ -428,5 +455,62 @@ func TestAdvanceRetriesFailedExitOnCurrentCloseOnce(t *testing.T) {
 	}
 	if len(second.Orders) != len(report.Orders) || len(second.Trades) != len(report.Trades) {
 		t.Fatalf("same close checkpoint duplicated exit: before=%d/%d after=%d/%d", len(report.Orders), len(report.Trades), len(second.Orders), len(second.Trades))
+	}
+}
+
+func TestAdvanceDerivesMissingTargetExitFromTradingCalendar(t *testing.T) {
+	symbol := "sh600000"
+	bars := []domain.DailyBar{
+		shadowBar(symbol, "2026-08-20", 10, 10, 10.2, 9.8, 1_000_000),
+		shadowBar(symbol, "2026-08-21", 10.5, 10.8, 10.9, 10.4, 1_000_000),
+		shadowBar(symbol, "2026-08-24", 11, 11.2, 11.3, 10.9, 1_000_000),
+	}
+	calendar := append([]domain.DailyBar(nil), bars...)
+	for index := range calendar {
+		calendar[index].Symbol = "sh000300"
+	}
+	cfg := DefaultConfig()
+	cfg.HoldingDays = 2
+	amount := 10.5 * 100
+	fee := transactionFee(amount, "buy", cfg)
+	previous := Report{
+		EngineVersion: ShadowEngineVersion, Config: cfg, AsOf: "2026-08-21", CheckpointPhase: CheckpointClose,
+		InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash - amount - fee, FilledEntries: 1, TotalTurnover: amount, TotalFees: fee,
+		Orders:    []ShadowOrder{{ID: "signal-buy", Symbol: symbol, Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 100, RawPrice: 10.5, Price: 10.5, Amount: amount, Status: OrderFilled}},
+		Positions: []ShadowOpenPosition{{SignalID: "signal", Symbol: symbol, SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10.5, EntryAmount: amount, SignalClose: 10}},
+	}
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Advance(context.Background(), previous, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 24, 15, 6, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CompletedTrades != 1 || len(report.Positions) != 0 || len(report.Orders) != 2 {
+		t.Fatalf("missing target exit was not derived: %+v", report)
+	}
+}
+
+func TestAdvanceInfersLegacyEntryFeeForOpenPosition(t *testing.T) {
+	symbol := "sh600000"
+	bars := []domain.DailyBar{
+		shadowBar(symbol, "2026-08-20", 10, 10, 10.2, 9.8, 1_000_000),
+		shadowBar(symbol, "2026-08-21", 10, 11, 11.2, 10, 1_000_000),
+	}
+	calendar := append([]domain.DailyBar(nil), bars...)
+	for index := range calendar {
+		calendar[index].Symbol = "sh000300"
+	}
+	cfg := DefaultConfig()
+	amount := 10.0 * 100
+	previous := Report{
+		EngineVersion: ShadowEngineVersion, Config: cfg, AsOf: "2026-08-20", InitialCash: cfg.InitialCash,
+		RemainingCash: cfg.InitialCash - amount - transactionFee(amount, "buy", cfg), FilledEntries: 1, TotalTurnover: amount,
+		Orders:    []ShadowOrder{{ID: "signal-buy", Symbol: symbol, Side: "buy", AttemptDate: "2026-08-20", Quantity: 100, RawPrice: 10, Price: 10, Amount: amount, Status: OrderFilled}},
+		Positions: []ShadowOpenPosition{{SignalID: "signal", Symbol: symbol, EntryDate: "2026-08-20", Quantity: 100, EntryPrice: 10, EntryAmount: amount}},
+	}
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Advance(context.Background(), previous, nil, Options{Config: cfg, Now: func() time.Time { return time.Date(2026, 8, 21, 10, 0, 0, 0, shanghaiLocation) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Positions) != 1 || report.Positions[0].EntryFee <= 0 || report.Positions[0].UnrealizedProfit >= 100 {
+		t.Fatalf("legacy entry fee was not restored: %+v", report.Positions)
 	}
 }
