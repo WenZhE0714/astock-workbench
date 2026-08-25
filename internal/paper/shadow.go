@@ -22,22 +22,30 @@ type HistoryClient interface {
 }
 
 type Config struct {
-	InitialCash             float64 `json:"initial_cash"`
-	MinimumScore            float64 `json:"minimum_score"`
-	MaxPositionPercent      float64 `json:"max_position_percent"`
-	MaxParticipationPercent float64 `json:"max_participation_percent"`
-	SlippageBPS             float64 `json:"slippage_bps"`
-	CommissionRate          float64 `json:"commission_rate"`
-	MinimumCommission       float64 `json:"minimum_commission"`
-	StampDutyRate           float64 `json:"stamp_duty_rate"`
-	TransferFeeRate         float64 `json:"transfer_fee_rate"`
-	HoldingDays             int     `json:"holding_days"`
-	LotSize                 int     `json:"lot_size"`
+	InitialCash               float64 `json:"initial_cash"`
+	MinimumScore              float64 `json:"minimum_score"`
+	MaxPositionPercent        float64 `json:"max_position_percent"`
+	MaxPortfolioPercent       float64 `json:"max_portfolio_percent"`
+	CashReservePercent        float64 `json:"cash_reserve_percent"`
+	MaxDailyDeploymentPercent float64 `json:"max_daily_deployment_percent"`
+	InitialEntryPercent       float64 `json:"initial_entry_percent"`
+	MaxEntryTranches          int     `json:"max_entry_tranches"`
+	AdditionScoreStep         float64 `json:"addition_score_step"`
+	MaxParticipationPercent   float64 `json:"max_participation_percent"`
+	SlippageBPS               float64 `json:"slippage_bps"`
+	CommissionRate            float64 `json:"commission_rate"`
+	MinimumCommission         float64 `json:"minimum_commission"`
+	StampDutyRate             float64 `json:"stamp_duty_rate"`
+	TransferFeeRate           float64 `json:"transfer_fee_rate"`
+	HoldingDays               int     `json:"holding_days"`
+	LotSize                   int     `json:"lot_size"`
 }
 
 func DefaultConfig() Config {
 	return Config{
 		InitialCash: 1_000_000, MinimumScore: 55, MaxPositionPercent: 20,
+		MaxPortfolioPercent: 80, CashReservePercent: 20, MaxDailyDeploymentPercent: 35,
+		InitialEntryPercent: 50, MaxEntryTranches: 3, AdditionScoreStep: 4,
 		MaxParticipationPercent: 10, SlippageBPS: 5, CommissionRate: .0003,
 		MinimumCommission: 5, StampDutyRate: .0005, TransferFeeRate: .00001,
 		HoldingDays: 5, LotSize: 100,
@@ -69,6 +77,8 @@ type ShadowOrder struct {
 	TriggerPrice      float64  `json:"trigger_price,omitempty"`
 	InvalidationPrice float64  `json:"invalidation_price,omitempty"`
 	SignalReasons     []string `json:"signal_reasons,omitempty"`
+	PositionAction    string   `json:"position_action,omitempty"`
+	PositionSequence  int      `json:"position_sequence,omitempty"`
 }
 
 const (
@@ -90,6 +100,8 @@ type ShadowRejection struct {
 
 type ShadowTrade struct {
 	ID                       string  `json:"id"`
+	EntryOrderID             string  `json:"entry_order_id,omitempty"`
+	ExitOrderID              string  `json:"exit_order_id,omitempty"`
 	Symbol                   string  `json:"symbol"`
 	Name                     string  `json:"name,omitempty"`
 	SignalDate               string  `json:"signal_date"`
@@ -107,34 +119,57 @@ type ShadowTrade struct {
 	NetProfit                float64 `json:"net_profit"`
 	TotalFee                 float64 `json:"total_fee"`
 	HoldingDays              int     `json:"holding_days"`
+	PositionAction           string  `json:"position_action,omitempty"`
+	ExitTime                 string  `json:"exit_time,omitempty"`
 }
 
 type ShadowOpenPosition struct {
-	SignalID                string   `json:"signal_id,omitempty"`
-	Symbol                  string   `json:"symbol"`
-	Name                    string   `json:"name,omitempty"`
-	SignalDate              string   `json:"signal_date"`
-	EntryDate               string   `json:"entry_date"`
-	Quantity                int      `json:"quantity"`
-	EntryPrice              float64  `json:"entry_price"`
-	EntryAmount             float64  `json:"entry_amount,omitempty"`
-	EntryFee                float64  `json:"entry_fee,omitempty"`
-	SignalClose             float64  `json:"signal_close,omitempty"`
-	AvailableQuantity       int      `json:"available_quantity"`
-	LastDate                string   `json:"last_date"`
-	LastPrice               float64  `json:"last_price"`
-	MarketValue             float64  `json:"market_value"`
-	UnrealizedProfit        float64  `json:"unrealized_profit"`
-	UnrealizedReturnPercent float64  `json:"unrealized_return_percent"`
-	TargetExitDate          string   `json:"target_exit_date,omitempty"`
-	EntryTime               string   `json:"entry_time,omitempty"`
-	SignalScore             float64  `json:"signal_score,omitempty"`
-	TriggerPrice            float64  `json:"trigger_price,omitempty"`
-	InvalidationPrice       float64  `json:"invalidation_price,omitempty"`
-	SignalReasons           []string `json:"signal_reasons,omitempty"`
-	ValuationTime           string   `json:"valuation_time,omitempty"`
-	ValuationSource         string   `json:"valuation_source,omitempty"`
-	RealtimeValuation       bool     `json:"realtime_valuation,omitempty"`
+	SignalID                string              `json:"signal_id,omitempty"`
+	Symbol                  string              `json:"symbol"`
+	Name                    string              `json:"name,omitempty"`
+	SignalDate              string              `json:"signal_date"`
+	EntryDate               string              `json:"entry_date"`
+	Quantity                int                 `json:"quantity"`
+	EntryPrice              float64             `json:"entry_price"`
+	EntryAmount             float64             `json:"entry_amount,omitempty"`
+	EntryFee                float64             `json:"entry_fee,omitempty"`
+	SignalClose             float64             `json:"signal_close,omitempty"`
+	AvailableQuantity       int                 `json:"available_quantity"`
+	LastDate                string              `json:"last_date"`
+	LastPrice               float64             `json:"last_price"`
+	MarketValue             float64             `json:"market_value"`
+	UnrealizedProfit        float64             `json:"unrealized_profit"`
+	UnrealizedReturnPercent float64             `json:"unrealized_return_percent"`
+	TargetExitDate          string              `json:"target_exit_date,omitempty"`
+	EntryTime               string              `json:"entry_time,omitempty"`
+	SignalScore             float64             `json:"signal_score,omitempty"`
+	TriggerPrice            float64             `json:"trigger_price,omitempty"`
+	InvalidationPrice       float64             `json:"invalidation_price,omitempty"`
+	SignalReasons           []string            `json:"signal_reasons,omitempty"`
+	ValuationTime           string              `json:"valuation_time,omitempty"`
+	ValuationSource         string              `json:"valuation_source,omitempty"`
+	RealtimeValuation       bool                `json:"realtime_valuation,omitempty"`
+	Lots                    []ShadowPositionLot `json:"lots,omitempty"`
+	AdditionCount           int                 `json:"addition_count,omitempty"`
+	TargetPositionPercent   float64             `json:"target_position_percent,omitempty"`
+}
+
+type ShadowPositionLot struct {
+	OrderID           string   `json:"order_id"`
+	EntryDate         string   `json:"entry_date"`
+	EntryTime         string   `json:"entry_time,omitempty"`
+	Quantity          int      `json:"quantity"`
+	EntryPrice        float64  `json:"entry_price"`
+	EntryAmount       float64  `json:"entry_amount"`
+	EntryFee          float64  `json:"entry_fee"`
+	SignalID          string   `json:"signal_id,omitempty"`
+	SignalDate        string   `json:"signal_date,omitempty"`
+	SignalClose       float64  `json:"signal_close,omitempty"`
+	SignalScore       float64  `json:"signal_score,omitempty"`
+	TriggerPrice      float64  `json:"trigger_price,omitempty"`
+	InvalidationPrice float64  `json:"invalidation_price,omitempty"`
+	SignalReasons     []string `json:"signal_reasons,omitempty"`
+	TargetExitDate    string   `json:"target_exit_date,omitempty"`
 }
 
 type PositionQuote struct {
@@ -178,10 +213,24 @@ type Report struct {
 	Orders                   []ShadowOrder        `json:"orders,omitempty"`
 	Rejections               []ShadowRejection    `json:"rejections,omitempty"`
 	Warnings                 []string             `json:"warnings,omitempty"`
+	Decisions                []ShadowDecision     `json:"decisions,omitempty"`
+}
+
+type ShadowDecision struct {
+	ID                    string   `json:"id"`
+	Symbol                string   `json:"symbol"`
+	Name                  string   `json:"name,omitempty"`
+	Date                  string   `json:"date"`
+	Action                string   `json:"action"`
+	Reason                string   `json:"reason"`
+	SignalScore           float64  `json:"signal_score,omitempty"`
+	SignalReasons         []string `json:"signal_reasons,omitempty"`
+	CurrentQuantity       int      `json:"current_quantity,omitempty"`
+	TargetPositionPercent float64  `json:"target_position_percent,omitempty"`
 }
 
 const (
-	ShadowEngineVersion = "tplus1-v6"
+	ShadowEngineVersion = "tplus1-v7"
 	CheckpointOpen      = "open"
 	CheckpointClose     = "close"
 )
@@ -302,8 +351,8 @@ func ValidateTransition(previous, next Report) error {
 	if next.AsOf < previous.AsOf {
 		return fmt.Errorf("候选账户日期 %s 早于现有账户日期 %s", next.AsOf, previous.AsOf)
 	}
-	previousOrders := ordersThrough(previous.Orders, previous.AsOf)
-	nextOrders := ordersThrough(next.Orders, previous.AsOf)
+	previousOrders := ordersThroughCheckpoint(previous.Orders, previous.AsOf, previous.CheckpointPhase)
+	nextOrders := ordersThroughCheckpoint(next.Orders, previous.AsOf, previous.CheckpointPhase)
 	if len(previousOrders) != len(nextOrders) {
 		return fmt.Errorf("截至 %s 的成交单数量从 %d 变为 %d", previous.AsOf, len(previousOrders), len(nextOrders))
 	}
@@ -312,8 +361,8 @@ func ValidateTransition(previous, next Report) error {
 			return fmt.Errorf("截至 %s 的成交单被改写: %s", previous.AsOf, previousOrders[index].ID)
 		}
 	}
-	previousTrades := tradesThrough(previous.Trades, previous.AsOf)
-	nextTrades := tradesThrough(next.Trades, previous.AsOf)
+	previousTrades := tradesThroughCheckpoint(previous.Trades, previous.AsOf, previous.CheckpointPhase)
+	nextTrades := tradesThroughCheckpoint(next.Trades, previous.AsOf, previous.CheckpointPhase)
 	if len(previousTrades) != len(nextTrades) {
 		return fmt.Errorf("截至 %s 的完成交易数量从 %d 变为 %d", previous.AsOf, len(previousTrades), len(nextTrades))
 	}
@@ -322,8 +371,8 @@ func ValidateTransition(previous, next Report) error {
 			return fmt.Errorf("截至 %s 的完成交易被改写: %s", previous.AsOf, previousTrades[index].ID)
 		}
 	}
-	previousRejections := rejectionsThrough(previous.Rejections, previous.AsOf)
-	nextRejections := rejectionsThrough(next.Rejections, previous.AsOf)
+	previousRejections := rejectionsThroughCheckpoint(previous.Rejections, previous.AsOf, previous.CheckpointPhase)
+	nextRejections := rejectionsThroughCheckpoint(next.Rejections, previous.AsOf, previous.CheckpointPhase)
 	if len(previousRejections) != len(nextRejections) {
 		return fmt.Errorf("截至 %s 的拒绝记录数量从 %d 变为 %d", previous.AsOf, len(previousRejections), len(nextRejections))
 	}
@@ -333,7 +382,7 @@ func ValidateTransition(previous, next Report) error {
 		}
 	}
 	if previous.EngineVersion == ShadowEngineVersion {
-		metrics := ledgerMetricsThrough(next, previous.AsOf)
+		metrics := ledgerMetricsThroughCheckpoint(next, previous.AsOf, previous.CheckpointPhase)
 		if !sameFloat(previous.RemainingCash, metrics.remainingCash) ||
 			!sameFloat(previous.TotalTurnover, metrics.totalTurnover) ||
 			!sameFloat(previous.TotalFees, metrics.totalFees) ||
@@ -345,12 +394,18 @@ func ValidateTransition(previous, next Report) error {
 	}
 	for _, position := range previous.Positions {
 		if nextPosition, found := matchingPosition(next.Positions, position); found {
-			if !samePositionBasis(position, nextPosition) {
+			if position.Quantity == nextPosition.Quantity {
+				if !samePositionBasis(position, nextPosition) {
+					return fmt.Errorf("持仓成本或数量被改写: %s", position.Symbol)
+				}
+				continue
+			}
+			if !positionQuantityTransitionValid(previous, next, position, nextPosition.Quantity) || !positionLotsTransitionValid(previous, next, position, &nextPosition) {
 				return fmt.Errorf("持仓成本或数量被改写: %s", position.Symbol)
 			}
 			continue
 		}
-		if !positionClosedAfter(next.Trades, position, previous.AsOf) {
+		if !positionQuantityTransitionValid(previous, next, position, 0) || !positionLotsTransitionValid(previous, next, position, nil) {
 			return fmt.Errorf("已有持仓无后续卖出记录却消失: %s", position.Symbol)
 		}
 	}
@@ -377,6 +432,39 @@ func ordersThrough(orders []ShadowOrder, date string) []ShadowOrder {
 	return result
 }
 
+func ordersThroughCheckpoint(orders []ShadowOrder, date, phase string) []ShadowOrder {
+	result := make([]ShadowOrder, 0, len(orders))
+	for _, order := range orders {
+		if order.AttemptDate == "" || order.AttemptDate > date {
+			continue
+		}
+		if order.AttemptDate == date && phase == CheckpointOpen && !orderSettledAtOpen(order) {
+			continue
+		}
+		result = append(result, order)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].AttemptDate == result[j].AttemptDate {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].AttemptDate < result[j].AttemptDate
+	})
+	return result
+}
+
+func orderSettledAtOpen(order ShadowOrder) bool {
+	if order.PositionAction == "exit" {
+		return false
+	}
+	if order.Side == "buy" || order.PositionAction == "reduce" {
+		return true
+	}
+	if len(order.ExecutionTime) >= 16 {
+		return order.ExecutionTime[11:16] < "15:00"
+	}
+	return false
+}
+
 func tradesThrough(trades []ShadowTrade, date string) []ShadowTrade {
 	result := make([]ShadowTrade, 0, len(trades))
 	for _, trade := range trades {
@@ -391,6 +479,36 @@ func tradesThrough(trades []ShadowTrade, date string) []ShadowTrade {
 		return result[i].ExitDate < result[j].ExitDate
 	})
 	return result
+}
+
+func tradesThroughCheckpoint(trades []ShadowTrade, date, phase string) []ShadowTrade {
+	result := make([]ShadowTrade, 0, len(trades))
+	for _, trade := range trades {
+		if trade.ExitDate == "" || trade.ExitDate > date {
+			continue
+		}
+		if trade.ExitDate == date && phase == CheckpointOpen && !tradeSettledAtOpen(trade) {
+			continue
+		}
+		result = append(result, trade)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].ExitDate == result[j].ExitDate {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].ExitDate < result[j].ExitDate
+	})
+	return result
+}
+
+func tradeSettledAtOpen(trade ShadowTrade) bool {
+	if trade.PositionAction == "reduce" {
+		return true
+	}
+	if len(trade.ExitTime) >= 16 {
+		return trade.ExitTime[11:16] < "15:00"
+	}
+	return false
 }
 
 func rejectionsThrough(rejections []ShadowRejection, date string) []ShadowRejection {
@@ -420,6 +538,37 @@ func rejectionsThrough(rejections []ShadowRejection, date string) []ShadowReject
 	return result
 }
 
+func rejectionsThroughCheckpoint(rejections []ShadowRejection, date, phase string) []ShadowRejection {
+	result := make([]ShadowRejection, 0, len(rejections))
+	for _, rejection := range rejections {
+		eventDate := rejection.AttemptDate
+		if eventDate == "" {
+			eventDate = rejection.SignalDate
+		}
+		if eventDate == "" || eventDate > date {
+			continue
+		}
+		if eventDate == date && phase == CheckpointOpen && rejection.Side != "buy" {
+			continue
+		}
+		result = append(result, rejection)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		leftDate, rightDate := result[i].AttemptDate, result[j].AttemptDate
+		if leftDate == "" {
+			leftDate = result[i].SignalDate
+		}
+		if rightDate == "" {
+			rightDate = result[j].SignalDate
+		}
+		if leftDate == rightDate {
+			return result[i].OrderID < result[j].OrderID
+		}
+		return leftDate < rightDate
+	})
+	return result
+}
+
 func sameSettledOrder(left, right ShadowOrder) bool {
 	return left.ID == right.ID && left.Symbol == right.Symbol && left.Side == right.Side &&
 		left.SignalDate == right.SignalDate && left.AttemptDate == right.AttemptDate &&
@@ -428,10 +577,12 @@ func sameSettledOrder(left, right ShadowOrder) bool {
 }
 
 func sameSettledTrade(left, right ShadowTrade) bool {
-	return left.ID == right.ID && left.Symbol == right.Symbol && left.SignalDate == right.SignalDate &&
+	return left.ID == right.ID && left.EntryOrderID == right.EntryOrderID && left.ExitOrderID == right.ExitOrderID &&
+		left.Symbol == right.Symbol && left.SignalDate == right.SignalDate &&
 		left.EntryDate == right.EntryDate && left.ExitDate == right.ExitDate && left.Quantity == right.Quantity &&
 		sameFloat(left.EntryPrice, right.EntryPrice) && sameFloat(left.ExitPrice, right.ExitPrice) &&
-		sameFloat(left.NetProfit, right.NetProfit) && sameFloat(left.TotalFee, right.TotalFee)
+		sameFloat(left.NetProfit, right.NetProfit) && sameFloat(left.TotalFee, right.TotalFee) &&
+		left.PositionAction == right.PositionAction && left.ExitTime == right.ExitTime
 }
 
 func sameRejection(left, right ShadowRejection) bool {
@@ -453,13 +604,26 @@ type ledgerMetrics struct {
 }
 
 func ledgerMetricsThrough(report Report, date string) ledgerMetrics {
+	return ledgerMetricsForEvents(report, ordersThrough(report.Orders, date), tradesThrough(report.Trades, date), rejectionsThrough(report.Rejections, date))
+}
+
+func ledgerMetricsThroughCheckpoint(report Report, date, phase string) ledgerMetrics {
+	return ledgerMetricsForEvents(
+		report,
+		ordersThroughCheckpoint(report.Orders, date, phase),
+		tradesThroughCheckpoint(report.Trades, date, phase),
+		rejectionsThroughCheckpoint(report.Rejections, date, phase),
+	)
+}
+
+func ledgerMetricsForEvents(report Report, orders []ShadowOrder, trades []ShadowTrade, rejections []ShadowRejection) ledgerMetrics {
 	cfg := canonicalConfig(report.Config)
 	cash := report.InitialCash
 	if cash <= 0 || !finite(cash) {
 		cash = cfg.InitialCash
 	}
 	metrics := ledgerMetrics{remainingCash: cash}
-	for _, order := range ordersThrough(report.Orders, date) {
+	for _, order := range orders {
 		if order.Status != OrderFilled {
 			continue
 		}
@@ -474,14 +638,14 @@ func ledgerMetricsThrough(report Report, date string) ledgerMetrics {
 		}
 	}
 	metrics.remainingCash = cash
-	metrics.completedTrades = len(tradesThrough(report.Trades, date))
-	metrics.rejectedOrders = len(rejectionsThrough(report.Rejections, date))
+	metrics.completedTrades = len(trades)
+	metrics.rejectedOrders = len(rejections)
 	return metrics
 }
 
 func matchingPosition(positions []ShadowOpenPosition, target ShadowOpenPosition) (ShadowOpenPosition, bool) {
 	for _, position := range positions {
-		if position.Symbol == target.Symbol && position.EntryDate == target.EntryDate {
+		if position.Symbol == target.Symbol {
 			return position, true
 		}
 	}
@@ -489,17 +653,177 @@ func matchingPosition(positions []ShadowOpenPosition, target ShadowOpenPosition)
 }
 
 func samePositionBasis(left, right ShadowOpenPosition) bool {
-	return left.Symbol == right.Symbol && left.SignalDate == right.SignalDate && left.EntryDate == right.EntryDate &&
-		left.Quantity == right.Quantity && sameFloat(left.EntryPrice, right.EntryPrice)
-}
-
-func positionClosedAfter(trades []ShadowTrade, position ShadowOpenPosition, date string) bool {
-	for _, trade := range trades {
-		if trade.Symbol == position.Symbol && trade.EntryDate == position.EntryDate && trade.Quantity == position.Quantity && trade.ExitDate > date {
+	if left.Symbol != right.Symbol {
+		return false
+	}
+	if len(left.Lots) > 0 {
+		if len(left.Lots) != len(right.Lots) {
+			return false
+		}
+		for _, previousLot := range left.Lots {
+			if !containsSamePositionLot(right.Lots, previousLot) {
+				return false
+			}
+		}
+		return true
+	}
+	if left.Quantity == right.Quantity {
+		return left.SignalDate == right.SignalDate && left.EntryDate == right.EntryDate && sameFloat(left.EntryPrice, right.EntryPrice)
+	}
+	for _, nextLot := range right.Lots {
+		if nextLot.EntryDate == left.EntryDate && nextLot.Quantity == left.Quantity && sameFloat(nextLot.EntryPrice, left.EntryPrice) {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizePositionLots(position ShadowOpenPosition, orders []ShadowOrder, cfg Config, calendarDates, symbolDates []string) []shadowLot {
+	if len(position.Lots) == 0 {
+		entry := ShadowOrder{ID: position.SignalID + "-buy", Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled, ExecutionTime: position.EntryTime, SignalScore: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, SignalReasons: append([]string(nil), position.SignalReasons...)}
+		if existing, found := matchingFilledOrder(orders, position); found {
+			entry = existing
+		}
+		if entry.ID == "" {
+			entry.ID = position.Symbol + "-" + position.EntryDate + "-buy"
+		}
+		if entry.Amount <= 0 {
+			entry.Amount = position.EntryPrice * float64(position.Quantity)
+		}
+		if entry.ExecutionTime == "" {
+			entry.ExecutionTime = simulatedExecutionTime("buy", position.EntryDate)
+		}
+		entryCost := entry.Amount + position.EntryFee
+		if entryCost <= entry.Amount {
+			entryCost = entry.Amount + transactionFee(entry.Amount, "buy", cfg)
+		}
+		target := position.TargetExitDate
+		if target == "" {
+			target = holdingExitDate(calendarDates, position.EntryDate, cfg.HoldingDays)
+		}
+		if target == "" {
+			target = holdingExitDate(symbolDates, position.EntryDate, cfg.HoldingDays)
+		}
+		return []shadowLot{{entry: entry, entryCost: entryCost, plan: shadowPlan{targetExitDate: target}}}
+	}
+	lots := make([]shadowLot, 0, len(position.Lots))
+	for _, lot := range position.Lots {
+		entry := ShadowOrder{ID: lot.OrderID, Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: lot.SignalDate, AttemptDate: lot.EntryDate, Quantity: lot.Quantity, Price: lot.EntryPrice, RawPrice: lot.EntryPrice, Amount: lot.EntryAmount, Status: OrderFilled, ExecutionTime: lot.EntryTime, SignalScore: lot.SignalScore, TriggerPrice: lot.TriggerPrice, InvalidationPrice: lot.InvalidationPrice, SignalReasons: append([]string(nil), lot.SignalReasons...)}
+		if entry.ID == "" {
+			entry.ID = lot.SignalID + "-buy"
+		}
+		entryCost := lot.EntryAmount + lot.EntryFee
+		if entryCost <= lot.EntryAmount {
+			entryCost = lot.EntryAmount + transactionFee(lot.EntryAmount, "buy", cfg)
+		}
+		target := lot.TargetExitDate
+		if target == "" {
+			target = holdingExitDate(calendarDates, lot.EntryDate, cfg.HoldingDays)
+		}
+		lots = append(lots, shadowLot{entry: entry, entryCost: entryCost, plan: shadowPlan{targetExitDate: target}})
+	}
+	return lots
+}
+
+func positionQuantityTransitionValid(previous, next Report, position ShadowOpenPosition, nextQuantity int) bool {
+	expected := position.Quantity
+	for _, order := range next.Orders {
+		if order.Symbol != position.Symbol || order.Status != OrderFilled || !eventAfterCheckpoint(order.AttemptDate, order.PositionAction, previous) {
+			continue
+		}
+		if order.Side == "sell" {
+			expected -= order.Quantity
+		} else if order.Side == "buy" {
+			expected += order.Quantity
+		}
+	}
+	return expected >= 0 && expected == nextQuantity
+}
+
+func positionLotsTransitionValid(previous, next Report, position ShadowOpenPosition, nextPosition *ShadowOpenPosition) bool {
+	if len(position.Lots) == 0 {
+		return true
+	}
+	nextLots := []ShadowPositionLot(nil)
+	if nextPosition != nil {
+		nextLots = nextPosition.Lots
+		quantity := 0
+		for _, lot := range nextLots {
+			quantity += lot.Quantity
+		}
+		if quantity != nextPosition.Quantity {
+			return false
+		}
+	}
+	closedLots := make(map[string]int)
+	unassignedSellQuantity := 0
+	for _, trade := range next.Trades {
+		if trade.Symbol == position.Symbol && trade.EntryOrderID != "" && eventAfterCheckpoint(trade.ExitDate, trade.PositionAction, previous) {
+			closedLots[trade.EntryOrderID] += trade.Quantity
+		}
+	}
+	for _, order := range next.Orders {
+		if order.Symbol == position.Symbol && order.Side == "sell" && order.Status == OrderFilled && eventAfterCheckpoint(order.AttemptDate, order.PositionAction, previous) {
+			matched := false
+			for _, trade := range next.Trades {
+				if trade.ExitOrderID == order.ID {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				unassignedSellQuantity += order.Quantity
+			}
+		}
+	}
+	for _, previousLot := range position.Lots {
+		if containsSamePositionLot(nextLots, previousLot) {
+			continue
+		}
+		closedQuantity := closedLots[previousLot.OrderID]
+		if closedQuantity == 0 && unassignedSellQuantity >= previousLot.Quantity {
+			closedQuantity = previousLot.Quantity
+			unassignedSellQuantity -= previousLot.Quantity
+		}
+		if closedQuantity != previousLot.Quantity {
+			return false
+		}
+	}
+	for _, nextLot := range nextLots {
+		if containsSamePositionLot(position.Lots, nextLot) {
+			continue
+		}
+		if !newBuyMatchesLot(previous, next.Orders, position.Symbol, nextLot) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsSamePositionLot(lots []ShadowPositionLot, target ShadowPositionLot) bool {
+	for _, lot := range lots {
+		if lot.OrderID == target.OrderID && lot.EntryDate == target.EntryDate && lot.Quantity == target.Quantity && sameFloat(lot.EntryPrice, target.EntryPrice) {
+			return true
+		}
+	}
+	return false
+}
+
+func newBuyMatchesLot(previous Report, orders []ShadowOrder, symbol string, lot ShadowPositionLot) bool {
+	for _, order := range orders {
+		if order.ID == lot.OrderID && order.Symbol == symbol && order.Side == "buy" && order.Status == OrderFilled &&
+			eventAfterCheckpoint(order.AttemptDate, order.PositionAction, previous) && order.Quantity == lot.Quantity && sameFloat(order.Price, lot.EntryPrice) {
+			return true
+		}
+	}
+	return false
+}
+
+func eventAfterCheckpoint(date, action string, previous Report) bool {
+	if date > previous.AsOf {
+		return true
+	}
+	return date == previous.AsOf && previous.CheckpointPhase == CheckpointOpen && action == "exit"
 }
 
 func sameFloat(left, right float64) bool {
@@ -518,6 +842,8 @@ func NewEvaluator(history HistoryClient) *Evaluator {
 type shadowPlan struct {
 	signal         realtime.Signal
 	bars           []domain.DailyBar
+	action         string
+	lotOrderID     string
 	signalClose    float64
 	capacity       float64
 	entryIndex     int
@@ -528,10 +854,17 @@ type shadowPlan struct {
 }
 
 type shadowPosition struct {
+	plan            shadowPlan
+	lots            []shadowLot
+	fallback        *ShadowOpenPosition
+	lastSignalDate  string
+	lastSignalScore float64
+}
+
+type shadowLot struct {
 	plan      shadowPlan
 	entry     ShadowOrder
 	entryCost float64
-	fallback  *ShadowOpenPosition
 }
 
 func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []realtime.Signal, options Options) (Report, error) {
@@ -584,19 +917,29 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			continue
 		}
 		bars = normalizedBars(bars)
-		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Price: position.SignalClose}
+		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Price: position.SignalClose, Score: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, Reasons: append([]string(nil), position.SignalReasons...)}
 		if enriched, found := matchingArchivedSignal(archivedSignals, position); found {
-			signal.ID = enriched.ID
+			if signal.ID == "" {
+				signal.ID = enriched.ID
+			}
 			if signal.Name == "" {
 				signal.Name = enriched.Name
 			}
 			if signal.Price <= 0 {
 				signal.Price = enriched.Price
 			}
-			signal.Score = enriched.Score
-			signal.TriggerPrice = enriched.TriggerPrice
-			signal.InvalidationPrice = enriched.InvalidationPrice
-			signal.Reasons = append([]string(nil), enriched.Reasons...)
+			if signal.Score <= 0 {
+				signal.Score = enriched.Score
+			}
+			if signal.TriggerPrice <= 0 {
+				signal.TriggerPrice = enriched.TriggerPrice
+			}
+			if signal.InvalidationPrice <= 0 {
+				signal.InvalidationPrice = enriched.InvalidationPrice
+			}
+			if len(signal.Reasons) == 0 {
+				signal.Reasons = append([]string(nil), enriched.Reasons...)
+			}
 		}
 		if signal.ID == "" {
 			signal.ID = position.Symbol + "-" + position.EntryDate
@@ -604,46 +947,26 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		if position.SignalDate != "" {
 			signal.AsOf = parseShanghaiDate(position.SignalDate)
 		}
-		entry := ShadowOrder{ID: orderID(signal, "buy"), Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled, ExecutionTime: position.EntryTime, SignalScore: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, SignalReasons: append([]string(nil), position.SignalReasons...)}
-		if existing, found := matchingFilledOrder(report.Orders, position); found {
-			entry = existing
-		}
-		if entry.SignalScore <= 0 {
-			entry.SignalScore = signal.Score
-			entry.TriggerPrice = signal.TriggerPrice
-			entry.InvalidationPrice = signal.InvalidationPrice
-			entry.SignalReasons = append([]string(nil), signal.Reasons...)
-		}
-		if entry.ExecutionTime == "" {
-			entry.ExecutionTime = simulatedExecutionTime("buy", position.EntryDate)
-		}
-		if index := matchingOrderIndex(report.Orders, entry); index >= 0 {
-			report.Orders[index].ExecutionTime = entry.ExecutionTime
-			if report.Orders[index].SignalScore <= 0 {
-				report.Orders[index].SignalScore = entry.SignalScore
-				report.Orders[index].TriggerPrice = entry.TriggerPrice
-				report.Orders[index].InvalidationPrice = entry.InvalidationPrice
-				report.Orders[index].SignalReasons = append([]string(nil), entry.SignalReasons...)
+		lots := normalizePositionLots(position, report.Orders, cfg, calendarDates, barDates(bars))
+		for index := range lots {
+			lotSignal := signal
+			lotSignal.ID = strings.TrimSuffix(lots[index].entry.ID, "-buy")
+			lotSignal.Score = lots[index].entry.SignalScore
+			lotSignal.TriggerPrice = lots[index].entry.TriggerPrice
+			lotSignal.InvalidationPrice = lots[index].entry.InvalidationPrice
+			lotSignal.Reasons = append([]string(nil), lots[index].entry.SignalReasons...)
+			lots[index].plan.signal = lotSignal
+			lots[index].plan.action = "exit"
+			lots[index].plan.lotOrderID = lots[index].entry.ID
+			lots[index].plan.bars = bars
+			lots[index].plan.signalClose = position.SignalClose
+			lots[index].plan.entryIndex = barIndex(bars, lots[index].entry.AttemptDate)
+			lots[index].plan.exitIndex = barIndex(bars, lots[index].plan.targetExitDate)
+			if orderIndex := matchingOrderIndex(report.Orders, lots[index].entry); orderIndex >= 0 {
+				report.Orders[orderIndex].ExecutionTime = lots[index].entry.ExecutionTime
 			}
 		}
-		if entry.Amount <= 0 {
-			entry.Amount = position.EntryPrice * float64(position.Quantity)
-		}
-		entryCost := entry.Amount + position.EntryFee
-		if entryCost <= entry.Amount {
-			entryCost = entry.Amount + transactionFee(entry.Amount, "buy", cfg)
-		}
-		targetExitDate := position.TargetExitDate
-		if targetExitDate == "" {
-			targetExitDate = holdingExitDate(calendarDates, position.EntryDate, cfg.HoldingDays)
-		}
-		if targetExitDate == "" {
-			targetExitDate = holdingExitDate(barDates(bars), position.EntryDate, cfg.HoldingDays)
-		}
-		plan := shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose, entryDate: "", exitDate: targetExitDate, targetExitDate: targetExitDate}
-		plan.entryIndex = barIndex(bars, position.EntryDate)
-		plan.exitIndex = barIndex(bars, targetExitDate)
-		active[position.Symbol] = shadowPosition{plan: plan, entry: entry, entryCost: entryCost}
+		active[position.Symbol] = shadowPosition{plan: shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose}, lots: lots, lastSignalDate: position.SignalDate, lastSignalScore: position.SignalScore}
 	}
 	newPlans, err := e.plansAfter(ctx, signals, cfg, previous.AsOf, checkpoint, calendarDates)
 	if err != nil {
@@ -653,17 +976,22 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		if position.fallback != nil {
 			continue
 		}
-		if position.plan.exitDate == "" || checkpoint.Phase != CheckpointClose || position.plan.exitDate > checkpoint.Date {
-			position.plan.exitDate = ""
-			position.plan.exitIndex = -1
-		} else if position.plan.exitDate < checkpoint.Date {
-			// A limit-locked/停牌 exit is retried on the current settled close,
-			// rather than replaying the historical target date forever.
-			position.plan.exitDate = checkpoint.Date
-			position.plan.exitIndex = barIndex(position.plan.bars, checkpoint.Date)
+		for index := range position.lots {
+			lot := &position.lots[index]
+			lot.plan.exitDate = lot.plan.targetExitDate
+			lot.plan.exitIndex = barIndex(lot.plan.bars, lot.plan.exitDate)
+			if lot.plan.exitDate == "" || checkpoint.Phase != CheckpointClose || lot.plan.exitDate > checkpoint.Date {
+				lot.plan.exitDate = ""
+				lot.plan.exitIndex = -1
+			} else if lot.plan.exitDate < checkpoint.Date {
+				lot.plan.exitDate = checkpoint.Date
+				lot.plan.exitIndex = barIndex(lot.plan.bars, checkpoint.Date)
+			}
+			if lot.plan.exitDate != "" {
+				newPlans = append(newPlans, lot.plan)
+			}
 		}
 		active[symbol] = position
-		newPlans = append(newPlans, position.plan)
 	}
 	if previous.EngineVersion != ShadowEngineVersion && report.TotalTurnover <= 0 {
 		report.TotalTurnover = filledOrderTurnover(report.Orders)
@@ -686,7 +1014,7 @@ func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, c
 		}
 		bars = normalizedBars(bars)
 		for _, signal := range items {
-			if signal.State != realtime.StateTriggered && signal.State != realtime.StateWatching || signal.Score < cfg.MinimumScore {
+			if !shadowSignalActionable(signal) {
 				continue
 			}
 			plan, reason, pending := makePlan(signal, bars, calendarDates, cfg.HoldingDays)
@@ -722,7 +1050,7 @@ func matchingArchivedSignal(signals []realtime.Signal, position ShadowOpenPositi
 		if signal.Symbol != position.Symbol || signalDate(signal) != position.SignalDate {
 			continue
 		}
-		if !found || signal.Score > best.Score || (signal.Score == best.Score && signal.AsOf.After(best.AsOf)) {
+		if !found || signal.AsOf.After(best.AsOf) || (signal.AsOf.Equal(best.AsOf) && signal.Score > best.Score) {
 			best = signal
 			found = true
 		}
@@ -742,7 +1070,7 @@ func matchingArchivedRejectionSignal(signals []realtime.Signal, rejection Shadow
 		if signal.Symbol != rejection.Symbol || signalDate(signal) != rejection.SignalDate {
 			continue
 		}
-		if !found || signal.Score > best.Score || (signal.Score == best.Score && signal.AsOf.After(best.AsOf)) {
+		if !found || signal.AsOf.After(best.AsOf) || (signal.AsOf.Equal(best.AsOf) && signal.Score > best.Score) {
 			best = signal
 			found = true
 		}
@@ -795,7 +1123,7 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 		if plan.entryDate != "" {
 			events[plan.entryDate] = append(events[plan.entryDate], index)
 		}
-		if plan.exitDate != "" {
+		if plan.exitDate != "" && plan.exitDate != plan.entryDate {
 			events[plan.exitDate] = append(events[plan.exitDate], index)
 		}
 	}
@@ -804,8 +1132,159 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 		dates = append(dates, date)
 	}
 	sort.Strings(dates)
+	dailyDeployment := make(map[string]float64)
 	for _, date := range dates {
 		indexes := events[date]
+		handledOpening := make(map[int]bool, len(indexes))
+
+		// Opening reductions settle before opening entries. A-share sale proceeds
+		// can fund another opening buy, while proceeds from the later close cannot.
+		for _, index := range indexes {
+			plan := plans[index]
+			if plan.entryDate != date || plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
+				continue
+			}
+			position, exists := active[plan.signal.Symbol]
+			if !exists {
+				continue
+			}
+			if position.fallback != nil {
+				appendShadowDecision(&report, plan.signal, date, "wait", "持仓日K不可用，暂停仓位调整", positionQuantity(position), cfg.MaxPositionPercent)
+				handledOpening[index] = true
+				continue
+			}
+			if plan.signal.Score > position.lastSignalScore-cfg.AdditionScoreStep {
+				continue
+			}
+			handledOpening[index] = true
+			lotIndex := oldestAvailableLot(position.lots, date)
+			if lotIndex < 0 {
+				appendShadowDecision(&report, plan.signal, date, "hold", "信号走弱，但没有满足T+1的可卖批次", positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			bar := plan.bars[plan.entryIndex]
+			if bar.Open <= 0 || onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.entryIndex) {
+				appendShadowDecision(&report, plan.signal, date, "wait", "信号走弱，但开盘一字板或停牌，减仓无法执行", positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			lot := position.lots[lotIndex]
+			sell := makeOrder(plan.signal, "sell", date, bar.Open, lot.entry.Quantity, cfg, 0)
+			sell.Status = OrderFilled
+			sell.ExecutionTime = simulatedOpeningExecutionTime(date)
+			sell.PositionAction = "reduce"
+			sell.PositionSequence = lotIndex + 1
+			fee := transactionFee(sell.Amount, "sell", cfg)
+			cash += sell.Amount - fee
+			report.Orders = append(report.Orders, sell)
+			report.Trades = append(report.Trades, tradeForLot(lot, sell, bar.Open, date, plan.entryIndex, fee, len(report.Trades)+1))
+			report.CompletedTrades++
+			report.TotalTurnover += sell.Amount
+			report.TotalFees += fee
+			position.lots = append(position.lots[:lotIndex], position.lots[lotIndex+1:]...)
+			position.plan = plan
+			position.lastSignalDate = signalDate(plan.signal)
+			position.lastSignalScore = plan.signal.Score
+			appendShadowDecision(&report, plan.signal, date, "reduce", "信号分显著回落，次日开盘减去一个可卖批次", positionQuantity(position), cfg.MaxPositionPercent)
+			if len(position.lots) == 0 {
+				delete(active, plan.signal.Symbol)
+			} else {
+				active[plan.signal.Symbol] = position
+			}
+		}
+
+		for _, index := range indexes {
+			if handledOpening[index] {
+				continue
+			}
+			plan := plans[index]
+			if plan.entryDate != date {
+				continue
+			}
+			if plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
+				continue
+			}
+			bar := plan.bars[plan.entryIndex]
+			position, exists := active[plan.signal.Symbol]
+			if !exists && !shadowSignalEntryEligible(plan.signal, cfg) {
+				continue
+			}
+			if exists && !shadowSignalEntryEligible(plan.signal, cfg) {
+				appendShadowDecision(&report, plan.signal, date, "hold", "信号未满足加仓门槛，维持现有仓位", positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			if exists && (len(position.lots) >= cfg.MaxEntryTranches || plan.signal.Score < position.lastSignalScore+cfg.AdditionScoreStep) {
+				reason := "信号未显著增强，维持现有仓位"
+				if len(position.lots) >= cfg.MaxEntryTranches {
+					reason = "已达到最大分批建仓次数，维持现有仓位"
+				}
+				appendShadowDecision(&report, plan.signal, date, "hold", reason, positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
+				rejection := makeRejection(plan.signal, "buy", date, "次日开盘一字板或停牌，无法执行")
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
+				continue
+			}
+			capacity := plan.capacity * cfg.MaxParticipationPercent / 100
+			budget, reason := entryBudget(cfg, cash, dailyDeployment[date], active, position, exists)
+			if budget <= 0 {
+				appendShadowDecision(&report, plan.signal, date, "wait", reason, positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			quantity := quantityWithinBudget(bar.Open, budget, capacity, cfg)
+			if quantity < cfg.LotSize {
+				reason := "资金不足或不足一手"
+				price := bar.Open * (1 + cfg.SlippageBPS/10000)
+				if capacity > 0 && int(capacity/price/float64(cfg.LotSize))*cfg.LotSize < cfg.LotSize {
+					reason = "成交额容量不足一手"
+				}
+				rejection := makeRejection(plan.signal, "buy", date, reason)
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
+				continue
+			}
+			buy := makeOrder(plan.signal, "buy", date, bar.Open, quantity, cfg, capacity)
+			fee := transactionFee(buy.Amount, "buy", cfg)
+			if buy.Amount+fee > cash || cash-buy.Amount-fee < cfg.InitialCash*cfg.CashReservePercent/100 {
+				appendShadowDecision(&report, plan.signal, date, "wait", "现金缓冲不足，等待后续交易日", positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			buy.Status = OrderFilled
+			if exists {
+				buy.PositionAction = "add"
+				buy.PositionSequence = len(position.lots) + 1
+			} else {
+				buy.PositionAction = "open"
+				buy.PositionSequence = 1
+			}
+			cash -= buy.Amount + fee
+			report.Orders = append(report.Orders, buy)
+			report.FilledEntries++
+			report.TotalTurnover += buy.Amount
+			report.TotalFees += fee
+			dailyDeployment[date] += buy.Amount + fee
+			lotPlan := plan
+			lotPlan.action = "exit"
+			lotPlan.lotOrderID = buy.ID
+			lot := shadowLot{plan: lotPlan, entry: buy, entryCost: buy.Amount + fee}
+			if exists {
+				position.lots = append(position.lots, lot)
+				position.plan = plan
+				position.lastSignalDate = signalDate(plan.signal)
+				position.lastSignalScore = plan.signal.Score
+				active[plan.signal.Symbol] = position
+				appendShadowDecision(&report, plan.signal, date, "add", "信号显著增强，按目标仓位分批加仓", positionQuantity(position), cfg.MaxPositionPercent)
+			} else {
+				active[plan.signal.Symbol] = shadowPosition{plan: plan, lots: []shadowLot{lot}, lastSignalDate: signalDate(plan.signal), lastSignalScore: plan.signal.Score}
+				appendShadowDecision(&report, plan.signal, date, "open", "首次建仓仅使用目标仓位的一部分，保留后续操作空间", buy.Quantity, cfg.MaxPositionPercent)
+			}
+		}
+
 		for _, index := range indexes {
 			plan := plans[index]
 			if plan.exitDate != date {
@@ -815,7 +1294,12 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 			if !ok {
 				continue
 			}
-			if date <= position.entry.AttemptDate {
+			lotIndex := shadowLotIndex(position.lots, plan.lotOrderID)
+			if lotIndex < 0 {
+				continue
+			}
+			lot := position.lots[lotIndex]
+			if date <= lot.entry.AttemptDate {
 				continue
 			}
 			if plan.exitIndex < 0 || plan.exitIndex >= len(plan.bars) {
@@ -830,71 +1314,23 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 				}
 				continue
 			}
-			sell := makeOrder(plan.signal, "sell", date, bar.Close, position.entry.Quantity, cfg, 0)
+			sell := makeOrder(lot.plan.signal, "sell", date, bar.Close, lot.entry.Quantity, cfg, 0)
 			sell.Status = OrderFilled
+			sell.PositionAction = "exit"
+			sell.PositionSequence = lotIndex + 1
 			fee := transactionFee(sell.Amount, "sell", cfg)
 			cash += sell.Amount - fee
 			report.Orders = append(report.Orders, sell)
-			theoretical := 0.0
-			if plan.signalClose > 0 {
-				theoretical = (bar.Close/plan.signalClose - 1) * 100
-			}
-			executable := safeReturnPercent(sell.Amount-fee-position.entryCost, position.entryCost)
-			report.Trades = append(report.Trades, ShadowTrade{ID: fmt.Sprintf("ST%04d", len(report.Trades)+1), Symbol: plan.signal.Symbol, Name: plan.signal.Name, SignalDate: signalDate(plan.signal), EntryDate: position.entry.AttemptDate, ExitDate: date, Quantity: position.entry.Quantity, SignalClose: plan.signalClose, ExitClose: bar.Close, EntryPrice: position.entry.Price, ExitPrice: sell.Price, TheoreticalReturnPercent: theoretical, ExecutableReturnPercent: executable, ExecutionGapPercent: executable - theoretical, GrossProfit: (sell.Price - position.entry.Price) * float64(sell.Quantity), NetProfit: sell.Amount - fee - position.entryCost, TotalFee: position.entryCost - position.entry.Amount + fee, HoldingDays: plan.exitIndex - plan.entryIndex + 1})
+			report.Trades = append(report.Trades, tradeForLot(lot, sell, bar.Close, date, plan.exitIndex, fee, len(report.Trades)+1))
 			report.CompletedTrades++
 			report.TotalTurnover += sell.Amount
 			report.TotalFees += fee
-			delete(active, plan.signal.Symbol)
-		}
-		for _, index := range indexes {
-			plan := plans[index]
-			if plan.entryDate != date {
-				continue
+			position.lots = append(position.lots[:lotIndex], position.lots[lotIndex+1:]...)
+			if len(position.lots) == 0 {
+				delete(active, plan.signal.Symbol)
+			} else {
+				active[plan.signal.Symbol] = position
 			}
-			if _, exists := active[plan.signal.Symbol]; exists || plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
-				rejection := makeRejection(plan.signal, "buy", date, "已有同股票影子持仓，拒绝重叠开仓")
-				if !hasRejection(report.Rejections, rejection) {
-					report.RejectedOrders++
-					report.Rejections = append(report.Rejections, rejection)
-				}
-				continue
-			}
-			bar := plan.bars[plan.entryIndex]
-			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
-				rejection := makeRejection(plan.signal, "buy", date, "次日开盘一字板或停牌，无法执行")
-				if !hasRejection(report.Rejections, rejection) {
-					report.RejectedOrders++
-					report.Rejections = append(report.Rejections, rejection)
-				}
-				continue
-			}
-			capacity := plan.capacity * cfg.MaxParticipationPercent / 100
-			budget := math.Min(cash, cfg.InitialCash*cfg.MaxPositionPercent/100)
-			price := bar.Open * (1 + cfg.SlippageBPS/10000)
-			quantity := int(budget/price/float64(cfg.LotSize)) * cfg.LotSize
-			if capacity > 0 {
-				quantity = minInt(quantity, int(capacity/price/float64(cfg.LotSize))*cfg.LotSize)
-			}
-			if quantity < cfg.LotSize {
-				rejection := makeRejection(plan.signal, "buy", date, "资金不足或不足一手")
-				if !hasRejection(report.Rejections, rejection) {
-					report.RejectedOrders++
-					report.Rejections = append(report.Rejections, rejection)
-				}
-				continue
-			}
-			buy := makeOrder(plan.signal, "buy", date, bar.Open, quantity, cfg, capacity)
-			fee := transactionFee(buy.Amount, "buy", cfg)
-			if buy.Amount+fee > cash {
-				continue
-			}
-			buy.Status = OrderFilled
-			cash -= buy.Amount + fee
-			report.Orders = append(report.Orders, buy)
-			report.FilledEntries++
-			report.TotalTurnover += buy.Amount
-			report.TotalFees += fee
-			active[plan.signal.Symbol] = shadowPosition{plan: plan, entry: buy, entryCost: buy.Amount + fee}
 		}
 	}
 	recomputeTradeStats(&report)
@@ -906,13 +1342,182 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 			report.Positions = append(report.Positions, *position.fallback)
 			continue
 		}
-		lastBar := latestBar(position.plan.bars, report.AsOf)
-		marketValue := lastBar.Close * float64(position.entry.Quantity)
-		profit := marketValue - position.entryCost
-		report.Positions = append(report.Positions, ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal), EntryDate: position.entry.AttemptDate, EntryTime: position.entry.ExecutionTime, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price, EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity), SignalScore: position.plan.signal.Score, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate})
+		report.Positions = append(report.Positions, aggregateShadowPosition(position, cfg, report.AsOf))
 	}
+	sort.SliceStable(report.Positions, func(i, j int) bool { return report.Positions[i].EntryDate > report.Positions[j].EntryDate })
 	recomputeAccountMetrics(&report)
 	return report
+}
+
+func quantityWithinBudget(rawPrice, budget, capacity float64, cfg Config) int {
+	price := rawPrice * (1 + cfg.SlippageBPS/10000)
+	if price <= 0 || budget <= 0 {
+		return 0
+	}
+	quantity := int(budget/price/float64(cfg.LotSize)) * cfg.LotSize
+	if capacity > 0 {
+		quantity = minInt(quantity, int(capacity/price/float64(cfg.LotSize))*cfg.LotSize)
+	}
+	for quantity >= cfg.LotSize {
+		amount := price * float64(quantity)
+		if amount+transactionFee(amount, "buy", cfg) <= budget {
+			return quantity
+		}
+		quantity -= cfg.LotSize
+	}
+	return 0
+}
+
+func shadowLotIndex(lots []shadowLot, orderID string) int {
+	for index, lot := range lots {
+		if lot.entry.ID == orderID {
+			return index
+		}
+	}
+	return -1
+}
+
+func oldestAvailableLot(lots []shadowLot, date string) int {
+	oldest := -1
+	for index, lot := range lots {
+		if lot.entry.AttemptDate == "" || lot.entry.AttemptDate >= date {
+			continue
+		}
+		if oldest < 0 || lot.entry.AttemptDate < lots[oldest].entry.AttemptDate {
+			oldest = index
+		}
+	}
+	return oldest
+}
+
+func positionQuantity(position shadowPosition) int {
+	if position.fallback != nil {
+		return position.fallback.Quantity
+	}
+	quantity := 0
+	for _, lot := range position.lots {
+		quantity += lot.entry.Quantity
+	}
+	return quantity
+}
+
+func positionCost(position shadowPosition) float64 {
+	cost := 0.0
+	for _, lot := range position.lots {
+		cost += lot.entryCost
+	}
+	return cost
+}
+
+func investedCost(active map[string]shadowPosition) float64 {
+	total := 0.0
+	for _, position := range active {
+		if position.fallback != nil {
+			entryAmount := position.fallback.EntryAmount
+			if entryAmount <= 0 {
+				entryAmount = position.fallback.EntryPrice * float64(position.fallback.Quantity)
+			}
+			total += entryAmount + position.fallback.EntryFee
+			continue
+		}
+		total += positionCost(position)
+	}
+	return total
+}
+
+func entryBudget(cfg Config, cash, deployedToday float64, active map[string]shadowPosition, position shadowPosition, exists bool) (float64, string) {
+	reserve := cfg.InitialCash * cfg.CashReservePercent / 100
+	availableCash := cash - reserve
+	if availableCash <= 0 {
+		return 0, "已达到现金缓冲下限"
+	}
+	portfolioRoom := cfg.InitialCash*cfg.MaxPortfolioPercent/100 - investedCost(active)
+	if portfolioRoom <= 0 {
+		return 0, "组合仓位已达到上限"
+	}
+	dailyRoom := cfg.InitialCash*cfg.MaxDailyDeploymentPercent/100 - deployedToday
+	if dailyRoom <= 0 {
+		return 0, "当日新增资金已达到上限"
+	}
+	targetPosition := cfg.InitialCash * cfg.MaxPositionPercent / 100
+	positionRoom := targetPosition
+	if exists {
+		positionRoom -= positionCost(position)
+		remainingTranches := cfg.MaxEntryTranches - 1
+		if remainingTranches > 0 {
+			additionRoom := targetPosition * (1 - cfg.InitialEntryPercent/100) / float64(remainingTranches)
+			positionRoom = math.Min(positionRoom, additionRoom)
+		}
+	} else {
+		positionRoom *= cfg.InitialEntryPercent / 100
+	}
+	if positionRoom <= 0 {
+		return 0, "单股目标仓位已达到上限"
+	}
+	budget := math.Min(availableCash, math.Min(portfolioRoom, math.Min(dailyRoom, positionRoom)))
+	return budget, ""
+}
+
+func tradeForLot(lot shadowLot, sell ShadowOrder, exitClose float64, exitDate string, exitIndex int, fee float64, sequence int) ShadowTrade {
+	theoretical := 0.0
+	if lot.plan.signalClose > 0 {
+		theoretical = (exitClose/lot.plan.signalClose - 1) * 100
+	}
+	netProfit := sell.Amount - fee - lot.entryCost
+	executable := safeReturnPercent(netProfit, lot.entryCost)
+	holdingDays := 0
+	if lot.plan.entryIndex >= 0 && exitIndex >= lot.plan.entryIndex {
+		holdingDays = exitIndex - lot.plan.entryIndex + 1
+	}
+	return ShadowTrade{ID: fmt.Sprintf("ST%04d", sequence), EntryOrderID: lot.entry.ID, ExitOrderID: sell.ID, Symbol: sell.Symbol, Name: sell.Name, SignalDate: lot.entry.SignalDate, EntryDate: lot.entry.AttemptDate, ExitDate: exitDate, Quantity: lot.entry.Quantity, SignalClose: lot.plan.signalClose, ExitClose: exitClose, EntryPrice: lot.entry.Price, ExitPrice: sell.Price, TheoreticalReturnPercent: theoretical, ExecutableReturnPercent: executable, ExecutionGapPercent: executable - theoretical, GrossProfit: (sell.Price - lot.entry.Price) * float64(sell.Quantity), NetProfit: netProfit, TotalFee: lot.entryCost - lot.entry.Amount + fee, HoldingDays: holdingDays, PositionAction: sell.PositionAction, ExitTime: sell.ExecutionTime}
+}
+
+func appendShadowDecision(report *Report, signal realtime.Signal, date, action, reason string, quantity int, targetPercent float64) {
+	if report == nil {
+		return
+	}
+	id := signal.ID + "-" + action
+	for _, decision := range report.Decisions {
+		if decision.ID == id && decision.Date == date {
+			return
+		}
+	}
+	report.Decisions = append(report.Decisions, ShadowDecision{ID: id, Symbol: signal.Symbol, Name: signal.Name, Date: date, Action: action, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...), CurrentQuantity: quantity, TargetPositionPercent: targetPercent})
+}
+
+func aggregateShadowPosition(position shadowPosition, cfg Config, asOf string) ShadowOpenPosition {
+	if position.fallback != nil {
+		return *position.fallback
+	}
+	quantity, available := 0, 0
+	entryAmount, entryFee, entryCost := 0.0, 0.0, 0.0
+	entryDate, entryTime, targetExit := "", "", ""
+	lots := make([]ShadowPositionLot, 0, len(position.lots))
+	for _, lot := range position.lots {
+		quantity += lot.entry.Quantity
+		if lot.entry.AttemptDate < asOf {
+			available += lot.entry.Quantity
+		}
+		entryAmount += lot.entry.Amount
+		entryCost += lot.entryCost
+		entryFee += lot.entryCost - lot.entry.Amount
+		if entryDate == "" || lot.entry.AttemptDate < entryDate {
+			entryDate = lot.entry.AttemptDate
+			entryTime = lot.entry.ExecutionTime
+		}
+		if targetExit == "" || lot.plan.targetExitDate > targetExit {
+			targetExit = lot.plan.targetExitDate
+		}
+		lots = append(lots, ShadowPositionLot{OrderID: lot.entry.ID, EntryDate: lot.entry.AttemptDate, EntryTime: lot.entry.ExecutionTime, Quantity: lot.entry.Quantity, EntryPrice: lot.entry.Price, EntryAmount: lot.entry.Amount, EntryFee: lot.entryCost - lot.entry.Amount, SignalID: strings.TrimSuffix(lot.entry.ID, "-buy"), SignalDate: lot.entry.SignalDate, SignalClose: lot.plan.signalClose, SignalScore: lot.entry.SignalScore, TriggerPrice: lot.entry.TriggerPrice, InvalidationPrice: lot.entry.InvalidationPrice, SignalReasons: append([]string(nil), lot.entry.SignalReasons...), TargetExitDate: lot.plan.targetExitDate})
+	}
+	lastBar := latestBar(position.plan.bars, asOf)
+	marketValue := lastBar.Close * float64(quantity)
+	profit := marketValue - entryCost
+	entryPrice := 0.0
+	if quantity > 0 {
+		entryPrice = entryAmount / float64(quantity)
+	}
+	return ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: position.lastSignalDate, EntryDate: entryDate, EntryTime: entryTime, Quantity: quantity, EntryPrice: entryPrice, EntryAmount: entryAmount, EntryFee: entryFee, SignalClose: position.plan.signalClose, AvailableQuantity: available, SignalScore: position.lastSignalScore, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, entryCost), TargetExitDate: targetExit, Lots: lots, AdditionCount: maxInt(0, len(lots)-1), TargetPositionPercent: cfg.MaxPositionPercent}
 }
 
 func tPlusOneAvailableQuantity(entryDate, asOf string, quantity int) int {
@@ -991,6 +1596,7 @@ func cloneReport(report Report) Report {
 	report.Orders = append([]ShadowOrder(nil), report.Orders...)
 	report.Rejections = append([]ShadowRejection(nil), report.Rejections...)
 	report.Warnings = append([]string(nil), report.Warnings...)
+	report.Decisions = append([]ShadowDecision(nil), report.Decisions...)
 	return report
 }
 
@@ -1042,15 +1648,18 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 			continue
 		}
 		for _, signal := range items {
-			if signal.State != realtime.StateTriggered && signal.State != realtime.StateWatching {
+			if !shadowSignalActionable(signal) {
 				continue
 			}
-			if signal.Score < cfg.MinimumScore {
-				continue
+			entryEligible := shadowSignalEntryEligible(signal, cfg)
+			if entryEligible {
+				report.CandidateCount++
 			}
-			report.CandidateCount++
 			plan, reason, pending := makePlan(signal, bars, calendarDates, cfg.HoldingDays)
 			if reason != "" {
+				if !entryEligible {
+					continue
+				}
 				if pending {
 					report.PendingCandidates++
 					report.Warnings = append(report.Warnings, signal.Symbol+" "+signalDate(signal)+" 影子窗口待成熟: "+reason)
@@ -1092,6 +1701,24 @@ func canonicalConfig(cfg Config) Config {
 	if cfg.MaxPositionPercent <= 0 || cfg.MaxPositionPercent > 100 {
 		cfg.MaxPositionPercent = defaults.MaxPositionPercent
 	}
+	if cfg.MaxPortfolioPercent <= 0 || cfg.MaxPortfolioPercent > 100 {
+		cfg.MaxPortfolioPercent = defaults.MaxPortfolioPercent
+	}
+	if cfg.CashReservePercent <= 0 || cfg.CashReservePercent >= 100 {
+		cfg.CashReservePercent = defaults.CashReservePercent
+	}
+	if cfg.MaxDailyDeploymentPercent <= 0 || cfg.MaxDailyDeploymentPercent > 100 {
+		cfg.MaxDailyDeploymentPercent = defaults.MaxDailyDeploymentPercent
+	}
+	if cfg.InitialEntryPercent <= 0 || cfg.InitialEntryPercent > 100 {
+		cfg.InitialEntryPercent = defaults.InitialEntryPercent
+	}
+	if cfg.MaxEntryTranches <= 0 {
+		cfg.MaxEntryTranches = defaults.MaxEntryTranches
+	}
+	if cfg.AdditionScoreStep <= 0 || !finite(cfg.AdditionScoreStep) {
+		cfg.AdditionScoreStep = defaults.AdditionScoreStep
+	}
 	if cfg.MaxParticipationPercent <= 0 || cfg.MaxParticipationPercent > 100 {
 		cfg.MaxParticipationPercent = defaults.MaxParticipationPercent
 	}
@@ -1127,7 +1754,7 @@ func representativeSignals(signals []realtime.Signal, limit int) []realtime.Sign
 		}
 		key := signal.Symbol + ":" + signalDate(signal)
 		previous, found := latest[key]
-		if !found || signal.Score > previous.Score || (signal.Score == previous.Score && signal.AsOf.After(previous.AsOf)) {
+		if !found || signal.AsOf.After(previous.AsOf) || (signal.AsOf.Equal(previous.AsOf) && signal.Score > previous.Score) {
 			latest[key] = signal
 		}
 	}
@@ -1145,6 +1772,19 @@ func representativeSignals(signals []realtime.Signal, limit int) []realtime.Sign
 		return result[:limit]
 	}
 	return result
+}
+
+func shadowSignalActionable(signal realtime.Signal) bool {
+	switch signal.State {
+	case realtime.StateTriggered, realtime.StateWatching, realtime.StateWeak, realtime.StateInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+func shadowSignalEntryEligible(signal realtime.Signal, cfg Config) bool {
+	return (signal.State == realtime.StateTriggered || signal.State == realtime.StateWatching) && signal.Score >= cfg.MinimumScore
 }
 
 func makePlan(signal realtime.Signal, bars []domain.DailyBar, calendarDates []string, holdingDays int) (shadowPlan, string, bool) {
@@ -1214,129 +1854,11 @@ func makePlan(signal realtime.Signal, bars []domain.DailyBar, calendarDates []st
 	if exitDate != "" {
 		exitIndex = barIndex(bars, exitDate)
 	}
-	return shadowPlan{signal: signal, bars: bars, signalClose: signalClose, capacity: capacity, entryIndex: entryIndex, exitIndex: exitIndex, entryDate: entryDate, exitDate: exitDate, targetExitDate: exitDate}, "", false
+	return shadowPlan{signal: signal, bars: bars, action: "entry", lotOrderID: orderID(signal, "buy"), signalClose: signalClose, capacity: capacity, entryIndex: entryIndex, exitIndex: exitIndex, entryDate: entryDate, exitDate: exitDate, targetExitDate: exitDate}, "", false
 }
 
 func simulate(report Report, plans []shadowPlan, cfg Config) Report {
-	cash := cfg.InitialCash
-	positions := make(map[string]shadowPosition)
-	events := make(map[string][]int)
-	for index, plan := range plans {
-		events[plan.entryDate] = append(events[plan.entryDate], index)
-		if plan.exitDate != "" {
-			events[plan.exitDate] = append(events[plan.exitDate], index)
-		}
-	}
-	dates := make([]string, 0, len(events))
-	for date := range events {
-		dates = append(dates, date)
-	}
-	sort.Strings(dates)
-	for _, date := range dates {
-		indexes := events[date]
-		// Exits first release cash before same-day entries.
-		for _, index := range indexes {
-			plan := plans[index]
-			if plan.exitDate != date {
-				continue
-			}
-			position, ok := positions[plan.signal.Symbol]
-			if !ok || position.plan.signal.ID != plan.signal.ID {
-				continue
-			}
-			if date <= position.entry.AttemptDate {
-				continue
-			}
-			bar := plan.bars[plan.exitIndex]
-			if onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.exitIndex) || bar.Close <= 0 {
-				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "sell", date, "卖出日一字板或停牌，无法执行"))
-				continue
-			}
-			sell := makeOrder(plan.signal, "sell", date, bar.Close, position.entry.Quantity, cfg, 0)
-			sell.Status = OrderFilled
-			report.Orders = append(report.Orders, sell)
-			fee := transactionFee(sell.Amount, "sell", cfg)
-			cash += sell.Amount - fee
-			trade := ShadowTrade{ID: fmt.Sprintf("ST%04d", len(report.Trades)+1), Symbol: plan.signal.Symbol, Name: plan.signal.Name, SignalDate: signalDate(plan.signal), EntryDate: position.entry.AttemptDate, ExitDate: date, Quantity: position.entry.Quantity, SignalClose: plan.signalClose, ExitClose: bar.Close, EntryPrice: position.entry.Price, ExitPrice: sell.Price, HoldingDays: plan.exitIndex - plan.entryIndex + 1, TotalFee: position.entryCost - position.entry.Amount + fee}
-			trade.GrossProfit = (sell.Price - position.entry.Price) * float64(sell.Quantity)
-			trade.NetProfit = sell.Amount - fee - position.entryCost
-			trade.TheoreticalReturnPercent = (bar.Close/plan.signalClose - 1) * 100
-			trade.ExecutableReturnPercent = trade.NetProfit / position.entryCost * 100
-			trade.ExecutionGapPercent = trade.ExecutableReturnPercent - trade.TheoreticalReturnPercent
-			report.Trades = append(report.Trades, trade)
-			report.CompletedTrades++
-			report.TotalTurnover += sell.Amount
-			report.TotalFees += fee
-			delete(positions, plan.signal.Symbol)
-		}
-		for _, index := range indexes {
-			plan := plans[index]
-			if plan.entryDate != date {
-				continue
-			}
-			if _, exists := positions[plan.signal.Symbol]; exists {
-				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, "已有同股票影子持仓，拒绝重叠开仓"))
-				continue
-			}
-			bar := plan.bars[plan.entryIndex]
-			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
-				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, "次日开盘一字板或停牌，无法执行"))
-				continue
-			}
-			capacity := plan.capacity * cfg.MaxParticipationPercent / 100
-			budget := math.Min(cash, cfg.InitialCash*cfg.MaxPositionPercent/100)
-			price := bar.Open * (1 + cfg.SlippageBPS/10000)
-			quantity := int(budget/price/float64(cfg.LotSize)) * cfg.LotSize
-			if capacity > 0 {
-				quantity = minInt(quantity, int(capacity/price/float64(cfg.LotSize))*cfg.LotSize)
-			}
-			if quantity < cfg.LotSize {
-				reason := "资金不足或不足一手"
-				if capacity > 0 && int(capacity/price/float64(cfg.LotSize))*cfg.LotSize < cfg.LotSize {
-					reason = "成交额容量不足一手"
-				}
-				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, reason))
-				continue
-			}
-			buy := makeOrder(plan.signal, "buy", date, bar.Open, quantity, cfg, capacity)
-			fee := transactionFee(buy.Amount, "buy", cfg)
-			if buy.Amount+fee > cash {
-				report.RejectedOrders++
-				report.Rejections = append(report.Rejections, makeRejection(plan.signal, "buy", date, "资金不足"))
-				continue
-			}
-			buy.Status = OrderFilled
-			report.Orders = append(report.Orders, buy)
-			cash -= buy.Amount + fee
-			report.FilledEntries++
-			report.TotalTurnover += buy.Amount
-			positions[plan.signal.Symbol] = shadowPosition{plan: plan, entry: buy, entryCost: buy.Amount + fee}
-			report.TotalFees += fee
-		}
-	}
-	report.RemainingCash = cash
-	report.OpenPositions = len(positions)
-	for _, position := range positions {
-		lastBar := latestBar(position.plan.bars, report.AsOf)
-		marketValue := lastBar.Close * float64(position.entry.Quantity)
-		profit := marketValue - position.entryCost
-		report.Positions = append(report.Positions, ShadowOpenPosition{
-			SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: signalDate(position.plan.signal),
-			EntryDate: position.entry.AttemptDate, EntryTime: position.entry.ExecutionTime, Quantity: position.entry.Quantity, EntryPrice: position.entry.Price,
-			EntryAmount: position.entry.Amount, EntryFee: position.entryCost - position.entry.Amount, SignalClose: position.plan.signalClose, AvailableQuantity: tPlusOneAvailableQuantity(position.entry.AttemptDate, report.AsOf, position.entry.Quantity),
-			SignalScore: position.plan.signal.Score, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...),
-			LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit,
-			UnrealizedReturnPercent: safeReturnPercent(profit, position.entryCost), TargetExitDate: position.plan.targetExitDate,
-		})
-	}
-	sort.SliceStable(report.Positions, func(i, j int) bool { return report.Positions[i].EntryDate > report.Positions[j].EntryDate })
-	recomputeTradeStats(&report)
-	recomputeAccountMetrics(&report)
-	return report
+	return simulateFrom(report, plans, cfg, cfg.InitialCash, make(map[string]shadowPosition))
 }
 
 func makeOrder(signal realtime.Signal, side, date string, rawPrice float64, quantity int, cfg Config, capacity float64) ShadowOrder {
@@ -1354,6 +1876,13 @@ func simulatedExecutionTime(side, date string) string {
 	}
 	if side == "sell" {
 		return date + " 15:00:00"
+	}
+	return date + " 09:30:00"
+}
+
+func simulatedOpeningExecutionTime(date string) string {
+	if date == "" {
+		return ""
 	}
 	return date + " 09:30:00"
 }
@@ -1476,6 +2005,12 @@ func limitLockedAtBar(symbol string, bars []domain.DailyBar, index int, opening 
 }
 func minInt(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

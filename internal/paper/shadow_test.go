@@ -21,7 +21,8 @@ func shadowBar(symbol, date string, open, close, high, low, amount float64) doma
 }
 
 func shadowSignal(id, symbol, date string, score float64) realtime.Signal {
-	return realtime.Signal{ID: id, Symbol: symbol, Name: "测试", Score: score, State: realtime.StateTriggered, AsOf: time.Date(2026, 8, 20, 14, 30, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))}
+	asOf, _ := time.ParseInLocation("2006-01-02 15:04", date+" 14:30", shanghaiLocation)
+	return realtime.Signal{ID: id, Symbol: symbol, Name: "测试", Score: score, State: realtime.StateTriggered, AsOf: asOf}
 }
 
 func TestEvaluatorUsesNextOpenAndKeepsTheoreticalGap(t *testing.T) {
@@ -85,10 +86,270 @@ func TestEvaluatorRejectsCapacityAndOnePriceBar(t *testing.T) {
 func TestRepresentativeSignalsIsIdempotent(t *testing.T) {
 	one := shadowSignal("morning", "sh600000", "2026-08-20", 60)
 	two := shadowSignal("afternoon", "sh600000", "2026-08-20", 80)
+	one.AsOf = one.AsOf.Add(-4 * time.Hour)
 	selected := representativeSignals([]realtime.Signal{one, two}, 10)
 	if len(selected) != 1 || selected[0].ID != "afternoon" {
 		t.Fatalf("unexpected representative signal: %+v", selected)
 	}
+}
+
+func TestRepresentativeSignalsUsesLatestDailyStateInsteadOfIntradayHigh(t *testing.T) {
+	morning := shadowSignal("morning-high", "sh600000", "2026-08-20", 82)
+	morning.AsOf = morning.AsOf.Add(-4 * time.Hour)
+	close := shadowSignal("close-weak", "sh600000", "2026-08-20", 54)
+	close.State = realtime.StateWeak
+	selected := representativeSignals([]realtime.Signal{morning, close}, 0)
+	if len(selected) != 1 || selected[0].ID != "close-weak" {
+		t.Fatalf("intraday high replaced the latest daily state: %+v", selected)
+	}
+}
+
+func TestShadowPortfolioKeepsDailyCashAndInitialEntryRoom(t *testing.T) {
+	const initialCash = 1_000_000.0
+	symbols := []string{"sh600000", "sh600001", "sh600002", "sh600003", "sh600004"}
+	barsBySymbol := make(map[string][]domain.DailyBar, len(symbols)+1)
+	signals := make([]realtime.Signal, 0, len(symbols))
+	for index, symbol := range symbols {
+		barsBySymbol[symbol] = []domain.DailyBar{
+			shadowBar(symbol, "2026-08-19", 10, 10, 10.2, 9.8, 100_000_000),
+			shadowBar(symbol, "2026-08-20", 10, 10, 10.2, 9.8, 100_000_000),
+			shadowBar(symbol, "2026-08-21", 10, 10, 10.2, 9.8, 100_000_000),
+		}
+		signals = append(signals, shadowSignal("same-day-"+symbol, symbol, "2026-08-20", 80-float64(index)))
+	}
+	barsBySymbol["sh000300"] = []domain.DailyBar{
+		shadowBar("sh000300", "2026-08-19", 1, 1, 1.1, .9, 100_000_000),
+		shadowBar("sh000300", "2026-08-20", 1, 1, 1.1, .9, 100_000_000),
+		shadowBar("sh000300", "2026-08-21", 1, 1, 1.1, .9, 100_000_000),
+	}
+	report, err := NewEvaluator(shadowHistoryStub{bars: barsBySymbol}).Evaluate(context.Background(), signals, Options{Now: func() time.Time {
+		return time.Date(2026, 8, 21, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployed := initialCash - report.RemainingCash
+	if deployed > initialCash*.35+1e-6 || report.RemainingCash < initialCash*.65-1e-6 {
+		t.Fatalf("same-day deployment exhausted account room: deployed=%.2f cash=%.2f report=%+v", deployed, report.RemainingCash, report)
+	}
+	if report.FilledEntries < 3 {
+		t.Fatalf("daily cap prevented reasonable diversification: %+v", report)
+	}
+	cfg := DefaultConfig()
+	for _, order := range report.Orders {
+		if order.Side != "buy" || order.Status != OrderFilled {
+			continue
+		}
+		cost := order.Amount + transactionFee(order.Amount, "buy", cfg)
+		if cost > initialCash*.10+1e-6 {
+			t.Fatalf("initial entry exceeded 10%% account target: order=%+v cost=%.2f", order, cost)
+		}
+		if order.PositionAction != "open" || order.PositionSequence != 1 {
+			t.Fatalf("initial entry action missing: %+v", order)
+		}
+	}
+}
+
+func TestShadowPositionAddsOnlyAfterStrongerSignal(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	first := shadowSignal("first", symbol, "2026-08-20", 70)
+	stronger := shadowSignal("stronger", symbol, "2026-08-21", 75)
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Evaluate(context.Background(), []realtime.Signal{first, stronger}, Options{Now: func() time.Time {
+		return time.Date(2026, 8, 24, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FilledEntries != 2 || len(report.Positions) != 1 || len(report.Positions[0].Lots) != 2 || report.Positions[0].AdditionCount != 1 {
+		t.Fatalf("stronger signal did not add a second tranche: %+v", report)
+	}
+	if len(report.Orders) != 2 || report.Orders[0].PositionAction != "open" || report.Orders[1].PositionAction != "add" {
+		t.Fatalf("unexpected position actions: %+v", report.Orders)
+	}
+}
+
+func TestShadowPositionUsesThreeStagedTranches(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	cfg := DefaultConfig()
+	cfg.HoldingDays = 20
+	signals := []realtime.Signal{
+		shadowSignal("first", symbol, "2026-08-20", 70),
+		shadowSignal("second", symbol, "2026-08-21", 75),
+		shadowSignal("third", symbol, "2026-08-24", 80),
+	}
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Evaluate(context.Background(), signals, Options{Config: cfg, Now: func() time.Time {
+		return time.Date(2026, 8, 25, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FilledEntries != 3 || len(report.Positions) != 1 || len(report.Positions[0].Lots) != 3 || report.Positions[0].AdditionCount != 2 {
+		t.Fatalf("three-stage position was not created: %+v", report)
+	}
+	maximumCosts := []float64{cfg.InitialCash * .10, cfg.InitialCash * .05, cfg.InitialCash * .05}
+	totalCost := 0.0
+	for index, lot := range report.Positions[0].Lots {
+		cost := lot.EntryAmount + lot.EntryFee
+		totalCost += cost
+		if cost > maximumCosts[index]+1e-6 {
+			t.Fatalf("tranche %d exceeded staged budget: cost=%.2f maximum=%.2f lot=%+v", index+1, cost, maximumCosts[index], lot)
+		}
+	}
+	if totalCost > cfg.InitialCash*cfg.MaxPositionPercent/100+1e-6 {
+		t.Fatalf("three tranches exceeded single-stock cap: %.2f", totalCost)
+	}
+}
+
+func TestShadowPositionHoldsWhenSignalImprovementIsTooSmall(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	first := shadowSignal("first", symbol, "2026-08-20", 70)
+	minor := shadowSignal("minor", symbol, "2026-08-21", 72)
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Evaluate(context.Background(), []realtime.Signal{first, minor}, Options{Now: func() time.Time {
+		return time.Date(2026, 8, 24, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FilledEntries != 1 || len(report.Positions) != 1 || len(report.Positions[0].Lots) != 1 {
+		t.Fatalf("minor score change unexpectedly added a tranche: %+v", report)
+	}
+	if !hasShadowDecision(report.Decisions, "hold") {
+		t.Fatalf("hold decision missing: %+v", report.Decisions)
+	}
+}
+
+func TestShadowWeakSignalReducesOldestSellableTranche(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	cfg := DefaultConfig()
+	cfg.HoldingDays = 20
+	first := shadowSignal("first", symbol, "2026-08-20", 70)
+	stronger := shadowSignal("stronger", symbol, "2026-08-21", 75)
+	weak := shadowSignal("weak", symbol, "2026-08-24", 70)
+	weak.State = realtime.StateWeak
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Evaluate(context.Background(), []realtime.Signal{first, stronger, weak}, Options{Config: cfg, Now: func() time.Time {
+		return time.Date(2026, 8, 25, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FilledEntries != 2 || report.CompletedTrades != 1 || len(report.Positions) != 1 || len(report.Positions[0].Lots) != 1 {
+		t.Fatalf("weak signal did not reduce exactly one tranche: %+v", report)
+	}
+	if report.Trades[0].EntryOrderID != "first-buy" || report.Trades[0].PositionAction != "reduce" || report.Trades[0].ExitTime != "2026-08-25 09:30:00" {
+		t.Fatalf("oldest tranche was not reduced at the next open: %+v", report.Trades[0])
+	}
+	if report.Positions[0].Lots[0].OrderID != "stronger-buy" || !hasShadowDecision(report.Decisions, "reduce") {
+		t.Fatalf("remaining tranche or decision mismatch: position=%+v decisions=%+v", report.Positions[0], report.Decisions)
+	}
+}
+
+func TestShadowReductionCannotSellSameDayTranche(t *testing.T) {
+	cfg := DefaultConfig()
+	date := "2026-08-21"
+	symbol := "sh600000"
+	bars := []domain.DailyBar{shadowBar(symbol, date, 10, 10.1, 10.2, 9.9, 100_000_000)}
+	entrySignal := shadowSignal("entry", symbol, "2026-08-20", 80)
+	entry := makeOrder(entrySignal, "buy", date, 10, 10_000, cfg, 0)
+	entry.Status = OrderFilled
+	entry.PositionAction = "open"
+	lot := shadowLot{entry: entry, entryCost: entry.Amount + transactionFee(entry.Amount, "buy", cfg), plan: shadowPlan{signal: entrySignal, bars: bars, entryIndex: 0, signalClose: 10}}
+	weak := shadowSignal("same-day-weak", symbol, "2026-08-20", 70)
+	weak.State = realtime.StateWeak
+	plan := shadowPlan{signal: weak, bars: bars, entryDate: date, entryIndex: 0, signalClose: 10}
+	report := Report{EngineVersion: ShadowEngineVersion, Config: cfg, InitialCash: cfg.InitialCash, RemainingCash: 899_000, AsOf: date}
+	active := map[string]shadowPosition{symbol: {plan: lot.plan, lots: []shadowLot{lot}, lastSignalScore: 80}}
+	result := simulateFrom(report, []shadowPlan{plan}, cfg, report.RemainingCash, active)
+	if result.CompletedTrades != 0 || len(result.Positions) != 1 || result.Positions[0].Quantity != entry.Quantity {
+		t.Fatalf("same-day tranche violated T+1: %+v", result)
+	}
+	if !hasShadowDecision(result.Decisions, "hold") {
+		t.Fatalf("T+1 hold decision missing: %+v", result.Decisions)
+	}
+}
+
+func TestShadowExpiryClosesOnlyMatureTranche(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	cfg := DefaultConfig()
+	cfg.HoldingDays = 2
+	first := shadowSignal("first", symbol, "2026-08-20", 70)
+	stronger := shadowSignal("stronger", symbol, "2026-08-21", 75)
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Evaluate(context.Background(), []realtime.Signal{first, stronger}, Options{Config: cfg, Now: func() time.Time {
+		return time.Date(2026, 8, 24, 15, 6, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FilledEntries != 2 || report.CompletedTrades != 1 || len(report.Positions) != 1 || len(report.Positions[0].Lots) != 1 {
+		t.Fatalf("mature tranche exit changed the whole position: %+v", report)
+	}
+	if report.Trades[0].EntryOrderID != "first-buy" || report.Trades[0].PositionAction != "exit" || report.Positions[0].Lots[0].OrderID != "stronger-buy" {
+		t.Fatalf("wrong tranche exited: trades=%+v position=%+v", report.Trades, report.Positions[0])
+	}
+}
+
+func TestShadowOpeningBuyCannotUseSameDayClosingProceeds(t *testing.T) {
+	cfg := DefaultConfig()
+	date := "2026-08-24"
+	oldSymbol, newSymbol := "sh600000", "sh600001"
+	oldBars := []domain.DailyBar{
+		shadowBar(oldSymbol, "2026-08-21", 10, 10, 10.2, 9.8, 100_000_000),
+		shadowBar(oldSymbol, date, 10, 10, 10.2, 9.8, 100_000_000),
+	}
+	newBars := []domain.DailyBar{
+		shadowBar(newSymbol, "2026-08-21", 10, 10, 10.2, 9.8, 100_000_000),
+		shadowBar(newSymbol, date, 10, 10, 10.2, 9.8, 100_000_000),
+	}
+	oldSignal := shadowSignal("old", oldSymbol, "2026-08-20", 70)
+	entry := makeOrder(oldSignal, "buy", "2026-08-21", 10, 80_000, cfg, 0)
+	entry.Status = OrderFilled
+	entry.PositionAction = "open"
+	lotPlan := shadowPlan{signal: oldSignal, bars: oldBars, entryIndex: 0, exitIndex: 1, targetExitDate: date, signalClose: 10}
+	lot := shadowLot{plan: lotPlan, entry: entry, entryCost: entry.Amount + transactionFee(entry.Amount, "buy", cfg)}
+	exitPlan := lotPlan
+	exitPlan.lotOrderID = entry.ID
+	exitPlan.exitDate = date
+	newSignal := shadowSignal("new", newSymbol, "2026-08-21", 80)
+	entryPlan := shadowPlan{signal: newSignal, bars: newBars, capacity: 100_000_000, entryDate: date, entryIndex: 1, signalClose: 10}
+	report := Report{EngineVersion: ShadowEngineVersion, Config: cfg, InitialCash: cfg.InitialCash, RemainingCash: 200_000, FilledEntries: 1, AsOf: date, Orders: []ShadowOrder{entry}}
+	active := map[string]shadowPosition{oldSymbol: {plan: lotPlan, lots: []shadowLot{lot}, lastSignalScore: 70}}
+	result := simulateFrom(report, []shadowPlan{exitPlan, entryPlan}, cfg, report.RemainingCash, active)
+	for _, order := range result.Orders {
+		if order.Symbol == newSymbol && order.Side == "buy" && order.Status == OrderFilled {
+			t.Fatalf("closing proceeds funded a retroactive opening buy: %+v", result.Orders)
+		}
+	}
+	if result.CompletedTrades != 1 || result.RemainingCash <= report.RemainingCash {
+		t.Fatalf("closing exit did not settle after skipped opening buy: %+v", result)
+	}
+}
+
+func shadowStrategyBars(symbol string) []domain.DailyBar {
+	dates := []string{"2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28"}
+	result := make([]domain.DailyBar, 0, len(dates))
+	for index, date := range dates {
+		price := 10 + float64(index)*.1
+		result = append(result, shadowBar(symbol, date, price, price+.03, price+.2, price-.2, 100_000_000))
+	}
+	return result
+}
+
+func hasShadowDecision(decisions []ShadowDecision, action string) bool {
+	for _, decision := range decisions {
+		if decision.Action == action {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRepresentativeSignalsZeroLimitKeepsAllDates(t *testing.T) {
@@ -337,6 +598,45 @@ func TestValidateTransitionAllowsMarkToMarketAndFutureExit(t *testing.T) {
 	}
 }
 
+func TestValidateTransitionRequiresQuantityConservationForReduction(t *testing.T) {
+	order := ShadowOrder{ID: "signal-buy", Symbol: "sh600000", Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 200, RawPrice: 10, Price: 10, Amount: 2000, Status: OrderFilled}
+	position := ShadowOpenPosition{Symbol: "sh600000", SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 200, EntryPrice: 10}
+	previous := Report{AsOf: "2026-08-21", CheckpointPhase: CheckpointClose, Orders: []ShadowOrder{order}, Positions: []ShadowOpenPosition{position}}
+	sell := ShadowOrder{ID: "reduce-sell", Symbol: "sh600000", Side: "sell", AttemptDate: "2026-08-24", Quantity: 100, RawPrice: 11, Price: 11, Amount: 1100, Status: OrderFilled, PositionAction: "reduce"}
+
+	valid := Report{AsOf: "2026-08-24", Orders: []ShadowOrder{order, sell}, Positions: []ShadowOpenPosition{{Symbol: "sh600000", SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10}}}
+	if err := ValidateTransition(previous, valid); err != nil {
+		t.Fatalf("quantity-conserving reduction was rejected: %v", err)
+	}
+
+	invalid := valid
+	invalid.Positions = nil
+	if err := ValidateTransition(previous, invalid); err == nil {
+		t.Fatal("partial reduction was allowed to erase the remaining position")
+	}
+}
+
+func TestValidateTransitionAllowsOldestLotRemovalToMoveEntryDate(t *testing.T) {
+	first := ShadowPositionLot{OrderID: "first-buy", EntryDate: "2026-08-21", Quantity: 100, EntryPrice: 10, EntryAmount: 1000}
+	second := ShadowPositionLot{OrderID: "second-buy", EntryDate: "2026-08-24", Quantity: 100, EntryPrice: 11, EntryAmount: 1100}
+	previous := Report{
+		AsOf: "2026-08-24", CheckpointPhase: CheckpointClose,
+		Orders: []ShadowOrder{
+			{ID: first.OrderID, Symbol: "sh600000", Side: "buy", AttemptDate: first.EntryDate, Quantity: first.Quantity, Price: first.EntryPrice, RawPrice: first.EntryPrice, Amount: first.EntryAmount, Status: OrderFilled},
+			{ID: second.OrderID, Symbol: "sh600000", Side: "buy", AttemptDate: second.EntryDate, Quantity: second.Quantity, Price: second.EntryPrice, RawPrice: second.EntryPrice, Amount: second.EntryAmount, Status: OrderFilled},
+		},
+		Positions: []ShadowOpenPosition{{Symbol: "sh600000", EntryDate: first.EntryDate, Quantity: 200, EntryPrice: 10.5, Lots: []ShadowPositionLot{first, second}}},
+	}
+	sell := ShadowOrder{ID: "reduce-sell", Symbol: "sh600000", Side: "sell", AttemptDate: "2026-08-25", Quantity: 100, Price: 12, RawPrice: 12, Amount: 1200, Status: OrderFilled, PositionAction: "reduce"}
+	next := Report{
+		AsOf: "2026-08-25", Orders: append(append([]ShadowOrder(nil), previous.Orders...), sell),
+		Positions: []ShadowOpenPosition{{Symbol: "sh600000", EntryDate: second.EntryDate, Quantity: 100, EntryPrice: 11, Lots: []ShadowPositionLot{second}}},
+	}
+	if err := ValidateTransition(previous, next); err != nil {
+		t.Fatalf("oldest-lot reduction was mistaken for a rebuilt position: %v", err)
+	}
+}
+
 func TestTradingCheckpointAtSeparatesOpenAndClose(t *testing.T) {
 	calendar := []string{"2026-08-21", "2026-08-24"}
 	open := TradingCheckpointAt(time.Date(2026, 8, 24, 10, 0, 0, 0, shanghaiLocation), calendar)
@@ -400,6 +700,79 @@ func TestAdvancePreservesLedgerAndClosesOnlyAtCloseCheckpoint(t *testing.T) {
 	}
 	if !sameSettledOrder(closeReport.Orders[0], previous.Orders[0]) {
 		t.Fatalf("previous order was rewritten: before=%+v after=%+v", previous.Orders[0], closeReport.Orders[0])
+	}
+	if err := ValidateTransition(openReport, closeReport); err != nil {
+		t.Fatalf("open-to-close transition rejected same-day close settlement: %v", err)
+	}
+}
+
+func TestAdvanceMigratesLegacyAccountWithoutRebuildingLedger(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	cfg := DefaultConfig()
+	legacyConfig := cfg
+	legacyConfig.MaxPortfolioPercent = 0
+	legacyConfig.CashReservePercent = 0
+	legacyConfig.MaxDailyDeploymentPercent = 0
+	legacyConfig.InitialEntryPercent = 0
+	legacyConfig.MaxEntryTranches = 0
+	legacyConfig.AdditionScoreStep = 0
+	amount := 10.2 * 1_000
+	fee := transactionFee(amount, "buy", cfg)
+	previous := Report{
+		EngineVersion: "tplus1-v6", ConfigFingerprint: "legacy-v6-fingerprint", Config: legacyConfig,
+		AsOf: "2026-08-21", CheckpointPhase: CheckpointClose, InitialCash: cfg.InitialCash,
+		RemainingCash: cfg.InitialCash - amount - fee, FilledEntries: 1, TotalTurnover: amount, TotalFees: fee,
+		Orders:    []ShadowOrder{{ID: "legacy-buy", Symbol: symbol, Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 1_000, RawPrice: 10.2, Price: 10.2, Amount: amount, Status: OrderFilled}},
+		Positions: []ShadowOpenPosition{{SignalID: "legacy", Symbol: symbol, SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 1_000, EntryPrice: 10.2, EntryAmount: amount, EntryFee: fee, SignalScore: 70, SignalClose: 10.1, TargetExitDate: "2026-08-28"}},
+	}
+	signal := shadowSignal("legacy", symbol, "2026-08-20", 70)
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Advance(context.Background(), previous, []realtime.Signal{signal}, Options{Config: cfg, Now: func() time.Time {
+		return time.Date(2026, 8, 24, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.EngineVersion != ShadowEngineVersion || report.RemainingCash != previous.RemainingCash || len(report.Orders) != 1 || len(report.Positions) != 1 || len(report.Positions[0].Lots) != 1 {
+		t.Fatalf("legacy account was rebuilt instead of migrated: before=%+v after=%+v", previous, report)
+	}
+	if report.Orders[0].ID != previous.Orders[0].ID || report.Positions[0].Quantity != previous.Positions[0].Quantity || report.Positions[0].Lots[0].OrderID != previous.Orders[0].ID {
+		t.Fatalf("legacy ledger basis changed during migration: %+v", report)
+	}
+	if err := ValidateTransition(previous, report); err != nil {
+		t.Fatalf("legacy migration failed continuity validation: %v", err)
+	}
+}
+
+func TestAdvanceUsesWeakArchivedSignalForNextOpenReduction(t *testing.T) {
+	symbol := "sh600000"
+	bars := shadowStrategyBars(symbol)
+	calendar := shadowStrategyBars("sh000300")
+	cfg := DefaultConfig()
+	cfg.HoldingDays = 20
+	amount := 10.2 * 1_000
+	fee := transactionFee(amount, "buy", cfg)
+	previous := Report{
+		EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, 0), Config: cfg,
+		AsOf: "2026-08-24", CheckpointPhase: CheckpointClose, InitialCash: cfg.InitialCash,
+		RemainingCash: cfg.InitialCash - amount - fee, FilledEntries: 1, TotalTurnover: amount, TotalFees: fee,
+		Orders:    []ShadowOrder{{ID: "entry-buy", Symbol: symbol, Side: "buy", SignalDate: "2026-08-20", AttemptDate: "2026-08-21", Quantity: 1_000, RawPrice: 10.2, Price: 10.2, Amount: amount, Status: OrderFilled}},
+		Positions: []ShadowOpenPosition{{SignalID: "entry", Symbol: symbol, SignalDate: "2026-08-20", EntryDate: "2026-08-21", Quantity: 1_000, EntryPrice: 10.2, EntryAmount: amount, EntryFee: fee, SignalScore: 75, SignalClose: 10.1}},
+	}
+	weak := shadowSignal("weak-after", symbol, "2026-08-24", 70)
+	weak.State = realtime.StateWeak
+	report, err := NewEvaluator(shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars, "sh000300": calendar}}).Advance(context.Background(), previous, []realtime.Signal{weak}, Options{Config: cfg, Now: func() time.Time {
+		return time.Date(2026, 8, 25, 10, 0, 0, 0, shanghaiLocation)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CompletedTrades != 1 || len(report.Positions) != 0 || len(report.Orders) != 2 || report.Orders[1].PositionAction != "reduce" {
+		t.Fatalf("incremental weak signal did not reduce the position: %+v", report)
+	}
+	if err := ValidateTransition(previous, report); err != nil {
+		t.Fatalf("valid next-day reduction failed continuity validation: %v", err)
 	}
 }
 

@@ -388,7 +388,22 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
 .shadow-account-metrics .metric-primary { box-shadow:inset 3px 0 0 var(--accent); background:#18242a; }
 .shadow-account-metrics .metric-primary strong { color:#e5f5fa; font-size:18px; }
 .shadow-execution-metrics strong { font-size:15px; }
+.shadow-policy-strip { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:1px; border-bottom:1px solid var(--line); background:var(--line); }
+.shadow-policy-strip > div { min-height:66px; padding:9px 11px; background:#182126; }
+.shadow-policy-strip > div:first-child { box-shadow:inset 3px 0 var(--warn); }
+.shadow-policy-strip > div.over { background:#211e18; }
+.shadow-policy-strip span,.shadow-policy-strip small { display:block; color:var(--muted); font-size:9px; }
+.shadow-policy-strip strong { display:block; margin:3px 0 1px; color:#e7c895; font-size:15px; font-variant-numeric:tabular-nums; }
+.shadow-policy-strip small { white-space:normal; }
 .shadow-orders .reason-inline { display:block; max-width:180px; margin-left:auto; white-space:normal; line-height:1.35; }
+.shadow-positions .outcome-row > span:nth-child(2) b,
+.shadow-positions .outcome-row > span:nth-child(2) small { display:block; overflow:visible; text-overflow:clip; white-space:normal; }
+.shadow-positions .outcome-row > span:nth-child(2),
+.shadow-orders .outcome-row > span:last-child,
+.shadow-decisions .outcome-row > span:last-child { overflow-wrap:anywhere; }
+.shadow-decisions .outcome-row { grid-template-columns:minmax(160px,1.2fr) 78px 90px 70px 90px minmax(230px,1.7fr); min-width:830px; }
+.shadow-decisions .outcome-row > span:last-child { min-width:0; white-space:normal; }
+.shadow-decisions .outcome-row > span:last-child b { display:block; overflow:visible; white-space:normal; }
 .shadow-rejection-list { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; margin-top:1px; background:var(--line); }
 .shadow-rejection-list span { display:grid; grid-template-columns:auto auto; gap:4px 8px; min-width:0; padding:8px 10px; background:var(--panel); font-size:10px; }
 .shadow-rejection-list b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -524,6 +539,7 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .strategy-evidence-grid { grid-template-columns:1fr; }
   .realtime-layout { grid-template-columns:minmax(0,1fr); }
   .realtime-outcome-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .shadow-policy-strip { grid-template-columns:repeat(3,minmax(0,1fr)); }
   .shadow-rejection-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .assessment-checks { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
@@ -541,6 +557,7 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .realtime-outcome-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); margin-right:10px; margin-left:10px; }
   .shadow-execution-panel { margin-right:10px; margin-left:10px; }
   .shadow-rejection-list { grid-template-columns:1fr; }
+  .shadow-policy-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .realtime-outcome-table,.realtime-outcome-recent,.realtime-assessment,.component-analysis { margin-right:10px; margin-left:10px; }
   .realtime-outcome-tabs { margin-right:10px; margin-left:10px; }
   .assessment-proposal { grid-template-columns:1fr; }
@@ -570,26 +587,45 @@ footer { margin-top:15px; color:var(--muted); font-size:12px; }
   .component-analysis-head { align-items:flex-start; flex-direction:column; gap:5px; }
   .component-analysis-head .symbol { max-width:100%; text-align:left; }
   .shadow-positions .outcome-row,
-  .shadow-orders .outcome-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; min-width:0; min-height:0; padding:10px; }
+  .shadow-orders .outcome-row,
+  .shadow-decisions .outcome-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; min-width:0; min-height:0; padding:10px; }
   .shadow-positions .outcome-row.heading,
-  .shadow-orders .outcome-row.heading { display:none; }
+  .shadow-orders .outcome-row.heading,
+  .shadow-decisions .outcome-row.heading { display:none; }
   .shadow-positions .outcome-row > span,
-  .shadow-orders .outcome-row > span { min-width:0; text-align:left; white-space:normal; }
+  .shadow-orders .outcome-row > span,
+  .shadow-decisions .outcome-row > span { min-width:0; text-align:left; white-space:normal; }
   .shadow-positions .outcome-row > span:first-child,
-  .shadow-orders .outcome-row > span:first-child { grid-column:1 / -1; }
+  .shadow-orders .outcome-row > span:first-child,
+  .shadow-decisions .outcome-row > span:first-child { grid-column:1 / -1; }
   .shadow-positions .outcome-row > span:nth-child(6),
-  .shadow-orders .outcome-row > span:nth-child(6) { grid-column:1 / -1; }
+  .shadow-orders .outcome-row > span:nth-child(6),
+  .shadow-decisions .outcome-row > span:nth-child(6) { grid-column:1 / -1; }
   .shadow-positions .outcome-row > span:not(:first-child)::before,
-  .shadow-orders .outcome-row > span:not(:first-child)::before { display:block; margin-bottom:2px; color:var(--muted); font-size:8px; font-weight:500; letter-spacing:.2px; }
-  .shadow-positions .outcome-row > span:nth-child(2)::before { content:'模拟开仓时点'; }
-  .shadow-positions .outcome-row > span:nth-child(3)::before { content:'数量 / 可卖'; }
+  .shadow-orders .outcome-row > span:not(:first-child)::before,
+  .shadow-decisions .outcome-row > span:not(:first-child)::before { display:block; margin-bottom:2px; color:var(--muted); font-size:8px; font-weight:500; letter-spacing:.2px; }
+  .shadow-positions .outcome-row > span:nth-child(2)::before { content:'成本 / 首次开仓'; }
+  .shadow-positions .outcome-row > span:nth-child(3)::before { content:'数量 / 批次'; }
   .shadow-positions .outcome-row > span:nth-child(4)::before { content:'最新估值'; }
   .shadow-positions .outcome-row > span:nth-child(5)::before { content:'市值'; }
   .shadow-positions .outcome-row > span:nth-child(6)::before { content:'未实现收益'; }
-  .shadow-orders .outcome-row > span:nth-child(2)::before { content:'方向'; }
+  .shadow-orders .outcome-row > span:nth-child(2)::before { content:'仓位动作'; }
   .shadow-orders .outcome-row > span:nth-child(3)::before { content:'模拟成交时点'; }
   .shadow-orders .outcome-row > span:nth-child(4)::before { content:'数量'; }
   .shadow-orders .outcome-row > span:nth-child(5)::before { content:'成交价'; }
   .shadow-orders .outcome-row > span:nth-child(6)::before { content:'触发依据'; }
+  .shadow-decisions .outcome-row > span:nth-child(2)::before { content:'动作'; }
+  .shadow-decisions .outcome-row > span:nth-child(3)::before { content:'日期'; }
+  .shadow-decisions .outcome-row > span:nth-child(4)::before { content:'信号分'; }
+  .shadow-decisions .outcome-row > span:nth-child(5)::before { content:'当前数量'; }
+  .shadow-decisions .outcome-row > span:nth-child(6)::before { content:'决策依据'; }
   .shadow-orders .reason-inline { max-width:none; margin-left:0; }
+  .shadow-positions .outcome-row strong,
+  .shadow-positions .outcome-row small,
+  .shadow-orders .outcome-row strong,
+  .shadow-orders .outcome-row small,
+  .shadow-decisions .outcome-row strong,
+  .shadow-decisions .outcome-row small { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }
+  .shadow-policy-strip { grid-template-columns:1fr 1fr; }
+  .shadow-policy-strip > div:last-child { grid-column:1 / -1; }
 }

@@ -209,13 +209,17 @@ func shadowReportMatches(report paper.Report, options paper.Options, checkpoint 
 }
 
 func shadowCanAdvance(report paper.Report, options paper.Options) bool {
+	hasLedger := len(report.Orders) > 0 || len(report.Positions) > 0 || len(report.Trades) > 0
+	if report.EngineVersion != paper.ShadowEngineVersion && hasLedger {
+		return paper.ConfigFingerprint(report.Config) == paper.ConfigFingerprint(options.Config)
+	}
 	if report.ConfigFingerprint != "" && report.ConfigFingerprint != paper.OptionsFingerprint(options.Config, options.Limit) {
 		return false
 	}
 	if report.ConfigFingerprint == "" && paper.ConfigFingerprint(report.Config) != paper.ConfigFingerprint(options.Config) {
 		return false
 	}
-	return report.EngineVersion == paper.ShadowEngineVersion || len(report.Orders) > 0 || len(report.Positions) > 0 || len(report.Trades) > 0
+	return report.EngineVersion == paper.ShadowEngineVersion || hasLedger
 }
 
 func shadowQuoteFresh(raw string, now time.Time) bool {

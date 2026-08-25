@@ -241,6 +241,14 @@ createApp({
     shadowPositions() { return this.shadowReport && Array.isArray(this.shadowReport.positions) ? this.shadowReport.positions : [] },
     shadowOrders() { return this.shadowReport && Array.isArray(this.shadowReport.orders) ? this.shadowReport.orders : [] },
     shadowRejections() { return this.shadowReport && Array.isArray(this.shadowReport.rejections) ? this.shadowReport.rejections : [] },
+    shadowDecisions() { return this.shadowReport && Array.isArray(this.shadowReport.decisions) ? this.shadowReport.decisions : [] },
+    shadowConfig() { return (this.shadowReport && this.shadowReport.config) || {} },
+    shadowInvestedPercent() {
+      const report = this.shadowReport || {}
+      const equity = Number(report.total_equity)
+      const marketValue = Number(report.total_market_value)
+      return Number.isFinite(equity) && equity > 0 && Number.isFinite(marketValue) ? marketValue / equity * 100 : 0
+    },
     strategyResultTitle() {
       if (!this.strategyResult) return "回测结果"
       const tickers = this.strategyRequest.tickers || []
@@ -386,12 +394,18 @@ createApp({
     },
     shadowRejectionDetail(item) {
       if (!item) return ""
-      const position = this.shadowPositions.find(candidate => candidate.symbol === item.symbol)
-      if (String(item.reason || "").includes("同股票影子持仓") && position) {
-        const exitPlan = position.target_exit_date ? `计划 ${position.target_exit_date} 收盘退出` : `按 ${this.shadowReport?.config?.holding_days || 5} 个交易日持有窗口退出`
-        return `已有持仓：${position.entry_time || `${position.entry_date} 09:30`}，${position.quantity || 0} 股，${exitPlan}；单股单仓约束下保留原仓，本次信号不重复加仓。`
+      if (String(item.reason || "").includes("同股票影子持仓")) {
+        return `旧版单股单仓规则留下的历史记录；当前策略允许分批加仓与分批减仓。`
       }
       return item.reason || ""
+    },
+    shadowActionLabel(action) {
+      return ({ open: "首次建仓", add: "加仓", reduce: "减仓", exit: "到期退出", hold: "持有", wait: "等待" })[action] || action || "--"
+    },
+    shadowLotSummary(position) {
+      const lots = Array.isArray(position && position.lots) ? position.lots : []
+      const sellable = lots.filter(lot => lot.entry_date && this.shadowReport && String(lot.entry_date) < String(this.shadowReport.as_of || "")).reduce((sum, lot) => sum + Number(lot.quantity || 0), 0)
+      return `${lots.length || 1} 批 · 可卖 ${sellable || Number(position && position.available_quantity || 0)} 股`
     },
     switchRealtimeSection(section) {
       if (!['candidates', 'shadow', 'validation'].includes(section)) return

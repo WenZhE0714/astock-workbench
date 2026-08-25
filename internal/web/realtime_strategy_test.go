@@ -492,3 +492,27 @@ func TestShadowHelpersRejectStaleQuotesAndMismatchedCache(t *testing.T) {
 		t.Fatal("cache ignored execution config change")
 	}
 }
+
+func TestShadowCanAdvanceLegacyLedgerIntoCurrentEngine(t *testing.T) {
+	legacyConfig := paper.DefaultConfig()
+	legacyConfig.MaxPortfolioPercent = 0
+	legacyConfig.CashReservePercent = 0
+	legacyConfig.MaxDailyDeploymentPercent = 0
+	legacyConfig.InitialEntryPercent = 0
+	legacyConfig.MaxEntryTranches = 0
+	legacyConfig.AdditionScoreStep = 0
+	report := paper.Report{
+		EngineVersion:     "tplus1-v6",
+		ConfigFingerprint: "legacy-fingerprint",
+		Config:            legacyConfig,
+		Orders:            []paper.ShadowOrder{{ID: "legacy-buy", Symbol: "sh600000", Side: "buy", Status: paper.OrderFilled}},
+	}
+	options := paper.Options{Config: paper.DefaultConfig(), Limit: 0}
+	if !shadowCanAdvance(report, options) {
+		t.Fatal("compatible legacy ledger was not allowed to migrate")
+	}
+	options.Config.HoldingDays++
+	if shadowCanAdvance(report, options) {
+		t.Fatal("legacy ledger ignored an incompatible holding-window change")
+	}
+}

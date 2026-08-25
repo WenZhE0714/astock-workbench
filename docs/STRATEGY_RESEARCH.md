@@ -28,6 +28,8 @@
 | [vn.py](https://github.com/vnpy/vnpy) | 策略回测、组合、数据记录、风控、模拟与实盘分层 | 研究候选和模拟观察候选分级；完整保存实验和逐笔记录；后续 PaperBroker/LiveBroker 仍需独立风控和人工确认 |
 | [FinRL](https://github.com/AI4Finance-Foundation/FinRL) | train/validation/test/trade 阶段隔离 | 候选只使用滚动训练/验证排名；参数锁定后才读取最终留出；留出结果不能回流到同一轮选参 |
 
+影子账户的仓位层进一步借鉴 Qlib `TopkDropoutStrategy` 的有限换入换出、LEAN 的 Alpha/Portfolio/Risk/Execution 分层和 Freqtrade 的仓位调整保护。实时信号只产生仓位决策，不直接等于满仓订单：组合最多投入 80%，保留 20% 现金；单日新增资金最多 35%；单股最多 20%，按约 `10% + 5% + 5%` 分成最多 3 批。后续信号至少增强 4 分才加仓，至少走弱 4 分才于下一交易日开盘减去一个满足 T+1 的最老批次。持有窗口按批次独立到期，日 K 数据不用于伪造分钟级日内做 T。
+
 这些项目的框架不会作为运行依赖引入。当前 Go 引擎较轻，直接借鉴实验纪律比嵌入整套 Python
 量化平台更适合实时 CLI，也避免行情工具被研究环境和模型故障拖累。
 
