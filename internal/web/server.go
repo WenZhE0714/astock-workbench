@@ -80,6 +80,13 @@ type backtestArchive interface {
 	List(int) ([]storage.BacktestIndexEntry, error)
 }
 
+type continuousOptimizationArchive interface {
+	All() ([]backtest.ContinuousOptimizationResult, error)
+	Load(string) (backtest.ContinuousOptimizationResult, error)
+	LoadLifecycle(string) (backtest.CandidateLifecycle, error)
+	SaveLifecycle(backtest.CandidateLifecycle) error
+}
+
 type realtimeScanner interface {
 	Scan(context.Context, []string, bool) (realtime.ScanResult, error)
 }
@@ -106,49 +113,146 @@ type shadowAdvancer interface {
 	Advance(context.Context, paper.Report, []realtime.Signal, paper.Options) (paper.Report, error)
 }
 
+type shadowRealtimeAdvancer interface {
+	AdvanceRealtime(context.Context, paper.Report, []realtime.Signal, paper.Options) (paper.Report, error)
+}
+
 type shadowArchive interface {
 	Save(paper.Report) error
 	Load() (paper.Report, error)
 }
 
+type shadowExecutionProfile struct {
+	ID          string
+	Name        string
+	Strategy    string
+	Description string
+	Config      paper.Config
+	Archive     shadowArchive
+}
+
+type AutomaticResearchResult struct {
+	Ran          bool   `json:"ran"`
+	ExperimentID string `json:"experiment_id,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
+type automaticResearchRunner func(context.Context, []string, time.Time) (AutomaticResearchResult, error)
+
+type automationStateStore interface {
+	Load() (storage.AutomationState, error)
+	Save(storage.AutomationState) error
+}
+
 type Server struct {
-	resolver                 SymbolResolver
-	quotes                   QuoteClient
-	history                  DailyHistoryClient
-	minutes                  MinuteClient
-	boardDetails             BoardDetailClient
-	marketAmounts            MarketAmountClient
-	strategyEngine           backtest.Engine
-	strategyArchive          backtestArchive
-	realtimeScanner          realtimeScanner
-	realtimeArchive          realtimeSignalArchive
-	realtimeOutcomes         realtimeOutcomeAnalyzer
-	shadowEvaluator          shadowAnalyzer
-	shadowArchive            shadowArchive
-	defaultSymbol            string
-	watchlistFile            string
-	nameCacheFile            string
-	handler                  http.Handler
-	quoteMu                  sync.Mutex
-	quoteCache               map[string]quoteCacheEntry
-	minuteMu                 sync.Mutex
-	minuteCache              map[string]minuteCacheEntry
-	historyMu                sync.Mutex
-	historyCache             map[string]historyCacheEntry
-	boardMu                  sync.Mutex
-	boardCache               map[string]boardCacheEntry
-	amountMu                 sync.Mutex
-	amountCache              marketAmountCacheEntry
-	watchlistMu              sync.Mutex
-	strategyMu               sync.Mutex
-	strategyRunning          bool
-	realtimeMu               sync.Mutex
-	realtimeRunning          bool
-	realtimeCache            realtime.ScanResult
-	realtimeSectorEnriching  bool
-	realtimeSectorEnrichedAt time.Time
-	shadowMu                 sync.Mutex
-	now                      func() time.Time
+	resolver                  SymbolResolver
+	quotes                    QuoteClient
+	history                   DailyHistoryClient
+	minutes                   MinuteClient
+	boardDetails              BoardDetailClient
+	marketAmounts             MarketAmountClient
+	strategyEngine            backtest.Engine
+	strategyArchive           backtestArchive
+	candidateEngine           backtest.Engine
+	candidateArchive          continuousOptimizationArchive
+	realtimeScanner           realtimeScanner
+	realtimeArchive           realtimeSignalArchive
+	realtimeOutcomes          realtimeOutcomeAnalyzer
+	shadowEvaluator           shadowAnalyzer
+	shadowArchive             shadowArchive
+	shadowProfiles            map[string]shadowExecutionProfile
+	defaultSymbol             string
+	watchlistFile             string
+	nameCacheFile             string
+	handler                   http.Handler
+	quoteMu                   sync.Mutex
+	quoteCache                map[string]quoteCacheEntry
+	minuteMu                  sync.Mutex
+	minuteCache               map[string]minuteCacheEntry
+	historyMu                 sync.Mutex
+	historyCache              map[string]historyCacheEntry
+	boardMu                   sync.Mutex
+	boardCache                map[string]boardCacheEntry
+	amountMu                  sync.Mutex
+	amountCache               marketAmountCacheEntry
+	watchlistMu               sync.Mutex
+	strategyMu                sync.Mutex
+	strategyRunning           bool
+	candidateMu               sync.Mutex
+	realtimeMu                sync.Mutex
+	realtimeRunning           bool
+	realtimeCache             realtime.ScanResult
+	realtimeSectorEnriching   bool
+	realtimeSectorEnrichedAt  time.Time
+	shadowMu                  sync.Mutex
+	shadowCalendarMu          sync.Mutex
+	shadowCalendarDates       []string
+	shadowCalendarFetchedAt   time.Time
+	automationMu              sync.Mutex
+	automationCtx             context.Context
+	automationRunning         bool
+	automationLastRun         time.Time
+	automationLastSuccess     time.Time
+	automationLastError       string
+	automationNextRun         time.Time
+	automationLastOutcome     time.Time
+	automationLastShadow      time.Time
+	automationResearch        automaticResearchRunner
+	tradingCalendarProvider   realtime.TradingCalendarProvider
+	automationStateStore      automationStateStore
+	automationResearchRunning bool
+	automationResearchAttempt time.Time
+	automationResearchSuccess time.Time
+	automationResearchID      string
+	automationResearchMessage string
+	automationResearchError   string
+	automationTasks           map[string]storage.AutomationTaskState
+	now                       func() time.Time
+}
+
+type AutomationStatus struct {
+	Enabled              bool                                   `json:"enabled"`
+	Running              bool                                   `json:"running"`
+	LastRunAt            time.Time                              `json:"last_run_at,omitempty"`
+	LastSuccessAt        time.Time                              `json:"last_success_at,omitempty"`
+	LastError            string                                 `json:"last_error,omitempty"`
+	NextRunAt            time.Time                              `json:"next_run_at,omitempty"`
+	LastOutcomeAt        time.Time                              `json:"last_outcome_at,omitempty"`
+	LastShadowAt         time.Time                              `json:"last_shadow_at,omitempty"`
+	Tasks                []string                               `json:"tasks"`
+	TaskOrder            []string                               `json:"task_order"`
+	ResearchRunning      bool                                   `json:"research_running"`
+	ResearchAttemptAt    time.Time                              `json:"research_attempt_at,omitempty"`
+	ResearchSuccessAt    time.Time                              `json:"research_success_at,omitempty"`
+	ResearchExperimentID string                                 `json:"research_experiment_id,omitempty"`
+	ResearchMessage      string                                 `json:"research_message,omitempty"`
+	ResearchError        string                                 `json:"research_error,omitempty"`
+	TaskStates           map[string]storage.AutomationTaskState `json:"task_states,omitempty"`
+}
+
+const (
+	automationTaskScan      = "scan"
+	automationTaskOutcomes  = "outcomes"
+	automationTaskShadow    = "shadow"
+	automationTaskResearch  = "research"
+	automationCycleInterval = 30 * time.Second
+)
+
+const shadowCalendarCacheTTL = 2 * time.Minute
+
+type automationTaskDefinition struct {
+	Key   string
+	Label string
+}
+
+// Keep task order explicit at the API/UI boundary. JSON object iteration is
+// intentionally unordered, while operators need the same scan -> outcomes ->
+// shadow -> research sequence on every refresh.
+var automationTaskDefinitions = []automationTaskDefinition{
+	{Key: automationTaskScan, Label: "扫描"},
+	{Key: automationTaskOutcomes, Label: "前测"},
+	{Key: automationTaskShadow, Label: "影子"},
+	{Key: automationTaskResearch, Label: "研究"},
 }
 
 type quoteCacheEntry struct {
@@ -374,10 +478,24 @@ func WithStrategyResearch(engine backtest.Engine, archive backtestArchive) Serve
 	}
 }
 
+func WithStrategyCandidateLifecycle(engine backtest.Engine, archive continuousOptimizationArchive) ServerOption {
+	return func(server *Server) {
+		server.candidateEngine = engine
+		server.candidateArchive = archive
+	}
+}
+
 func WithRealtimeStrategy(scanner realtimeScanner, archive realtimeSignalArchive) ServerOption {
 	return func(server *Server) {
 		server.realtimeScanner = scanner
 		server.realtimeArchive = archive
+		if server.tradingCalendarProvider != nil {
+			if configurable, ok := scanner.(interface {
+				SetTradingCalendarProvider(realtime.TradingCalendarProvider)
+			}); ok {
+				configurable.SetTradingCalendarProvider(server.tradingCalendarProvider)
+			}
+		}
 	}
 }
 
@@ -391,6 +509,44 @@ func WithShadowExecution(evaluator shadowAnalyzer, archive shadowArchive) Server
 	return func(server *Server) {
 		server.shadowEvaluator = evaluator
 		server.shadowArchive = archive
+		server.shadowProfiles = singleShadowExecutionProfile(archive)
+	}
+}
+
+// WithShadowExecutionProfiles keeps the existing balanced ledger and adds two
+// independent paper accounts. Each profile owns a separate archive and config,
+// so switching the web view never rewrites another account's fills or T+1 lots.
+func WithShadowExecutionProfiles(evaluator shadowAnalyzer, balanced, conservative, aggressive shadowArchive) ServerOption {
+	return func(server *Server) {
+		server.shadowEvaluator = evaluator
+		server.shadowArchive = balanced
+		server.shadowProfiles = defaultShadowExecutionProfiles(balanced, conservative, aggressive)
+	}
+}
+
+func WithAutomaticStrategyResearch(runner func(context.Context, []string, time.Time) (AutomaticResearchResult, error)) ServerOption {
+	return func(server *Server) {
+		server.automationResearch = runner
+	}
+}
+
+func WithAutomationState(store automationStateStore) ServerOption {
+	return func(server *Server) {
+		server.automationStateStore = store
+	}
+}
+
+// WithTradingCalendar allows an embedding application to provide an official
+// point-in-time exchange calendar. The benchmark K-line calendar remains the
+// default fallback when this option is not supplied.
+func WithTradingCalendar(provider func(context.Context, time.Time) ([]string, error)) ServerOption {
+	return func(server *Server) {
+		server.tradingCalendarProvider = realtime.TradingCalendarProvider(provider)
+		if configurable, ok := server.realtimeScanner.(interface {
+			SetTradingCalendarProvider(realtime.TradingCalendarProvider)
+		}); ok {
+			configurable.SetTradingCalendarProvider(server.tradingCalendarProvider)
+		}
 	}
 }
 
@@ -398,24 +554,154 @@ func WithShadowExecution(evaluator shadowAnalyzer, archive shadowArchive) Server
 // have to configure the shared CLI watchlist and name cache.
 func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistoryClient, minutes MinuteClient, defaultSymbol string, options ...ServerOption) *Server {
 	server := &Server{
-		resolver:      resolver,
-		quotes:        quotes,
-		history:       history,
-		minutes:       minutes,
-		defaultSymbol: strings.TrimSpace(defaultSymbol),
-		quoteCache:    make(map[string]quoteCacheEntry),
-		minuteCache:   make(map[string]minuteCacheEntry),
-		historyCache:  make(map[string]historyCacheEntry),
-		boardCache:    make(map[string]boardCacheEntry),
-		now:           time.Now,
+		resolver:        resolver,
+		quotes:          quotes,
+		history:         history,
+		minutes:         minutes,
+		defaultSymbol:   strings.TrimSpace(defaultSymbol),
+		quoteCache:      make(map[string]quoteCacheEntry),
+		minuteCache:     make(map[string]minuteCacheEntry),
+		historyCache:    make(map[string]historyCacheEntry),
+		boardCache:      make(map[string]boardCacheEntry),
+		automationTasks: make(map[string]storage.AutomationTaskState),
+		now:             time.Now,
 	}
 	for _, option := range options {
 		if option != nil {
 			option(server)
 		}
 	}
+	server.restoreAutomationState()
+	server.initializeAutomationTaskStates()
 	server.handler = server.routes()
 	return server
+}
+
+func (s *Server) restoreAutomationState() {
+	if s == nil || s.automationStateStore == nil {
+		return
+	}
+	state, err := s.automationStateStore.Load()
+	if err != nil {
+		return
+	}
+	s.automationMu.Lock()
+	s.automationLastRun = state.LastRunAt
+	s.automationLastSuccess = state.LastSuccessAt
+	s.automationLastError = state.LastError
+	s.automationNextRun = state.NextRunAt
+	s.automationLastOutcome = state.LastOutcomeAt
+	s.automationLastShadow = state.LastShadowAt
+	s.automationResearchAttempt = state.ResearchAttemptAt
+	s.automationResearchSuccess = state.ResearchSuccessAt
+	s.automationResearchID = state.ResearchExperimentID
+	s.automationResearchMessage = state.ResearchMessage
+	s.automationResearchError = state.ResearchError
+	s.automationTasks = cloneAutomationTasks(state.Tasks)
+	// A process cannot still be executing work from a previous process. Do not
+	// restore transient `running`/`busy` states as if they were live locks.
+	for key, task := range s.automationTasks {
+		if task.Status == "running" || task.Status == "busy" {
+			task.Status = "waiting"
+			task.Detail = "服务重启后等待下一次调度"
+			task.LastError = ""
+			s.automationTasks[key] = task
+		}
+	}
+	s.automationMu.Unlock()
+}
+
+func (s *Server) persistAutomationState() {
+	if s == nil || s.automationStateStore == nil {
+		return
+	}
+	s.automationMu.Lock()
+	state := storage.AutomationState{
+		LastRunAt: s.automationLastRun, LastSuccessAt: s.automationLastSuccess,
+		LastError: s.automationLastError, NextRunAt: s.automationNextRun,
+		LastOutcomeAt: s.automationLastOutcome, LastShadowAt: s.automationLastShadow,
+		ResearchAttemptAt: s.automationResearchAttempt, ResearchSuccessAt: s.automationResearchSuccess,
+		ResearchExperimentID: s.automationResearchID, ResearchMessage: s.automationResearchMessage,
+		ResearchError: s.automationResearchError,
+		Tasks:         cloneAutomationTasks(s.automationTasks),
+	}
+	s.automationMu.Unlock()
+	// A failed metadata write must not stop market scanning; the next cycle will
+	// retry and the in-memory status remains authoritative for this process.
+	_ = s.automationStateStore.Save(state)
+}
+
+func cloneAutomationTasks(input map[string]storage.AutomationTaskState) map[string]storage.AutomationTaskState {
+	if len(input) == 0 {
+		return make(map[string]storage.AutomationTaskState)
+	}
+	result := make(map[string]storage.AutomationTaskState, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
+}
+
+func (s *Server) initializeAutomationTaskStates() {
+	if s == nil {
+		return
+	}
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	if s.automationTasks == nil {
+		s.automationTasks = make(map[string]storage.AutomationTaskState)
+	}
+	defaults := map[string]storage.AutomationTaskState{
+		automationTaskScan:     {Status: "waiting", Detail: "等待服务端调度"},
+		automationTaskOutcomes: {Status: "waiting", Detail: "等待当前交易日快照"},
+		automationTaskShadow:   {Status: "waiting", Detail: "等待当前交易日快照"},
+		automationTaskResearch: {Status: "waiting", Detail: "等待收盘后的非重叠窗口"},
+	}
+	if strings.TrimSpace(s.watchlistFile) == "" || s.realtimeScanner == nil || s.realtimeArchive == nil {
+		defaults[automationTaskScan] = storage.AutomationTaskState{Status: "paused", Detail: "实时扫描服务未配置"}
+	}
+	if s.realtimeOutcomes == nil {
+		defaults[automationTaskOutcomes] = storage.AutomationTaskState{Status: "paused", Detail: "信号前测服务未配置"}
+	}
+	if s.shadowEvaluator == nil || len(s.shadowProfiles) == 0 {
+		defaults[automationTaskShadow] = storage.AutomationTaskState{Status: "paused", Detail: "影子账户服务未配置"}
+	}
+	if s.automationResearch == nil {
+		defaults[automationTaskResearch] = storage.AutomationTaskState{Status: "paused", Detail: "自动研究服务未配置"}
+	}
+	for _, definition := range automationTaskDefinitions {
+		if _, exists := s.automationTasks[definition.Key]; !exists {
+			s.automationTasks[definition.Key] = defaults[definition.Key]
+		}
+	}
+}
+
+func (s *Server) setAutomationTask(key, status, detail string, attemptedAt time.Time, err error) {
+	if s == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	s.automationMu.Lock()
+	if s.automationTasks == nil {
+		s.automationTasks = make(map[string]storage.AutomationTaskState)
+	}
+	task := s.automationTasks[key]
+	task.Status = status
+	task.Detail = strings.TrimSpace(detail)
+	if !attemptedAt.IsZero() {
+		task.LastAttemptAt = attemptedAt
+	}
+	if err != nil {
+		task.LastError = err.Error()
+	} else if status == "success" {
+		task.LastError = ""
+		task.LastSuccessAt = s.currentTime()
+	} else if status == "waiting" || status == "paused" || status == "busy" || status == "running" {
+		// A current non-error state supersedes an older failure while preserving
+		// the last successful timestamp for operators.
+		task.LastError = ""
+	}
+	s.automationTasks[key] = task
+	s.automationMu.Unlock()
 }
 
 func (s *Server) routes() http.Handler {
@@ -425,8 +711,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/stock", s.handleStock)
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
+	mux.HandleFunc("/api/strategy/candidates", s.handleStrategyCandidates)
 	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
 	mux.HandleFunc("/api/strategy/shadow", s.handleShadowExecution)
+	mux.HandleFunc("/api/strategy/automation", s.handleAutomationStatus)
 	staticAssets, err := fs.Sub(assets, "dist")
 	if err == nil {
 		mux.Handle("/assets/", http.FileServer(http.FS(staticAssets)))
@@ -443,7 +731,23 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	if strings.TrimSpace(address) == "" {
 		return fmt.Errorf("web 监听地址不能为空")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	server := &http.Server{Addr: address, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	automationCtx, cancelAutomation := context.WithCancel(ctx)
+	defer cancelAutomation()
+	s.automationMu.Lock()
+	s.automationCtx = automationCtx
+	s.automationMu.Unlock()
+	defer func() {
+		s.automationMu.Lock()
+		if s.automationCtx == automationCtx {
+			s.automationCtx = nil
+		}
+		s.automationMu.Unlock()
+	}()
+	go s.runAutomationLoop(automationCtx)
 	serveError := make(chan error, 1)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -454,12 +758,447 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	}()
 	select {
 	case err := <-serveError:
+		cancelAutomation()
 		return err
 	case <-ctx.Done():
+		cancelAutomation()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return server.Shutdown(shutdownContext)
 	}
+}
+
+func (s *Server) automationRunContext() context.Context {
+	if s == nil {
+		return context.Background()
+	}
+	s.automationMu.Lock()
+	ctx := s.automationCtx
+	s.automationMu.Unlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func (s *Server) automationStatus() AutomationStatus {
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	return AutomationStatus{
+		Enabled: strings.TrimSpace(s.watchlistFile) != "" && s.realtimeScanner != nil && s.realtimeArchive != nil,
+		Running: s.automationRunning, LastRunAt: s.automationLastRun,
+		LastSuccessAt: s.automationLastSuccess, LastError: s.automationLastError,
+		NextRunAt: s.automationNextRun, LastOutcomeAt: s.automationLastOutcome, LastShadowAt: s.automationLastShadow,
+		Tasks:           []string{"交易时段实时扫描", "信号结果前测", "三个影子账户推进", "非重叠窗口滚动研究"},
+		TaskOrder:       []string{automationTaskScan, automationTaskOutcomes, automationTaskShadow, automationTaskResearch},
+		ResearchRunning: s.automationResearchRunning, ResearchAttemptAt: s.automationResearchAttempt,
+		ResearchSuccessAt: s.automationResearchSuccess, ResearchExperimentID: s.automationResearchID,
+		ResearchMessage: s.automationResearchMessage, ResearchError: s.automationResearchError,
+		TaskStates: cloneAutomationTasks(s.automationTasks),
+	}
+}
+
+func (s *Server) handleAutomationStatus(writer http.ResponseWriter, request *http.Request) {
+	switch request.Method {
+	case http.MethodGet:
+		writeJSON(writer, http.StatusOK, s.automationStatus())
+	case http.MethodPost:
+		action := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("action")))
+		if action != "" && action != "run" {
+			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "不支持的自动化操作"})
+			return
+		}
+		if !s.automationStatus().Enabled {
+			writeJSON(writer, http.StatusServiceUnavailable, errorResponse{Error: "自动化任务未初始化"})
+			return
+		}
+		if s.beginAutomationCycle() {
+			go s.runAutomationCycleStarted(s.automationRunContext())
+		}
+		writeJSON(writer, http.StatusAccepted, s.automationStatus())
+	default:
+		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "自动化状态只支持 GET、POST"})
+	}
+}
+
+func (s *Server) runAutomationLoop(ctx context.Context) {
+	if s == nil || s.realtimeScanner == nil || s.realtimeArchive == nil || strings.TrimSpace(s.watchlistFile) == "" {
+		return
+	}
+	ticker := time.NewTicker(automationCycleInterval)
+	defer ticker.Stop()
+	next := s.currentTime().Add(automationCycleInterval)
+	s.automationMu.Lock()
+	s.automationNextRun = next
+	s.automationMu.Unlock()
+	s.setAutomationTaskNextRun(automationTaskScan, next)
+	s.persistAutomationState()
+	s.runAutomationCycle(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.automationMu.Lock()
+			s.automationNextRun = now.Add(automationCycleInterval)
+			s.automationMu.Unlock()
+			s.setAutomationTaskNextRun(automationTaskScan, now.Add(automationCycleInterval))
+			s.persistAutomationState()
+			s.runAutomationCycle(ctx)
+		}
+	}
+}
+
+func (s *Server) setAutomationTaskNextRun(key string, next time.Time) {
+	if s == nil {
+		return
+	}
+	s.automationMu.Lock()
+	if s.automationTasks == nil {
+		s.automationTasks = make(map[string]storage.AutomationTaskState)
+	}
+	task := s.automationTasks[key]
+	task.NextRunAt = next
+	s.automationTasks[key] = task
+	s.automationMu.Unlock()
+}
+
+func (s *Server) beginAutomationCycle() bool {
+	if s == nil {
+		return false
+	}
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	if s.automationRunning {
+		return false
+	}
+	s.automationRunning = true
+	s.automationLastRun = s.currentTime()
+	return true
+}
+
+func (s *Server) runAutomationCycle(ctx context.Context) {
+	if !s.beginAutomationCycle() {
+		return
+	}
+	s.runAutomationCycleStarted(ctx)
+}
+
+func (s *Server) runAutomationCycleStarted(ctx context.Context) {
+	defer func() {
+		s.automationMu.Lock()
+		s.automationRunning = false
+		s.automationMu.Unlock()
+		s.persistAutomationState()
+	}()
+
+	cycleCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	now := s.currentTime()
+	session := s.marketSession(cycleCtx, now)
+	cycleErrors := make([]error, 0, 4)
+	appendCycleError := func(label string, err error) {
+		if err == nil {
+			return
+		}
+		cycleErrors = append(cycleErrors, fmt.Errorf("%s: %w", label, err))
+	}
+	scanBusy := false
+	scanFailed := false
+	scanSucceeded := false
+	shadowFailed := false
+	shadowPreserved := false
+	shadowPreserveReason := ""
+	if !session.ScanAllowed && !session.ShouldFinalize(time.Time{}) {
+		s.setAutomationTask(automationTaskScan, "paused", "当前不在可扫描交易时段", now, nil)
+	} else {
+		s.setAutomationTask(automationTaskScan, "running", "正在获取实时行情与因子", now, nil)
+	}
+	latestSnapshot, latestSnapshotError := s.latestRealtimeSnapshot()
+	if session.ScanAllowed || session.ShouldFinalize(latestSnapshot.GeneratedAt) {
+		groups, _, err := storage.LoadWatchlistGroups(s.watchlistFile)
+		if err != nil {
+			scanFailed = true
+			appendCycleError("读取自选失败", err)
+			s.setAutomationTask(automationTaskScan, "error", "读取自选失败", now, err)
+		} else {
+			symbols := storage.WatchlistSymbols(groups, storage.AllWatchlistGroup)
+			s.realtimeMu.Lock()
+			shouldScan := !s.realtimeRunning
+			scanBusy = !shouldScan
+			if shouldScan {
+				s.realtimeRunning = true
+			}
+			s.realtimeMu.Unlock()
+			if shouldScan {
+				result, err := s.realtimeScanner.Scan(cycleCtx, symbols, true)
+				s.realtimeMu.Lock()
+				s.realtimeRunning = false
+				if err != nil {
+					s.realtimeMu.Unlock()
+					scanFailed = true
+					appendCycleError("实时扫描失败", err)
+					s.setAutomationTask(automationTaskScan, "error", "实时扫描失败", now, err)
+				} else {
+					scanSucceeded = true
+					s.realtimeCache = result
+					latestSnapshot = result
+					s.realtimeMu.Unlock()
+					s.setAutomationTask(automationTaskScan, "success", fmt.Sprintf("已生成%d个信号", len(result.Signals)), now, nil)
+				}
+			}
+		}
+	}
+	if latestSnapshotError != nil && !scanSucceeded && !scanBusy {
+		appendCycleError("读取最近实时快照失败", latestSnapshotError)
+	}
+	if scanBusy {
+		// A manual scan owns the scanner lock, but it should not block the
+		// independent outcome and shadow jobs. Continue with the latest cached
+		// snapshot; those jobs already require a same-session snapshot before
+		// doing any work. The task remains visibly busy so the operator knows
+		// the fresh scan result is still pending.
+		s.setAutomationTask(automationTaskScan, "busy", "已有手动扫描正在运行，使用最近快照继续前测与影子同步", now, nil)
+	}
+
+	s.automationMu.Lock()
+	lastOutcome := s.automationLastOutcome
+	s.automationMu.Unlock()
+	shouldUpdateOutcomes := lastOutcome.IsZero() || now.Sub(lastOutcome) >= 30*time.Minute
+	if !shouldUpdateOutcomes {
+		s.setAutomationTaskNextRun(automationTaskOutcomes, lastOutcome.Add(30*time.Minute))
+		s.setAutomationTask(automationTaskOutcomes, "waiting", "距上次前测未满30分钟", now, nil)
+	} else if s.realtimeOutcomes != nil && s.hasCurrentSessionSnapshot(latestSnapshot, session) {
+		if signals, err := s.realtimeArchive.List(2000); err != nil {
+			appendCycleError("读取信号前测失败", err)
+			s.setAutomationTask(automationTaskOutcomes, "error", "读取信号前测失败", now, err)
+		} else if _, err := s.realtimeOutcomes.Evaluate(cycleCtx, signals, realtime.OutcomeOptions{SignalLimit: 2000}); err != nil {
+			appendCycleError("更新信号前测失败", err)
+			s.setAutomationTask(automationTaskOutcomes, "error", "更新信号前测失败", now, err)
+		} else {
+			s.automationMu.Lock()
+			s.automationLastOutcome = now
+			s.automationMu.Unlock()
+			s.setAutomationTaskNextRun(automationTaskOutcomes, now.Add(30*time.Minute))
+			s.setAutomationTask(automationTaskOutcomes, "success", fmt.Sprintf("已评估%d个信号", len(signals)), now, nil)
+		}
+	} else {
+		s.setAutomationTaskNextRun(automationTaskOutcomes, now.Add(30*time.Minute))
+		s.setAutomationTask(automationTaskOutcomes, "paused", "当前快照不是本交易日有效快照", now, nil)
+	}
+
+	currentShadowSnapshot := s.hasCurrentSessionSnapshot(latestSnapshot, session)
+	if !currentShadowSnapshot {
+		s.setAutomationTaskNextRun(automationTaskShadow, now.Add(automationCycleInterval))
+		s.setAutomationTask(automationTaskShadow, "paused", "当前快照不是本交易日有效快照", now, nil)
+	} else if len(s.shadowProfiles) > 0 && s.shadowEvaluator != nil {
+		s.shadowMu.Lock()
+		defer s.shadowMu.Unlock()
+		var signals []realtime.Signal
+		loaded := false
+		loadSignals := func(limit int) ([]realtime.Signal, error) {
+			if loaded {
+				return signals, nil
+			}
+			items, err := s.realtimeArchive.List(limit)
+			if err != nil {
+				return nil, err
+			}
+			signals, loaded = items, true
+			return signals, nil
+		}
+		allCached := true
+		for _, id := range s.orderedShadowProfileIDs() {
+			profile := s.shadowProfiles[id]
+			options := paper.Options{Config: profile.Config, Limit: 0, Realtime: session.State == realtime.MarketStateTrading || session.State == realtime.MarketStateAuction, RealtimeAt: now}
+			if dates, calendarErr := s.tradingCalendar(cycleCtx, now); calendarErr == nil {
+				options.CalendarDates = dates
+			}
+			if options.Realtime {
+				options.RealtimeQuotes = s.shadowRealtimeQuotes(cycleCtx, latestSnapshot)
+			}
+			cached, preserved, preserveReason, err := s.syncShadowProfileFromSnapshot(cycleCtx, nil, profile, options, loadSignals, latestSnapshot.Signals)
+			if err != nil {
+				shadowFailed = true
+				appendCycleError(profile.Name+"影子账户同步失败", err)
+				s.setAutomationTask(automationTaskShadow, "error", profile.Name+"影子账户同步失败", now, err)
+				break
+			}
+			allCached = allCached && cached
+			if preserved {
+				shadowPreserved = true
+				if shadowPreserveReason == "" {
+					shadowPreserveReason = profile.Name + "：" + preserveReason
+				}
+			}
+		}
+		if !shadowFailed {
+			s.automationMu.Lock()
+			if currentShadowSnapshot && !latestSnapshot.GeneratedAt.IsZero() {
+				s.automationLastShadow = latestSnapshot.GeneratedAt
+			} else {
+				s.automationLastShadow = now
+			}
+			s.automationMu.Unlock()
+			s.setAutomationTaskNextRun(automationTaskShadow, now.Add(automationCycleInterval))
+			if shadowPreserved {
+				s.setAutomationTask(automationTaskShadow, "warning", shadowPreserveReason, now, nil)
+			} else if allCached {
+				s.setAutomationTask(automationTaskShadow, "waiting", "已检查最新快照，暂无新增报价水位", now, nil)
+			} else {
+				s.setAutomationTask(automationTaskShadow, "success", "三个影子账户已按最新快照推进", now, nil)
+			}
+		}
+	} else {
+		s.setAutomationTaskNextRun(automationTaskShadow, now.Add(automationCycleInterval))
+		s.setAutomationTask(automationTaskShadow, "paused", "影子账户服务未配置", now, nil)
+	}
+
+	s.automationMu.Lock()
+	if len(cycleErrors) > 0 {
+		messages := make([]string, 0, len(cycleErrors))
+		for _, err := range cycleErrors {
+			messages = append(messages, err.Error())
+		}
+		s.automationLastError = strings.Join(messages, "; ")
+	} else {
+		s.automationLastSuccess = s.currentTime()
+		s.automationLastError = ""
+	}
+	s.automationMu.Unlock()
+	s.persistAutomationState()
+	// A cached snapshot is sufficient for outcome/shadow work, but automatic
+	// research requires a clean scan cycle so a transient quote failure cannot
+	// accidentally open a new research window.
+	if len(cycleErrors) == 0 && !scanFailed && !scanBusy {
+		s.maybeStartAutomaticResearch(ctx, now, session, latestSnapshot)
+	}
+}
+
+func (s *Server) hasCurrentSessionSnapshot(result realtime.ScanResult, session realtime.MarketSession) bool {
+	if !session.TradingDay {
+		return false
+	}
+	if result.GeneratedAt.IsZero() {
+		return false
+	}
+	local := result.GeneratedAt.In(realtimeWebLocation)
+	current := session.TradingDate
+	if current == "" || local.Format("2006-01-02") != current {
+		return false
+	}
+	quoteDates := make(map[string]bool)
+	for _, signal := range result.Signals {
+		if len(signal.QuoteTime) >= len("2006-01-02") {
+			quoteDates[strings.TrimSpace(signal.QuoteTime[:len("2006-01-02")])] = true
+		}
+	}
+	if len(quoteDates) > 0 && !quoteDates[current] {
+		return false
+	}
+	// Requiring a same-day completed snapshot prevents weekend/holiday cycles
+	// from repeatedly revaluing accounts or re-running outcome analysis.
+	return true
+}
+
+func (s *Server) maybeStartAutomaticResearch(ctx context.Context, now time.Time, session realtime.MarketSession, latestSnapshot realtime.ScanResult) {
+	localNow := now.In(realtimeWebLocation)
+	if s.automationResearch == nil || session.State != realtime.MarketStateClosed || localNow.Hour() < 16 || !s.hasCurrentSessionSnapshot(latestSnapshot, session) {
+		if s.automationResearch != nil {
+			s.setAutomationTask(automationTaskResearch, "waiting", "等待收盘后的有效交易日快照", now, nil)
+		}
+		return
+	}
+	s.automationMu.Lock()
+	if s.automationResearchRunning || (!s.automationResearchAttempt.IsZero() && s.automationResearchAttempt.In(realtimeWebLocation).Format("2006-01-02") == localNow.Format("2006-01-02")) {
+		s.automationMu.Unlock()
+		s.setAutomationTask(automationTaskResearch, "waiting", "本交易日已尝试或已有研究任务运行", now, nil)
+		return
+	}
+	s.automationResearchRunning = true
+	s.automationResearchAttempt = now
+	s.automationResearchError = ""
+	s.automationMu.Unlock()
+	s.setAutomationTask(automationTaskResearch, "running", "准备非重叠窗口滚动研究", now, nil)
+
+	groups, _, err := storage.LoadWatchlistGroups(s.watchlistFile)
+	if err != nil {
+		s.finishAutomaticResearch(AutomaticResearchResult{}, err)
+		return
+	}
+	all := storage.WatchlistSymbols(groups, storage.AllWatchlistGroup)
+	symbols := make([]string, 0, min(20, len(all)))
+	for _, symbol := range all {
+		if market.AssetKindOf(symbol) != domain.AssetKindStock {
+			continue
+		}
+		symbols = append(symbols, symbol)
+		if len(symbols) >= 20 {
+			break
+		}
+	}
+	if len(symbols) == 0 {
+		s.finishAutomaticResearch(AutomaticResearchResult{}, fmt.Errorf("自动滚动研究股票池为空"))
+		return
+	}
+	end := automaticResearchCutoff(latestSnapshot, now)
+	go func() {
+		researchCtx, cancel := context.WithTimeout(ctx, 45*time.Minute)
+		defer cancel()
+		result, runErr := s.automationResearch(researchCtx, symbols, end)
+		s.finishAutomaticResearch(result, runErr)
+	}()
+}
+
+func automaticResearchCutoff(snapshot realtime.ScanResult, now time.Time) time.Time {
+	localNow := now.In(realtimeWebLocation)
+	latest := time.Time{}
+	for _, signal := range snapshot.Signals {
+		value := strings.TrimSpace(signal.DataDate)
+		if len(value) != len("2006-01-02") {
+			continue
+		}
+		date, err := time.ParseInLocation("2006-01-02", value, realtimeWebLocation)
+		if err != nil || date.After(localNow) {
+			continue
+		}
+		if latest.IsZero() || date.After(latest) {
+			latest = date
+		}
+	}
+	if !latest.IsZero() {
+		return latest
+	}
+	day := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, realtimeWebLocation).AddDate(0, 0, -1)
+	for day.Weekday() == time.Saturday || day.Weekday() == time.Sunday {
+		day = day.AddDate(0, 0, -1)
+	}
+	return day
+}
+
+func (s *Server) finishAutomaticResearch(result AutomaticResearchResult, err error) {
+	s.automationMu.Lock()
+	s.automationResearchRunning = false
+	if err != nil {
+		s.automationResearchError = err.Error()
+		s.automationMu.Unlock()
+		s.setAutomationTask(automationTaskResearch, "error", "自动滚动研究失败", s.currentTime(), err)
+		s.persistAutomationState()
+		return
+	}
+	s.automationResearchError = ""
+	s.automationResearchMessage = result.Message
+	if result.Ran {
+		s.automationResearchSuccess = s.currentTime()
+		s.automationResearchID = result.ExperimentID
+	}
+	s.automationMu.Unlock()
+	if result.Ran {
+		s.setAutomationTask(automationTaskResearch, "success", result.Message, s.currentTime(), nil)
+	} else {
+		s.setAutomationTask(automationTaskResearch, "waiting", result.Message, s.currentTime(), nil)
+	}
+	s.persistAutomationState()
 }
 
 func withHeaders(next http.Handler) http.Handler {

@@ -39,7 +39,11 @@ func DefaultStrategies() []Strategy {
 type indicators struct {
 	latest, previous                 domain.DailyBar
 	ma5, ma20, ma60                  float64
+	previousMA20                     float64
 	prior20High, prior20Low          float64
+	priorShortHigh                   float64
+	bollingerLower, rsi14            float64
+	rangeCompression                 float64
 	volumeRatio                      float64
 	return5, return20, return60      float64
 	benchmark5, benchmark20          float64
@@ -67,11 +71,15 @@ func normalizedBars(input []domain.DailyBar) []domain.DailyBar {
 // session. Slow factors must compare completed sessions with completed
 // sessions; the current quote remains available through Snapshot.Stock/Quote.
 func completedBars(input []domain.DailyBar, now time.Time) []domain.DailyBar {
+	return completedBarsWithCalendar(input, now, nil)
+}
+
+func completedBarsWithCalendar(input []domain.DailyBar, now time.Time, calendarDates []string) []domain.DailyBar {
 	bars := normalizedBars(input)
 	if now.IsZero() {
 		return bars
 	}
-	session := MarketSessionAt(now)
+	session := MarketSessionAtWithCalendar(now, calendarDates)
 	if session.State == MarketStateClosed {
 		return bars
 	}
@@ -81,12 +89,11 @@ func completedBars(input []domain.DailyBar, now time.Time) []domain.DailyBar {
 			filtered = append(filtered, bar)
 		}
 	}
-	if len(filtered) >= minimumBars {
-		return filtered
-	}
-	// Keep the available history rather than invalidating a symbol when a
-	// provider has returned only a short window around the current session.
-	return bars
+	// Never fall back to the in-progress bar just to satisfy the warmup
+	// threshold. A provider may return a short window that contains today's
+	// partially formed candle; using it would let the live quote leak into
+	// slow indicators and make the result differ from the point-in-time audit.
+	return filtered
 }
 
 func meanBars(bars []domain.DailyBar, count int, value func(domain.DailyBar) float64) float64 {
@@ -100,6 +107,62 @@ func meanBars(bars []domain.DailyBar, count int, value func(domain.DailyBar) flo
 	return total / float64(count)
 }
 
+func standardDeviationBars(bars []domain.DailyBar, count int, value func(domain.DailyBar) float64) float64 {
+	if count < 2 || len(bars) < count {
+		return math.NaN()
+	}
+	mean := meanBars(bars, count, value)
+	if !finite(mean) {
+		return math.NaN()
+	}
+	total := 0.0
+	for _, bar := range bars[len(bars)-count:] {
+		delta := value(bar) - mean
+		total += delta * delta
+	}
+	return math.Sqrt(total / float64(count))
+}
+
+func rsiBars(bars []domain.DailyBar, count int) float64 {
+	if count < 1 || len(bars) <= count {
+		return math.NaN()
+	}
+	start := len(bars) - count
+	gain, loss := 0.0, 0.0
+	for index := start; index < len(bars); index++ {
+		change := bars[index].Close - bars[index-1].Close
+		if change > 0 {
+			gain += change
+		} else {
+			loss -= change
+		}
+	}
+	if loss == 0 {
+		if gain == 0 {
+			return 50
+		}
+		return 100
+	}
+	strength := gain / loss
+	return 100 - 100/(1+strength)
+}
+
+func rangeWidth(bars []domain.DailyBar, count int) float64 {
+	if count < 2 || len(bars) < count {
+		return math.NaN()
+	}
+	window := bars[len(bars)-count:]
+	high, low := window[0].High, window[0].Low
+	for _, bar := range window[1:] {
+		high = math.Max(high, bar.High)
+		low = math.Min(low, bar.Low)
+	}
+	if low <= 0 || !finite(high) || !finite(low) {
+		return math.NaN()
+	}
+	return high/low - 1
+}
+
 func periodReturn(bars []domain.DailyBar, days int) float64 {
 	if len(bars) <= days || bars[len(bars)-days-1].Close <= 0 {
 		return math.NaN()
@@ -108,7 +171,7 @@ func periodReturn(bars []domain.DailyBar, days int) float64 {
 }
 
 func calculateIndicators(input Snapshot) (indicators, bool) {
-	bars := completedBars(input.Bars, input.Now)
+	bars := completedBarsWithCalendar(input.Bars, input.Now, input.CalendarDates)
 	if len(bars) < minimumBars {
 		return indicators{}, false
 	}
@@ -132,7 +195,28 @@ func calculateIndicators(input Snapshot) (indicators, bool) {
 	if volumeAverage > 0 {
 		volumeRatio = latest.Volume / (volumeAverage / float64(len(prior)))
 	}
-	benchmark := completedBars(input.Benchmark, input.Now)
+	shortWindow := 10
+	shortHigh := prior[0].High
+	if len(prior) > shortWindow {
+		shortHigh = prior[len(prior)-shortWindow].High
+		for _, bar := range prior[len(prior)-shortWindow+1:] {
+			shortHigh = math.Max(shortHigh, bar.High)
+		}
+	}
+	ma20Previous := meanBars(bars[:len(bars)-1], 20, func(bar domain.DailyBar) float64 { return bar.Close })
+	std20 := standardDeviationBars(bars, 20, func(bar domain.DailyBar) float64 { return bar.Close })
+	bollingerLower := math.NaN()
+	ma20 := meanBars(bars, 20, func(bar domain.DailyBar) float64 { return bar.Close })
+	if finite(ma20) && finite(std20) {
+		bollingerLower = ma20 - 2*std20
+	}
+	width20 := rangeWidth(bars, 20)
+	width10 := rangeWidth(bars, 10)
+	compression := math.NaN()
+	if finite(width20) && width20 > 0 && finite(width10) {
+		compression = width10 / width20
+	}
+	benchmark := completedBarsWithCalendar(input.Benchmark, input.Now, input.CalendarDates)
 	volatility20, drawdown20 := rollingRisk(bars, 20)
 	upDayRatio20, upVolumeShare20 := priceVolumeBreadth(bars, 20)
 	closePosition20 := closePosition(bars, 20)
@@ -148,9 +232,11 @@ func calculateIndicators(input Snapshot) (indicators, bool) {
 	}
 	return indicators{
 		latest: latest, previous: previous,
-		ma5:         meanBars(bars, 5, func(bar domain.DailyBar) float64 { return bar.Close }),
-		ma20:        meanBars(bars, 20, func(bar domain.DailyBar) float64 { return bar.Close }),
-		ma60:        meanBars(bars, 60, func(bar domain.DailyBar) float64 { return bar.Close }),
+		ma5:          meanBars(bars, 5, func(bar domain.DailyBar) float64 { return bar.Close }),
+		ma20:         ma20,
+		ma60:         meanBars(bars, 60, func(bar domain.DailyBar) float64 { return bar.Close }),
+		previousMA20: ma20Previous, priorShortHigh: shortHigh,
+		bollingerLower: bollingerLower, rsi14: rsiBars(bars, 14), rangeCompression: compression,
 		prior20High: high, prior20Low: low, volumeRatio: volumeRatio,
 		return5: periodReturn(bars, 5), return20: periodReturn(bars, 20), return60: periodReturn(bars, 60),
 		benchmark5: periodReturn(benchmark, 5), benchmark20: periodReturn(benchmark, 20),

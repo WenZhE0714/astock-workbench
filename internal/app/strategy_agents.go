@@ -46,7 +46,7 @@ var strategyAgentRoles = []strategyAgentRole{
 	{ID: "stability-audit", Mission: "研究基线参数邻域和不同入场模式，优先提出参数平台而不是孤立最优点"},
 }
 
-const strategyAgentSchema = `{
+const strategyAgentSchemaTemplate = `{
   "type":"object",
   "additionalProperties":false,
   "required":["schema_version","candidates"],
@@ -64,7 +64,7 @@ const strategyAgentSchema = `{
             "type":"object","additionalProperties":false,
             "required":["entry_mode","fast_ma","slow_ma","breakout_days","volume_ratio_min","stop_loss","take_profit","max_holding_days"],
             "properties":{
-              "entry_mode":{"enum":["breakout","trend-reclaim","ma-pullback"]},
+		      "entry_mode":{"enum":%s},
               "fast_ma":{"type":"integer","minimum":2,"maximum":60},
               "slow_ma":{"type":"integer","minimum":3,"maximum":250},
               "breakout_days":{"type":"integer","minimum":2,"maximum":120},
@@ -80,6 +80,24 @@ const strategyAgentSchema = `{
   }
 }`
 
+func buildStrategyAgentSchema() string {
+	modes, _ := json.Marshal(backtest.EntryModes())
+	return fmt.Sprintf(strategyAgentSchemaTemplate, modes)
+}
+
+// Keep a materialized schema value for callers/tests that inspect the
+// coordinator contract directly. The catalog is immutable for a process, so
+// building it once also avoids reformatting the schema for every Agent call.
+var strategyAgentSchema = buildStrategyAgentSchema()
+
+func strategyAgentModeGuide() string {
+	parts := make([]string, 0, len(backtest.EntryModeDescriptors()))
+	for _, descriptor := range backtest.EntryModeDescriptors() {
+		parts = append(parts, fmt.Sprintf("%s=%s，%s，量能要求：%s", descriptor.ID, descriptor.Label, descriptor.Thesis, descriptor.VolumeStyle))
+	}
+	return strings.Join(parts, "；")
+}
+
 func strategyAgentPrompt(role strategyAgentRole, request backtest.Request, priorLessons string) string {
 	base := request.Technical
 	if strings.TrimSpace(priorLessons) == "" {
@@ -89,10 +107,10 @@ func strategyAgentPrompt(role strategyAgentRole, request backtest.Request, prior
 你的任务：%s。
 
 只允许提出 technical-breakout 策略族的参数候选，不能运行命令、读取文件、搜索网络、调用交易接口，不能写收益、评分、交易结果或晋级结论。不能修改股票池、日期、初始资金、费用、滑点、复权、基准、最大仓位或无未来数据约束。
-只能输出符合JSON Schema的对象，最多6个候选。候选必须是可检验假设，hypothesis不超过240字。不同入场模式含义：breakout=放量突破前高；trend-reclaim=收盘重新站回快均线；ma-pullback=日内回踩快均线后收回。
-当前基线：entry_mode=%s fast_ma=%d slow_ma=%d breakout_days=%d volume_ratio_min=%.2f stop_loss=%.3f take_profit=%.3f max_holding_days=%d。
-历史反思（只来自已经结束、不会与本轮最终留出重叠的实验）：%s
-返回的每个候选都必须给出完整参数，不得省略字段。`, role.ID, role.Mission, base.EffectiveEntryMode(), base.FastMA, base.SlowMA, base.BreakoutDays, base.VolumeRatioMin, base.StopLoss, base.TakeProfit, base.MaxHoldingDays, priorLessons)
+	只能输出符合JSON Schema的对象，最多6个候选。候选必须是可检验假设，hypothesis不超过240字。不同入场模式含义：%s。
+	当前基线：entry_mode=%s fast_ma=%d slow_ma=%d breakout_days=%d volume_ratio_min=%.2f stop_loss=%.3f take_profit=%.3f max_holding_days=%d。
+	历史反思（只来自已经结束、不会与本轮最终留出重叠的实验）：%s
+	返回的每个候选都必须给出完整参数，不得省略字段。`, role.ID, role.Mission, strategyAgentModeGuide(), base.EffectiveEntryMode(), base.FastMA, base.SlowMA, base.BreakoutDays, base.VolumeRatioMin, base.StopLoss, base.TakeProfit, base.MaxHoldingDays, priorLessons)
 }
 
 func wireToParameters(wire strategyAgentWireParameters, maxPosition float64) backtest.TechnicalParameters {
@@ -114,6 +132,10 @@ func fallbackStrategyProposals(base backtest.TechnicalParameters) []backtest.Str
 		{"baseline", base.EffectiveEntryMode(), base.FastMA, base.VolumeRatioMin, "基线参数，用于比较其他候选的增量价值"},
 		{"reclaim", backtest.EntryModeReclaim, base.FastMA, base.VolumeRatioMin, "重新站回快均线，减少单纯追逐前高的假突破"},
 		{"pullback", backtest.EntryModePullback, base.FastMA, base.VolumeRatioMin, "回踩快均线后收回，观察趋势中的低风险承接"},
+		{"momentum", backtest.EntryModeMomentum, base.FastMA, base.VolumeRatioMin, "趋势与20日动量同向时延续入场，避免把所有强势股都要求突破前高"},
+		{"mean-revert", backtest.EntryModeMeanRevert, base.FastMA, 1.0, "上升结构内测试布林下轨超跌反弹，补充趋势策略之外的均值回归假设"},
+		{"vol-squeeze", backtest.EntryModeVolSqueeze, base.FastMA, base.VolumeRatioMin, "波动收缩后突破短周期高点，测试低波动蓄势形态"},
+		{"adaptive-ensemble", backtest.EntryModeAdaptive, base.FastMA, base.VolumeRatioMin, "在趋势成立时按固定优先级择优已验证形态，减少单一入场形态失配"},
 		{"slow-trend", backtest.EntryModeBreakout, 30, 1.0, "更慢均线和较低量比，测试趋势延续的稳健性"},
 		{"defensive", backtest.EntryModeBreakout, 20, 1.5, "提高放量门槛，减少震荡期的低质量信号"},
 	}

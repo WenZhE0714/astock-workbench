@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/wenzhe/astock-workbench/internal/analysis"
 	"github.com/wenzhe/astock-workbench/internal/market"
@@ -51,6 +52,7 @@ type App struct {
 	aiChats         *storage.AIChatStore
 	marketSource    string
 	tdxMarket       *market.TDXClient
+	continuousMu    sync.Mutex
 }
 
 func New(output, errorOutput io.Writer) (*App, error) {
@@ -62,10 +64,10 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	primaryHistory := market.EastmoneyClient{}
+	primaryHistory := market.NewFallbackDailyHistoryClient(market.EastmoneyClient{}, market.TencentClient{})
 	primaryScanHistory := market.TencentClient{}
 	quoteClient := market.TencentClient{}
-	historyClient := market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history"))
+	historyClient := market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history-execution"))
 	return &App{
 		out:             output,
 		errOut:          errorOutput,
@@ -89,7 +91,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		industryLeaders: market.EastmoneyClient{},
 		news:            market.EastmoneyClient{},
 		research:        market.EastmoneyClient{},
-		scanHistory:     market.NewCachedDailyHistoryClient(primaryScanHistory, filepath.Join(paths.CacheDir, "daily-history")),
+		scanHistory:     market.NewCachedDailyHistoryClient(primaryScanHistory, filepath.Join(paths.CacheDir, "daily-history-scan")),
 		analyzer:        analysis.NewRunner(errorOutput),
 		marketReportAI:  analysis.NewCodexRunner(""),
 		reports:         storage.NewReportStore(paths.ReportsDir),
@@ -159,6 +161,8 @@ func (app *App) Run(ctx context.Context, arguments []string) error {
 		return app.runBacktest(ctx, rest)
 	case "web":
 		return app.runWeb(ctx, rest)
+	case "service":
+		return app.runService(rest)
 	case "version", "-V", "--version":
 		fmt.Fprintf(app.out, "%s %s\n", programName, version)
 		return nil
@@ -194,6 +198,7 @@ const usageText = `A 股实时行情与策略研究工作台
   astock scan [--full] [--no-ai]
 	astock stock-report [--full] [--no-ai] 股票代码或名称
 	astock web [--listen 地址] [--symbol 代码或名称]
+	astock service [install | uninstall | status] [--listen 地址] [--source http|tdx] [--symbol 代码]
 	astock backtest run [选项] 股票代码或名称 ...
   astock backtest optimize [选项] 股票代码或名称 ...
   astock backtest continuous [选项] 股票代码或名称 ...
@@ -240,6 +245,9 @@ const usageText = `A 股实时行情与策略研究工作台
 	--listen 地址           修改 Web 监听地址
 	--symbol 代码或名称     设置页面首次打开的股票
 	--source http|tdx       选择 HTTP 或通达信 TCP 行情源
+	astock service install  macOS 登录后自动拉起只读 Web 服务（launchd）
+	astock service status   查看 launchd 服务状态
+	astock service uninstall 删除 launchd 服务配置
 
 策略分析:
       --date YYYY-MM-DD   分析日期，默认今天
@@ -253,6 +261,7 @@ const usageText = `A 股实时行情与策略研究工作台
       --full              完成后在终端打印完整报告
 
 日线回测:
+	  --entry-mode 模型    breakout/trend-reclaim/ma-pullback/momentum-continuation/mean-reversion/volatility-squeeze
       --start/--end 日期  回测区间，默认最近 3 年至昨天
       --cash 金额         初始资金，默认 100 万元
       --fast-ma/--slow-ma 快慢均线周期，默认 20/60

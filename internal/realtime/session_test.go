@@ -63,3 +63,35 @@ func TestMarketSessionFinalizesOnlyOnceAfterClose(t *testing.T) {
 		t.Fatal("late requests must not trigger an after-hours scan")
 	}
 }
+
+func TestMarketSessionUsesExchangeCalendarForHolidayAndMakeupDay(t *testing.T) {
+	calendar := []string{"2026-08-20", "2026-08-22", "2026-08-24"}
+	holiday := MarketSessionAtWithCalendar(sessionTime(2026, time.August, 21, 10, 0), calendar)
+	if holiday.TradingDay || !holiday.CalendarKnown || holiday.ScanAllowed || holiday.FinalizationAllowed {
+		t.Fatalf("holiday was treated as tradable: %+v", holiday)
+	}
+	if holiday.NextScanAt.Day() != 22 || holiday.NextScanAt.Hour() != 9 || holiday.NextScanAt.Minute() != 15 {
+		t.Fatalf("holiday did not advance to next exchange date: %s", holiday.NextScanAt)
+	}
+	if holiday.ShouldFinalize(time.Time{}) {
+		t.Fatal("holiday must not finalize a snapshot")
+	}
+
+	makeupSaturday := MarketSessionAtWithCalendar(sessionTime(2026, time.August, 22, 10, 0), calendar)
+	if !makeupSaturday.TradingDay || !makeupSaturday.CalendarKnown || !makeupSaturday.ScanAllowed || makeupSaturday.State != MarketStateTrading {
+		t.Fatalf("make-up Saturday was not tradable: %+v", makeupSaturday)
+	}
+}
+
+func TestNormalizeTradingDatesDropsInvalidRowsAndPreservesOrder(t *testing.T) {
+	got := NormalizeTradingDates([]string{"2026-08-24", "bad", "2026-08-22", "2026-08-24", "2026-02-30"})
+	want := []string{"2026-08-22", "2026-08-24"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected normalized dates: %#v", got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("unexpected normalized dates: %#v", got)
+		}
+	}
+}

@@ -69,7 +69,7 @@ func validateOptimizationRequest(request OptimizationRequest) error {
 func validateTechnicalBounds(parameters TechnicalParameters) error {
 	mode := parameters.EffectiveEntryMode()
 	if !finiteValues(parameters.VolumeRatioMin, parameters.StopLoss, parameters.TakeProfit, parameters.MaxPosition) ||
-		(mode != EntryModeBreakout && mode != EntryModeReclaim && mode != EntryModePullback) ||
+		!ValidEntryMode(mode) ||
 		parameters.FastMA < 2 || parameters.FastMA > 60 ||
 		parameters.SlowMA <= parameters.FastMA || parameters.SlowMA > 250 ||
 		parameters.BreakoutDays < 2 || parameters.BreakoutDays > 120 ||
@@ -121,7 +121,7 @@ func GenerateCandidates(baseline TechnicalParameters, limit int) []TechnicalPara
 	takeValues := []float64{.12, .20, .30}
 	holdingValues := []int{20, 40, 60}
 
-	all := make([]TechnicalParameters, 0, 2187)
+	all := make([]TechnicalParameters, 0, 14000)
 	seen := make(map[string]bool)
 	add := func(parameters TechnicalParameters) {
 		if validateTechnicalBounds(parameters) != nil {
@@ -134,17 +134,19 @@ func GenerateCandidates(baseline TechnicalParameters, limit int) []TechnicalPara
 		seen[key] = true
 		all = append(all, parameters)
 	}
-	for _, fast := range fastValues {
-		for _, slow := range slowValues {
-			for _, breakout := range breakoutValues {
-				for _, volume := range volumeValues {
-					for _, stop := range stopValues {
-						for _, take := range takeValues {
-							for _, holding := range holdingValues {
-								add(TechnicalParameters{
-									FastMA: fast, SlowMA: slow, BreakoutDays: breakout, VolumeRatioMin: volume,
-									StopLoss: stop, TakeProfit: take, MaxHoldingDays: holding, MaxPosition: baseline.MaxPosition,
-								})
+	for _, mode := range EntryModes() {
+		for _, fast := range fastValues {
+			for _, slow := range slowValues {
+				for _, breakout := range breakoutValues {
+					for _, volume := range volumeValues {
+						for _, stop := range stopValues {
+							for _, take := range takeValues {
+								for _, holding := range holdingValues {
+									add(TechnicalParameters{
+										EntryMode: mode, FastMA: fast, SlowMA: slow, BreakoutDays: breakout, VolumeRatioMin: volume,
+										StopLoss: stop, TakeProfit: take, MaxHoldingDays: holding, MaxPosition: baseline.MaxPosition,
+									})
+								}
 							}
 						}
 					}

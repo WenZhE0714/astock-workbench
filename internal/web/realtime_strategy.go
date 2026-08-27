@@ -18,14 +18,17 @@ const realtimeSectorEnrichTimeout = 25 * time.Second
 var realtimeWebLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type realtimeStrategyResponse struct {
-	Result      *realtime.ScanResult    `json:"result,omitempty"`
-	History     []realtime.Signal       `json:"history,omitempty"`
-	Report      *realtime.OutcomeReport `json:"report,omitempty"`
-	MarketState string                  `json:"market_state,omitempty"`
-	ScanAllowed *bool                   `json:"scan_allowed,omitempty"`
-	Frozen      *bool                   `json:"frozen,omitempty"`
-	NextScanAt  string                  `json:"next_scan_at,omitempty"`
-	Cached      bool                    `json:"cached,omitempty"`
+	Result        *realtime.ScanResult    `json:"result,omitempty"`
+	History       []realtime.Signal       `json:"history,omitempty"`
+	Report        *realtime.OutcomeReport `json:"report,omitempty"`
+	MarketState   string                  `json:"market_state,omitempty"`
+	TradingDay    *bool                   `json:"trading_day,omitempty"`
+	CalendarKnown *bool                   `json:"calendar_known,omitempty"`
+	ScanAllowed   *bool                   `json:"scan_allowed,omitempty"`
+	Frozen        *bool                   `json:"frozen,omitempty"`
+	NextScanAt    string                  `json:"next_scan_at,omitempty"`
+	Cached        bool                    `json:"cached,omitempty"`
+	Automation    AutomationStatus        `json:"automation"`
 }
 
 func (s *Server) handleRealtimeStrategy(writer http.ResponseWriter, request *http.Request) {
@@ -144,9 +147,9 @@ func (s *Server) writeRealtimeStrategy(writer http.ResponseWriter, request *http
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取最近实时扫描失败: " + err.Error()})
 		return
 	}
-	session := realtime.MarketSessionAt(s.currentTime())
+	session := s.marketSession(request.Context(), s.currentTime())
 	result = s.enrichRealtimeSectors(request.Context(), result, session)
-	writeJSON(writer, http.StatusOK, realtimeSessionPayload(result, session, !result.GeneratedAt.IsZero()))
+	writeJSON(writer, http.StatusOK, s.realtimeSessionPayload(result, session, !result.GeneratedAt.IsZero()))
 }
 
 func (s *Server) runRealtimeStrategy(writer http.ResponseWriter, request *http.Request) {
@@ -155,10 +158,10 @@ func (s *Server) runRealtimeStrategy(writer http.ResponseWriter, request *http.R
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取最近实时扫描失败: " + err.Error()})
 		return
 	}
-	session := realtime.MarketSessionAt(s.currentTime())
+	session := s.marketSession(request.Context(), s.currentTime())
 	if !session.ScanAllowed && !session.ShouldFinalize(result.GeneratedAt) {
 		result = s.enrichRealtimeSectors(request.Context(), result, session)
-		writeJSON(writer, http.StatusOK, realtimeSessionPayload(result, session, !result.GeneratedAt.IsZero()))
+		writeJSON(writer, http.StatusOK, s.realtimeSessionPayload(result, session, !result.GeneratedAt.IsZero()))
 		return
 	}
 
@@ -166,7 +169,7 @@ func (s *Server) runRealtimeStrategy(writer http.ResponseWriter, request *http.R
 	result = s.realtimeCache
 	if !session.ScanAllowed && !session.ShouldFinalize(result.GeneratedAt) {
 		s.realtimeMu.Unlock()
-		writeJSON(writer, http.StatusOK, realtimeSessionPayload(result, session, !result.GeneratedAt.IsZero()))
+		writeJSON(writer, http.StatusOK, s.realtimeSessionPayload(result, session, !result.GeneratedAt.IsZero()))
 		return
 	}
 	if s.realtimeRunning {
@@ -199,7 +202,7 @@ func (s *Server) runRealtimeStrategy(writer http.ResponseWriter, request *http.R
 	s.realtimeMu.Lock()
 	s.realtimeCache = result
 	s.realtimeMu.Unlock()
-	writeJSON(writer, http.StatusOK, realtimeSessionPayload(result, session, false))
+	writeJSON(writer, http.StatusOK, s.realtimeSessionPayload(result, session, false))
 }
 
 func (s *Server) latestRealtimeSnapshot() (realtime.ScanResult, error) {
@@ -289,14 +292,19 @@ func (s *Server) currentTime() time.Time {
 	return time.Now()
 }
 
-func realtimeSessionPayload(result realtime.ScanResult, session realtime.MarketSession, cached bool) realtimeStrategyResponse {
+func (s *Server) realtimeSessionPayload(result realtime.ScanResult, session realtime.MarketSession, cached bool) realtimeStrategyResponse {
 	scanAllowed := session.ScanAllowed || session.ShouldFinalize(result.GeneratedAt)
 	frozen := !scanAllowed
+	tradingDay := session.TradingDay
+	calendarKnown := session.CalendarKnown
 	response := realtimeStrategyResponse{
-		MarketState: session.State,
-		ScanAllowed: &scanAllowed,
-		Frozen:      &frozen,
-		Cached:      cached,
+		MarketState:   session.State,
+		TradingDay:    &tradingDay,
+		CalendarKnown: &calendarKnown,
+		ScanAllowed:   &scanAllowed,
+		Frozen:        &frozen,
+		Cached:        cached,
+		Automation:    s.automationStatus(),
 	}
 	if !session.NextScanAt.IsZero() {
 		response.NextScanAt = session.NextScanAt.Format(time.RFC3339)

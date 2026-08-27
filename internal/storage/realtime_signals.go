@@ -100,6 +100,24 @@ func validRealtimeScan(result realtime.ScanResult) bool {
 	if result.GeneratedAt.IsZero() {
 		return false
 	}
+	// New snapshots carry the point-in-time calendar decision. Reject a
+	// snapshot explicitly marked as a non-trading day even when the current
+	// process has no access to the same holiday file after restart. Older
+	// snapshots omit TradingDate and retain the legacy session fallback.
+	if result.TradingDate != "" {
+		if !result.TradingDay {
+			return false
+		}
+		generatedDate := result.GeneratedAt.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02")
+		if generatedDate != result.TradingDate {
+			return false
+		}
+		// Reconstruct a one-day calendar from the persisted decision. This
+		// preserves valid make-up Saturdays after restart without depending on
+		// the current process having the same external holiday file.
+		session := realtime.MarketSessionAtWithCalendar(result.GeneratedAt, []string{result.TradingDate})
+		return session.ScanAllowed || session.FinalizationAllowed
+	}
 	session := realtime.MarketSessionAt(result.GeneratedAt)
 	return session.ScanAllowed || session.FinalizationAllowed
 }

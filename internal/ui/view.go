@@ -173,43 +173,79 @@ func packMetrics(metrics []metric, width int, color bool) []string {
 	return lines
 }
 
-func priceRail(item domain.Quote, width int, color bool) string {
+func priceRail(item domain.Quote, width int, color bool) []string {
 	low, lowOK := parsePrice(item.Low)
 	high, highOK := parsePrice(item.High)
 	current, currentOK := parsePrice(item.Current)
+	previousClose, previousCloseOK := parsePrice(item.PreviousClose)
 	label := style("日内", "90", color)
 	if !lowOK || !highOK || !currentOK {
-		return fmt.Sprintf("%s  %s — %s", label, item.Low, item.High)
+		return []string{fmt.Sprintf("%s  %s — %s", label, item.Low, item.High)}
 	}
 	prefix := label + "  " + item.Low + "  "
 	suffix := "  " + item.High
 	railWidth := width - displayWidth(prefix) - displayWidth(suffix) - 2
 	if railWidth < 8 {
-		return fmt.Sprintf("%s  %s  ← %s →  %s", label, item.Low, item.Current, item.High)
+		return []string{fmt.Sprintf("%s  %s  ← %s →  %s", label, item.Low, item.Current, item.High)}
 	}
 	if railWidth > 34 {
 		railWidth = 34
 	}
-	position := railWidth / 2
-	if high > low {
-		ratio := (current - low) / (high - low)
-		if ratio < 0 {
-			ratio = 0
+	positionAt := func(value float64) int {
+		position := railWidth / 2
+		if high > low {
+			ratio := (value - low) / (high - low)
+			if ratio < 0 {
+				ratio = 0
+			}
+			if ratio > 1 {
+				ratio = 1
+			}
+			position = int(math.Round(ratio * float64(railWidth-1)))
 		}
-		if ratio > 1 {
-			ratio = 1
-		}
-		position = int(math.Round(ratio * float64(railWidth-1)))
+		return position
+	}
+	position := positionAt(current)
+	zeroPosition := -1
+	if previousCloseOK {
+		zeroPosition = positionAt(previousClose)
 	}
 	rail := []rune(strings.Repeat("─", railWidth))
-	rail[position] = '●'
+	if zeroPosition >= 0 {
+		rail[zeroPosition] = '┼'
+	}
+	if position == zeroPosition {
+		rail[position] = '◆'
+	} else {
+		rail[position] = '●'
+	}
 	railText := "├" + string(rail) + "┤"
 	if color {
 		markerCode := trendCode(item.Delta, true)
-		railText = style("├", "90", true) + style(string(rail[:position]), "90", true) +
-			style("●", markerCode, true) + style(string(rail[position+1:]), "90", true) + style("┤", "90", true)
+		var builder strings.Builder
+		builder.WriteString(style("├", "90", true))
+		for index, character := range rail {
+			switch {
+			case index == position:
+				builder.WriteString(style(string(character), markerCode, true))
+			case index == zeroPosition:
+				builder.WriteString(style(string(character), "1;37", true))
+			default:
+				builder.WriteString(style(string(character), "90", true))
+			}
+		}
+		builder.WriteString(style("┤", "90", true))
+		railText = builder.String()
 	}
-	return prefix + railText + suffix
+	lines := []string{prefix + railText + suffix}
+	if zeroPosition >= 0 {
+		labelStart := displayWidth(prefix) + 1 + zeroPosition - 1
+		if labelStart < 0 {
+			labelStart = 0
+		}
+		lines = append(lines, strings.Repeat(" ", labelStart)+style("0%", "1;37", color))
+	}
+	return lines
 }
 
 func marketTag(symbol string) string {
@@ -818,7 +854,7 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 	lines = append(lines, sideBySide(priceLine, bidLine, innerWidth)...)
 	referenceLine := style("昨收", "90", color) + " " + item.PreviousClose + "   " + style("今开", "90", color) + " " + item.Open
 	lines = append(lines, sideBySide(referenceLine, askLine, innerWidth)...)
-	lines = append(lines, priceRail(item, innerWidth, color))
+	lines = append(lines, priceRail(item, innerWidth, color)...)
 	lines = append(lines, "\x00separator")
 
 	metrics := []metric{

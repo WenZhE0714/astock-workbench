@@ -3,9 +3,11 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +27,55 @@ func (stub shadowAnalyzerStub) Evaluate(context.Context, []realtime.Signal, pape
 		(*stub.calls)++
 	}
 	return stub.report, nil
+}
+
+type shadowRealtimeAnalyzerStub struct {
+	report        paper.Report
+	dailyCalls    *int
+	realtimeCalls *int
+}
+
+func (stub shadowRealtimeAnalyzerStub) Evaluate(_ context.Context, _ []realtime.Signal, _ paper.Options) (paper.Report, error) {
+	if stub.dailyCalls != nil {
+		(*stub.dailyCalls)++
+	}
+	return stub.report, nil
+}
+
+func (stub shadowRealtimeAnalyzerStub) AdvanceRealtime(_ context.Context, previous paper.Report, _ []realtime.Signal, options paper.Options) (paper.Report, error) {
+	if stub.realtimeCalls != nil {
+		(*stub.realtimeCalls)++
+	}
+	previous.GeneratedAt = options.RealtimeAt
+	previous.LastRealtimeAt = options.RealtimeAt.Format("2006-01-02 15:04:05")
+	previous.ExecutionMode = paper.ExecutionModeLive
+	previous.CheckpointPhase = paper.CheckpointOpen
+	previous.AsOf = options.RealtimeAt.Format("2006-01-02")
+	previous.EngineVersion = paper.ShadowEngineVersion
+	previous.Config = options.Config
+	previous.ConfigFingerprint = paper.OptionsFingerprint(options.Config, options.Limit)
+	return previous, nil
+}
+
+type shadowProfileAnalyzerStub struct {
+	configs *[]paper.Config
+}
+
+func (stub shadowProfileAnalyzerStub) Evaluate(_ context.Context, _ []realtime.Signal, options paper.Options) (paper.Report, error) {
+	if stub.configs != nil {
+		*stub.configs = append(*stub.configs, options.Config)
+	}
+	return paper.Report{
+		EngineVersion:     paper.ShadowEngineVersion,
+		ConfigFingerprint: paper.OptionsFingerprint(options.Config, options.Limit),
+		CheckpointPhase:   paper.CheckpointOpen,
+		GeneratedAt:       realtimeWebTime(2026, 8, 21, 10, 15),
+		AsOf:              "2026-08-21",
+		Config:            options.Config,
+		InitialCash:       options.Config.InitialCash,
+		RemainingCash:     options.Config.InitialCash,
+		TotalEquity:       options.Config.InitialCash,
+	}, nil
 }
 
 type shadowArchiveStub struct {
@@ -47,9 +98,27 @@ func (stub shadowQuoteStub) Fetch(context.Context, []string) ([]domain.Quote, er
 	return stub.quotes, nil
 }
 
+type quoteClientFunc func(context.Context, []string) ([]domain.Quote, error)
+
+func (fn quoteClientFunc) Fetch(ctx context.Context, symbols []string) ([]domain.Quote, error) {
+	return fn(ctx, symbols)
+}
+
 type realtimeScannerStub struct {
 	result realtime.ScanResult
 	calls  *int
+}
+
+type realtimeScannerFunc func(context.Context, []string, bool) (realtime.ScanResult, error)
+
+func (fn realtimeScannerFunc) Scan(ctx context.Context, symbols []string, includeLeaders bool) (realtime.ScanResult, error) {
+	return fn(ctx, symbols, includeLeaders)
+}
+
+type failingRealtimeScannerStub struct{}
+
+func (failingRealtimeScannerStub) Scan(context.Context, []string, bool) (realtime.ScanResult, error) {
+	return realtime.ScanResult{}, fmt.Errorf("测试扫描失败")
 }
 
 func (stub realtimeScannerStub) Scan(context.Context, []string, bool) (realtime.ScanResult, error) {
@@ -78,6 +147,14 @@ type realtimeArchiveStub struct {
 	listCalls   *int
 	listLimit   *int
 	latestCalls *int
+}
+
+type calendarHistoryStub struct {
+	bars []domain.DailyBar
+}
+
+func (stub calendarHistoryStub) FetchDailyBars(context.Context, string) ([]domain.DailyBar, error) {
+	return append([]domain.DailyBar(nil), stub.bars...), nil
 }
 
 func (stub realtimeArchiveStub) List(limit int) ([]realtime.Signal, error) {
@@ -163,6 +240,485 @@ func TestRealtimeStrategyEndpointRunsAndReturnsHistory(t *testing.T) {
 	}
 	if len(history.History) != 1 || history.History[0].ID != "signal" {
 		t.Fatalf("unexpected history response: %+v", history)
+	}
+}
+
+func TestRealtimeStrategyPausesOnKnownExchangeHoliday(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	calendar := []domain.DailyBar{
+		{Date: "2026-08-20", Open: 1, Close: 1, High: 1, Low: 1},
+		{Date: "2026-08-22", Open: 1, Close: 1, High: 1, Low: 1},
+		{Date: "2026-08-24", Open: 1, Close: 1, High: 1, Low: 1},
+	}
+	calls := 0
+	server := NewServer(
+		resolverStub{}, nil, calendarHistoryStub{bars: calendar}, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{calls: &calls}, realtimeArchiveStub{}),
+	)
+	now := realtimeWebTime(2026, 8, 21, 10, 30)
+	server.now = func() time.Time { return now }
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/realtime", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected holiday status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response realtimeStrategyResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || response.MarketState != realtime.MarketStateClosed || response.ScanAllowed == nil || *response.ScanAllowed || response.Frozen == nil || !*response.Frozen {
+		t.Fatalf("holiday was not frozen: calls=%d response=%+v", calls, response)
+	}
+	next, err := time.Parse(time.RFC3339, response.NextScanAt)
+	if err != nil || next.Day() != 22 || next.Hour() != 9 || next.Minute() != 15 {
+		t.Fatalf("unexpected next exchange session: %q (%v)", response.NextScanAt, err)
+	}
+}
+
+func TestServerAutomationRunsWithoutBrowserAndExposesStatus(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	result := realtime.ScanResult{GeneratedAt: now, Universe: "watchlist+leaders", Signals: []realtime.Signal{{ID: "auto", Symbol: "sh600519", Score: 80}}}
+	scanCalls, outcomeCalls := 0, 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{result: result, calls: &scanCalls}, realtimeArchiveStub{items: result.Signals}),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &outcomeCalls}),
+	)
+	server.now = func() time.Time { return now }
+	server.runAutomationCycle(context.Background())
+	if scanCalls != 1 || outcomeCalls != 1 {
+		t.Fatalf("automation did not run scan/outcomes: scan=%d outcomes=%d", scanCalls, outcomeCalls)
+	}
+	status := server.automationStatus()
+	if !status.Enabled || status.Running || status.LastSuccessAt.IsZero() || status.LastError != "" {
+		t.Fatalf("unexpected automation status: %+v", status)
+	}
+	if strings.Join(status.TaskOrder, ",") != "scan,outcomes,shadow,research" {
+		t.Fatalf("automation task order is not stable: %#v", status.TaskOrder)
+	}
+	if status.TaskStates[automationTaskScan].Status != "success" || status.TaskStates[automationTaskOutcomes].Status != "success" {
+		t.Fatalf("automation task state missing: %+v", status.TaskStates)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/strategy/automation", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "交易时段实时扫描") {
+		t.Fatalf("automation endpoint failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAutomationContinuesIndependentJobsWhenManualScanIsBusy(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	result := realtime.ScanResult{
+		GeneratedAt: now,
+		Universe:    "watchlist+leaders",
+		Signals:     []realtime.Signal{{ID: "cached", Symbol: "sh600519", Score: 80}},
+	}
+	outcomeCalls := 0
+	scanner := realtimeScannerStub{result: result}
+	archive := realtimeArchiveStub{items: result.Signals, latest: result}
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(scanner, archive),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &outcomeCalls}),
+	)
+	server.now = func() time.Time { return now }
+	server.realtimeMu.Lock()
+	server.realtimeRunning = true
+	server.realtimeCache = result
+	server.realtimeMu.Unlock()
+
+	server.runAutomationCycle(context.Background())
+	status := server.automationStatus()
+	if outcomeCalls != 1 {
+		t.Fatalf("manual scan lock should not suppress independent outcome evaluation: %d", outcomeCalls)
+	}
+	if status.TaskStates[automationTaskScan].Status != "busy" {
+		t.Fatalf("scan task should remain visibly busy: %+v", status.TaskStates[automationTaskScan])
+	}
+	if status.TaskStates[automationTaskOutcomes].Status != "success" {
+		t.Fatalf("outcome task did not continue from cached snapshot: %+v", status.TaskStates[automationTaskOutcomes])
+	}
+	server.realtimeMu.Lock()
+	server.realtimeRunning = false
+	server.realtimeMu.Unlock()
+}
+
+func TestAutomationBusyScanDoesNotRunIndependentJobsWithoutCurrentSnapshot(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	outcomeCalls := 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{}),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &outcomeCalls}),
+	)
+	server.now = func() time.Time { return now }
+	server.realtimeMu.Lock()
+	server.realtimeRunning = true
+	server.realtimeMu.Unlock()
+
+	server.runAutomationCycle(context.Background())
+	if outcomeCalls != 0 {
+		t.Fatalf("an occupied scanner without a current snapshot must not run outcomes: %d", outcomeCalls)
+	}
+	status := server.automationStatus()
+	if status.TaskStates[automationTaskScan].Status != "busy" || status.TaskStates[automationTaskOutcomes].Status != "paused" {
+		t.Fatalf("unexpected busy/stale task states: %+v", status.TaskStates)
+	}
+	server.realtimeMu.Lock()
+	server.realtimeRunning = false
+	server.realtimeMu.Unlock()
+}
+
+func TestAutomationUsesCurrentSnapshotWhenFreshScanFails(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	cached := realtime.ScanResult{
+		GeneratedAt: now,
+		Universe:    "watchlist+leaders",
+		Signals:     []realtime.Signal{{ID: "cached", Symbol: "sh600519", Score: 80}},
+	}
+	outcomeCalls, shadowCalls := 0, 0
+	archive := &shadowArchiveStub{}
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(failingRealtimeScannerStub{}, realtimeArchiveStub{items: cached.Signals, latest: cached}),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &outcomeCalls}),
+		WithShadowExecution(shadowAnalyzerStub{
+			report: paper.Report{EngineVersion: paper.ShadowEngineVersion, AsOf: cached.Signals[0].DataDate, Config: paper.DefaultConfig()},
+			calls:  &shadowCalls,
+		}, archive),
+	)
+	server.now = func() time.Time { return now }
+	server.realtimeMu.Lock()
+	server.realtimeCache = cached
+	server.realtimeMu.Unlock()
+
+	server.runAutomationCycle(context.Background())
+	status := server.automationStatus()
+	if outcomeCalls != 1 || shadowCalls != 1 {
+		t.Fatalf("current cached snapshot should keep independent jobs running: outcomes=%d shadow=%d", outcomeCalls, shadowCalls)
+	}
+	if status.TaskStates[automationTaskScan].Status != "error" {
+		t.Fatalf("scan failure was not exposed: %+v", status.TaskStates[automationTaskScan])
+	}
+	if status.TaskStates[automationTaskOutcomes].Status != "success" || status.TaskStates[automationTaskShadow].Status != "success" {
+		t.Fatalf("independent task states were not successful: %+v", status.TaskStates)
+	}
+	if !strings.Contains(status.LastError, "实时扫描失败") {
+		t.Fatalf("scan error was not retained in cycle status: %+v", status)
+	}
+}
+
+func TestAutomationManualTriggerDoesNotStartDuplicateCycle(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist), WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{}))
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 20, 10, 30) }
+	server.realtimeScanner = blockingRealtimeScannerStub{started: started, release: release}
+	if !server.beginAutomationCycle() {
+		t.Fatal("first automation cycle did not start")
+	}
+	defer close(release)
+	if server.beginAutomationCycle() {
+		t.Fatal("duplicate automation cycle started while first was running")
+	}
+	server.automationMu.Lock()
+	server.automationRunning = false
+	server.automationMu.Unlock()
+}
+
+func TestAutomationRunContextFollowsServerLifetime(t *testing.T) {
+	server := NewServer(resolverStub{}, nil, nil, nil, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.automationMu.Lock()
+	server.automationCtx = ctx
+	server.automationMu.Unlock()
+	if got := server.automationRunContext(); got == nil {
+		t.Fatal("automation context must not be nil")
+	} else {
+		cancel()
+		select {
+		case <-got.Done():
+		default:
+			t.Fatal("automation context did not receive cancellation")
+		}
+	}
+	server.automationMu.Lock()
+	server.automationCtx = nil
+	server.automationMu.Unlock()
+	if got := server.automationRunContext(); got == nil {
+		t.Fatal("missing automation context should fall back to background context")
+	}
+}
+
+type blockingRealtimeScannerStub struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (stub blockingRealtimeScannerStub) Scan(context.Context, []string, bool) (realtime.ScanResult, error) {
+	select {
+	case stub.started <- struct{}{}:
+	default:
+	}
+	<-stub.release
+	return realtime.ScanResult{}, nil
+}
+
+func TestAutomationEndpointCanTriggerImmediateCycle(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	result := realtime.ScanResult{GeneratedAt: now, Signals: []realtime.Signal{{ID: "manual", Symbol: "sh600519", Score: 80}}}
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{result: result}, realtimeArchiveStub{items: result.Signals}),
+	)
+	server.now = func() time.Time { return now }
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/automation?action=run", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("unexpected manual automation status: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "自动化任务未初始化") {
+		t.Fatalf("manual automation was incorrectly disabled: %s", recorder.Body.String())
+	}
+}
+
+func TestAutomationAdvancesShadowOnEachNewRealtimeSnapshot(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	calendar := []domain.DailyBar{
+		{Date: "2026-08-27", Open: 1, Close: 1, High: 1, Low: 1},
+	}
+	first := realtime.ScanResult{
+		GeneratedAt: realtimeWebTime(2026, 8, 27, 10, 0),
+		Signals:     []realtime.Signal{{ID: "first", Symbol: "sh600519", QuoteTime: "2026-08-27 10:00:00", Score: 70}},
+	}
+	second := first
+	second.GeneratedAt = realtimeWebTime(2026, 8, 27, 10, 1)
+	second.Signals = []realtime.Signal{{ID: "second", Symbol: "sh600519", QuoteTime: "2026-08-27 10:01:00", Score: 71}}
+	snapshot := first
+	scanCalls, realtimeCalls := 0, 0
+	archive := &shadowArchiveStub{report: paper.Report{
+		EngineVersion:     paper.ShadowEngineVersion,
+		Config:            paper.DefaultConfig(),
+		ConfigFingerprint: paper.OptionsFingerprint(paper.DefaultConfig(), 0),
+		AsOf:              "2026-08-27",
+		CheckpointPhase:   paper.CheckpointOpen,
+		ExecutionMode:     paper.ExecutionModeLive,
+		LastRealtimeAt:    "2026-08-27 09:59:00",
+		InitialCash:       1_000_000,
+		RemainingCash:     1_000_000,
+	}}
+	scanner := realtimeScannerFunc(func(context.Context, []string, bool) (realtime.ScanResult, error) {
+		scanCalls++
+		return snapshot, nil
+	})
+	server := NewServer(
+		resolverStub{}, quoteClientFunc(func(context.Context, []string) ([]domain.Quote, error) {
+			return []domain.Quote{{Symbol: "sh600519", Current: "10", QuoteTime: snapshot.GeneratedAt.Format("2006-01-02 15:04:05"), Source: "test"}}, nil
+		}), calendarHistoryStub{bars: calendar}, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(scanner, realtimeArchiveStub{items: snapshot.Signals, latest: snapshot}),
+		WithShadowExecution(shadowRealtimeAnalyzerStub{realtimeCalls: &realtimeCalls}, archive),
+	)
+	server.now = func() time.Time { return snapshot.GeneratedAt }
+	server.runAutomationCycle(context.Background())
+	if scanCalls != 1 || realtimeCalls != 1 {
+		t.Fatalf("first fresh snapshot did not advance shadow: scans=%d realtime=%d", scanCalls, realtimeCalls)
+	}
+	// A second cycle with the same generated timestamp must be idempotent.
+	server.runAutomationCycle(context.Background())
+	if realtimeCalls != 1 {
+		t.Fatalf("same snapshot advanced shadow twice: %d", realtimeCalls)
+	}
+	snapshot = second
+	server.now = func() time.Time { return snapshot.GeneratedAt }
+	server.quoteMu.Lock()
+	server.quoteCache = make(map[string]quoteCacheEntry)
+	server.quoteMu.Unlock()
+	server.runAutomationCycle(context.Background())
+	if realtimeCalls != 2 {
+		t.Fatalf("new snapshot did not advance shadow: %d", realtimeCalls)
+	}
+}
+
+func TestAutomationSkipsOutcomeAndShadowForStaleSnapshot(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	stale := realtime.ScanResult{GeneratedAt: realtimeWebTime(2026, 8, 19, 15, 2), Signals: []realtime.Signal{{ID: "stale"}}}
+	outcomeCalls := 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{result: stale}, realtimeArchiveStub{items: stale.Signals, latest: stale}),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &outcomeCalls}),
+	)
+	server.now = func() time.Time { return now }
+	// A scanner result is returned for this cycle, but the archive's stale
+	// snapshot must not make outcome evaluation run against yesterday twice.
+	server.runAutomationCycle(context.Background())
+	if outcomeCalls != 0 {
+		t.Fatalf("stale snapshot should not trigger outcomes: %d", outcomeCalls)
+	}
+}
+
+func TestAutomationSkipsStaleQuoteDateEvenWhenGeneratedAtIsCurrent(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	stale := realtime.ScanResult{GeneratedAt: now, Signals: []realtime.Signal{{ID: "stale", QuoteTime: "2026-08-19 15:00:00"}}}
+	outcomeCalls := 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{result: stale}, realtimeArchiveStub{items: stale.Signals, latest: stale}),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &outcomeCalls}),
+	)
+	server.now = func() time.Time { return now }
+	server.runAutomationCycle(context.Background())
+	if outcomeCalls != 0 {
+		t.Fatalf("stale quote date should not trigger outcomes: %d", outcomeCalls)
+	}
+}
+
+func TestAutomationDoesNotStartResearchAfterFailedScan(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 24, 10, 30)
+	researchCalls := 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist),
+		WithRealtimeStrategy(failingRealtimeScannerStub{}, realtimeArchiveStub{}),
+		WithAutomaticStrategyResearch(func(context.Context, []string, time.Time) (AutomaticResearchResult, error) {
+			researchCalls++
+			return AutomaticResearchResult{Ran: true}, nil
+		}),
+	)
+	server.now = func() time.Time { return now }
+	server.runAutomationCycle(context.Background())
+	if researchCalls != 0 {
+		t.Fatalf("research started after failed scan: %d", researchCalls)
+	}
+	if !strings.Contains(server.automationStatus().LastError, "实时扫描失败") {
+		t.Fatalf("scan failure was not retained: %+v", server.automationStatus())
+	}
+}
+
+func TestAutomaticResearchCutoffUsesLatestCompletedDataDate(t *testing.T) {
+	now := realtimeWebTime(2026, 8, 24, 16, 0)
+	snapshot := realtime.ScanResult{Signals: []realtime.Signal{
+		{DataDate: "2026-08-21"},
+		{DataDate: "2026-08-20"},
+	}}
+	cutoff := automaticResearchCutoff(snapshot, now)
+	if cutoff.Format("2006-01-02") != "2026-08-21" {
+		t.Fatalf("unexpected data cutoff: %s", cutoff.Format("2006-01-02"))
+	}
+}
+
+func TestAutomationStateRestoresAfterServerRestart(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "automation", "state.json")
+	store := storage.NewAutomationStore(stateFile)
+	want := storage.AutomationState{
+		LastRunAt:            realtimeWebTime(2026, 8, 24, 16, 0),
+		LastSuccessAt:        realtimeWebTime(2026, 8, 24, 16, 1),
+		LastOutcomeAt:        realtimeWebTime(2026, 8, 24, 16, 2),
+		ResearchAttemptAt:    realtimeWebTime(2026, 8, 24, 16, 3),
+		ResearchSuccessAt:    realtimeWebTime(2026, 8, 24, 16, 4),
+		ResearchExperimentID: "AUTO-restart",
+		ResearchMessage:      "已归档",
+	}
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithAutomationState(store))
+	status := server.automationStatus()
+	if !status.LastSuccessAt.Equal(want.LastSuccessAt) || !status.LastOutcomeAt.Equal(want.LastOutcomeAt) || status.ResearchExperimentID != want.ResearchExperimentID || status.ResearchMessage != want.ResearchMessage {
+		t.Fatalf("automation state was not restored: %+v", status)
+	}
+}
+
+func TestAutomationStateDoesNotRestoreTransientRunningState(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "automation", "state.json")
+	store := storage.NewAutomationStore(stateFile)
+	if err := store.Save(storage.AutomationState{Tasks: map[string]storage.AutomationTaskState{
+		automationTaskScan:   {Status: "running", Detail: "旧进程执行中"},
+		automationTaskShadow: {Status: "busy", Detail: "旧进程排队"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithAutomationState(store))
+	status := server.automationStatus()
+	if status.TaskStates[automationTaskScan].Status != "waiting" || status.TaskStates[automationTaskShadow].Status != "waiting" {
+		t.Fatalf("transient task state leaked across restart: %+v", status.TaskStates)
+	}
+}
+
+func TestAutomaticResearchRunsOncePerTradingDate(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 24, 16, 0)
+	result := realtime.ScanResult{GeneratedAt: now, Signals: []realtime.Signal{{ID: "signal", Symbol: "sh600519", DataDate: "2026-08-24", QuoteTime: "2026-08-24 15:00:00"}}}
+	completed := make(chan struct{}, 2)
+	calls := 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist), WithAutomaticStrategyResearch(func(_ context.Context, symbols []string, end time.Time) (AutomaticResearchResult, error) {
+		calls++
+		if len(symbols) != 1 || symbols[0] != "sh600519" || end.Format("2006-01-02") != "2026-08-24" {
+			t.Errorf("unexpected automatic research inputs: %v %s", symbols, end.Format("2006-01-02"))
+		}
+		completed <- struct{}{}
+		return AutomaticResearchResult{Ran: true, ExperimentID: "AUTO-once", Message: "完成"}, nil
+	}))
+	server.now = func() time.Time { return now }
+	session := realtime.MarketSessionAt(now)
+	server.maybeStartAutomaticResearch(context.Background(), now, session, result)
+	server.maybeStartAutomaticResearch(context.Background(), now, session, result)
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("automatic research did not start")
+	}
+	if calls != 1 {
+		t.Fatalf("automatic research ran more than once: %d", calls)
+	}
+	status := server.automationStatus()
+	if status.ResearchExperimentID != "AUTO-once" || status.ResearchMessage != "完成" || status.ResearchRunning {
+		t.Fatalf("unexpected research status: %+v", status)
 	}
 }
 
@@ -437,7 +993,140 @@ func TestShadowExecutionGETAndPOST(t *testing.T) {
 	}
 }
 
+func TestShadowExecutionProfilesUseIndependentLedgersAndConfigs(t *testing.T) {
+	balanced := &shadowArchiveStub{}
+	conservative := &shadowArchiveStub{}
+	aggressive := &shadowArchiveStub{}
+	configs := make([]paper.Config, 0, 3)
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}),
+		WithShadowExecutionProfiles(shadowProfileAnalyzerStub{configs: &configs}, balanced, conservative, aggressive),
+	)
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 21, 10, 15) }
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?profile=all&selected=conservative", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected profile sync status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if balanced.saves != 1 || conservative.saves != 1 || aggressive.saves != 1 || len(configs) != 3 {
+		t.Fatalf("profiles did not save independently: balanced=%d conservative=%d aggressive=%d configs=%d", balanced.saves, conservative.saves, aggressive.saves, len(configs))
+	}
+	if balanced.report.Config.MinimumScore != 55 || conservative.report.Config.MinimumScore != 62 || aggressive.report.Config.MinimumScore != 52 {
+		t.Fatalf("profile thresholds were not isolated: balanced=%+v conservative=%+v aggressive=%+v", balanced.report.Config, conservative.report.Config, aggressive.report.Config)
+	}
+	if balanced.report.Config.MaxOpenPositions != 8 || conservative.report.Config.MaxOpenPositions != 6 || aggressive.report.Config.MaxOpenPositions != 10 ||
+		balanced.report.Config.MaxDailyRotations != 2 || conservative.report.Config.MaxDailyRotations != 1 || aggressive.report.Config.MaxDailyRotations != 3 {
+		t.Fatalf("profile rotation controls were not isolated: balanced=%+v conservative=%+v aggressive=%+v", balanced.report.Config, conservative.report.Config, aggressive.report.Config)
+	}
+	if balanced.report.ConfigFingerprint == conservative.report.ConfigFingerprint || balanced.report.ConfigFingerprint == aggressive.report.ConfigFingerprint || conservative.report.ConfigFingerprint == aggressive.report.ConfigFingerprint {
+		t.Fatalf("profile fingerprints must differ: %s %s %s", balanced.report.ConfigFingerprint, conservative.report.ConfigFingerprint, aggressive.report.ConfigFingerprint)
+	}
+	var payload shadowResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Account == nil || payload.Account.ID != shadowProfileConservative || payload.Report == nil || payload.Report.Config.MinimumScore != 62 || len(payload.Profiles) != 3 {
+		t.Fatalf("selected profile response mismatch: %+v", payload)
+	}
+}
+
+func TestShadowExecutionProfilesShareTradingCalendarRead(t *testing.T) {
+	history := &countingHistoryStub{}
+	balanced := &shadowArchiveStub{}
+	conservative := &shadowArchiveStub{}
+	aggressive := &shadowArchiveStub{}
+	configs := make([]paper.Config, 0, 3)
+	server := NewServer(
+		resolverStub{}, nil, history, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}),
+		WithShadowExecutionProfiles(shadowProfileAnalyzerStub{configs: &configs}, balanced, conservative, aggressive),
+	)
+	now := realtimeWebTime(2026, 8, 21, 10, 15)
+	server.now = func() time.Time { return now }
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?profile=all", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected profile sync status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if history.calls != 1 {
+		t.Fatalf("three profiles should share one calendar read, got %d", history.calls)
+	}
+	if balanced.saves != 1 || conservative.saves != 1 || aggressive.saves != 1 || len(configs) != 3 {
+		t.Fatalf("profiles did not all sync after shared calendar read: saves=%d/%d/%d configs=%d", balanced.saves, conservative.saves, aggressive.saves, len(configs))
+	}
+}
+
+func TestShadowExecutionUsesInjectedCalendarForEvaluator(t *testing.T) {
+	calendarCalls := 0
+	history := &countingHistoryStub{}
+	archive := &shadowArchiveStub{}
+	configs := make([]paper.Options, 0, 1)
+	server := NewServer(
+		resolverStub{}, nil, history, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}),
+		WithShadowExecution(shadowOptionsCaptureStub{options: &configs}, archive),
+		WithTradingCalendar(func(context.Context, time.Time) ([]string, error) {
+			calendarCalls++
+			return []string{"2026-08-20", "2026-08-22"}, nil
+		}),
+	)
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 21, 10, 15) }
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if calendarCalls != 1 || len(configs) != 1 || len(configs[0].CalendarDates) != 2 || history.calls != 0 {
+		t.Fatalf("injected calendar was not shared with evaluator: calls=%d options=%+v history=%d", calendarCalls, configs, history.calls)
+	}
+}
+
+type shadowOptionsCaptureStub struct {
+	options *[]paper.Options
+}
+
+func (stub shadowOptionsCaptureStub) Evaluate(_ context.Context, _ []realtime.Signal, options paper.Options) (paper.Report, error) {
+	if stub.options != nil {
+		*stub.options = append(*stub.options, options)
+	}
+	return paper.Report{
+		EngineVersion:     paper.ShadowEngineVersion,
+		ConfigFingerprint: paper.OptionsFingerprint(options.Config, options.Limit),
+		AsOf:              "2026-08-21", CheckpointPhase: paper.CheckpointOpen, Config: options.Config,
+	}, nil
+}
+
+func TestShadowExecutionProfileValidationAndEmptyState(t *testing.T) {
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithShadowExecution(shadowAnalyzerStub{}, &shadowArchiveStub{}),
+	)
+
+	empty := httptest.NewRecorder()
+	server.Handler().ServeHTTP(empty, httptest.NewRequest(http.MethodGet, "/api/strategy/shadow", nil))
+	if empty.Code != http.StatusOK {
+		t.Fatalf("unexpected empty profile status %d: %s", empty.Code, empty.Body.String())
+	}
+	var payload shadowResponse
+	if err := json.Unmarshal(empty.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Report != nil || payload.Account == nil || payload.Account.Available {
+		t.Fatalf("empty account was presented as initialized: %+v", payload)
+	}
+
+	invalid := httptest.NewRecorder()
+	server.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/strategy/shadow?profile=unknown", nil))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("unknown profile status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
 func TestShadowExecutionPOSTCachesCurrentDayUnlessRebuildRequested(t *testing.T) {
+	history := &countingHistoryStub{}
 	archive := &shadowArchiveStub{report: paper.Report{
 		EngineVersion: paper.ShadowEngineVersion,
 		AsOf:          "2026-08-21",
@@ -447,7 +1136,7 @@ func TestShadowExecutionPOSTCachesCurrentDayUnlessRebuildRequested(t *testing.T)
 	archive.report.CheckpointPhase = paper.CheckpointOpen
 	evaluateCalls, listLimit := 0, -1
 	server := NewServer(
-		resolverStub{}, nil, nil, nil, "",
+		resolverStub{}, nil, history, nil, "",
 		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{listLimit: &listLimit}),
 		WithShadowExecution(shadowAnalyzerStub{report: paper.Report{EngineVersion: paper.ShadowEngineVersion, AsOf: "2026-08-21"}, calls: &evaluateCalls}, archive),
 	)
@@ -465,11 +1154,47 @@ func TestShadowExecutionPOSTCachesCurrentDayUnlessRebuildRequested(t *testing.T)
 	if !cachedPayload.Cached || cachedPayload.Report == nil || cachedPayload.Report.AsOf != "2026-08-21" {
 		t.Fatalf("same-day POST did not return cached report: %+v", cachedPayload)
 	}
+	if history.calls != 1 {
+		t.Fatalf("same checkpoint validation should read the shared trading calendar once: calls=%d", history.calls)
+	}
 
 	rebuilt := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rebuilt, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?rebuild=1", nil))
 	if rebuilt.Code != http.StatusOK || evaluateCalls != 1 || archive.saves != 1 || listLimit != 0 {
 		t.Fatalf("explicit rebuild was not honored: status=%d calls=%d saves=%d limit=%d body=%s", rebuilt.Code, evaluateCalls, archive.saves, listLimit, rebuilt.Body.String())
+	}
+}
+
+func TestShadowExecutionPOSTReportsPreservedReason(t *testing.T) {
+	cfg := paper.DefaultConfig()
+	fee := cfg.MinimumCommission
+	previous := paper.Report{
+		EngineVersion: paper.ShadowEngineVersion, Config: cfg,
+		ConfigFingerprint: paper.OptionsFingerprint(cfg, 0), AsOf: "2026-08-21",
+		CheckpointPhase: paper.CheckpointOpen, ExecutionMode: paper.ExecutionModeLive,
+		LastRealtimeAt: "2026-08-21 10:00:00", InitialCash: cfg.InitialCash,
+		RemainingCash: cfg.InitialCash - 1000 - fee,
+		Orders:        []paper.ShadowOrder{{ID: "old", Symbol: "sh600000", Side: "buy", AttemptDate: "2026-08-21", ExecutionTime: "2026-08-21 09:30:00", Quantity: 100, Price: 10, RawPrice: 10, Amount: 1000, Status: paper.OrderFilled}},
+		Positions:     []paper.ShadowOpenPosition{{Symbol: "sh600000", Quantity: 100, EntryDate: "2026-08-21", EntryPrice: 10, EntryAmount: 1000, EntryFee: fee}},
+	}
+	archive := &shadowArchiveStub{report: previous}
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600000"}}}),
+		WithShadowExecution(shadowAnalyzerStub{report: paper.Report{EngineVersion: paper.ShadowEngineVersion, Config: cfg, AsOf: "2026-08-21", CheckpointPhase: paper.CheckpointOpen}, calls: new(int)}, archive),
+	)
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 21, 10, 15) }
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?rebuild=1", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload shadowResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Preserved || payload.PreserveReason == "" {
+		t.Fatalf("preserve reason was not returned: %+v", payload)
 	}
 }
 
@@ -480,6 +1205,16 @@ func TestShadowHelpersRejectStaleQuotesAndMismatchedCache(t *testing.T) {
 	}
 	if !shadowQuoteFresh("2026-08-24 09:45:00", now) {
 		t.Fatal("fresh quote was rejected")
+	}
+	reportWithWatermark := paper.Report{LastRealtimeAt: "2026-08-24 09:45:00"}
+	if shadowRealtimeQuotesAdvance(reportWithWatermark, []paper.PositionQuote{{Symbol: "sh600519", Price: 10, QuoteTime: "2026-08-24 09:44:00"}}, now) {
+		t.Fatal("quote older than the account watermark was accepted")
+	}
+	if shadowRealtimeQuotesAdvance(reportWithWatermark, []paper.PositionQuote{{Symbol: "sh600519", Price: 10, QuoteTime: "2026-08-24 09:49:00"}}, now.Add(20*time.Minute)) {
+		t.Fatal("stale quote advanced the realtime account")
+	}
+	if !shadowRealtimeQuotesAdvance(reportWithWatermark, []paper.PositionQuote{{Symbol: "sh600519", Price: 10, QuoteTime: "2026-08-24 09:59:00"}}, now) {
+		t.Fatal("fresh quote after the account watermark was rejected")
 	}
 	options := paper.Options{Config: paper.DefaultConfig(), Limit: 0}
 	checkpoint := paper.Checkpoint{Date: "2026-08-24", Phase: paper.CheckpointOpen}
@@ -514,5 +1249,29 @@ func TestShadowCanAdvanceLegacyLedgerIntoCurrentEngine(t *testing.T) {
 	options.Config.HoldingDays++
 	if shadowCanAdvance(report, options) {
 		t.Fatal("legacy ledger ignored an incompatible holding-window change")
+	}
+}
+
+func TestShadowCanAdvanceV8LedgerWithNewRotationControls(t *testing.T) {
+	previousConfig := paper.DefaultConfig()
+	previousConfig.MaxOpenPositions = 0
+	previousConfig.MaxDailyRotations = 0
+	previousConfig.RotationScoreGap = 0
+	previousConfig.RotationMinimumHoldDays = 0
+	report := paper.Report{
+		EngineVersion: "tplus1-v8", Config: previousConfig,
+		Orders: []paper.ShadowOrder{{ID: "v8-buy", Symbol: "sh600000", Side: "buy", Status: paper.OrderFilled}},
+	}
+	options := paper.Options{Config: paper.DefaultConfig(), Limit: 0}
+	options.Config.MaxOpenPositions = 6
+	options.Config.MaxDailyRotations = 1
+	options.Config.RotationScoreGap = 10
+	options.Config.RotationMinimumHoldDays = 3
+	if !shadowCanAdvance(report, options) {
+		t.Fatal("v8 ledger could not adopt forward-only v9 rotation controls")
+	}
+	options.Config.HoldingDays++
+	if shadowCanAdvance(report, options) {
+		t.Fatal("v8 migration ignored an incompatible pre-v9 execution change")
 	}
 }

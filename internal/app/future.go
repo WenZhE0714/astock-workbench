@@ -15,7 +15,7 @@ import (
 func (app *App) runPaper(arguments []string) error {
 	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "status") {
 		fmt.Fprintln(app.out, "模拟盘状态: 影子执行复盘已启用；真实 Broker/RiskGate 仍保持隔离且不会提交订单。")
-		fmt.Fprintln(app.out, "执行约束: 信号次日开盘、A 股 100 股整手、持有窗口、成交额容量、涨跌停/停牌、手续费与滑点。")
+		fmt.Fprintln(app.out, "执行约束: 历史信号次日开盘；当前交易日按实时行情事件推进，遵守 A 股 100 股整手、T+1、持有窗口、成交额容量、涨跌停/停牌、手续费与滑点。")
 		fmt.Fprintf(app.out, "影子报告: %s\n", app.paths.ShadowReportFile)
 		fmt.Fprintf(app.out, "真实账户预留文件: %s\n", app.paths.PaperFile)
 		return nil
@@ -49,6 +49,7 @@ func backtestRequestFlags(set *flag.FlagSet) (map[string]*string, map[string]*fl
 	strings := map[string]*string{
 		"strategy":   set.String("strategy", "technical-breakout", "策略名称"),
 		"version":    set.String("version", "v1", "策略版本"),
+		"entry-mode": set.String("entry-mode", backtest.EntryModeBreakout, "入场模型"),
 		"start":      set.String("start", "", "开始日期 YYYY-MM-DD"),
 		"end":        set.String("end", "", "结束日期 YYYY-MM-DD"),
 		"adjustment": set.String("adjustment", "none", "复权口径，目前仅支持 none"),
@@ -81,7 +82,8 @@ func backtestRequestFlags(set *flag.FlagSet) (map[string]*string, map[string]*fl
 func (app *App) runBacktest(ctx context.Context, arguments []string) error {
 	if len(arguments) == 0 || (len(arguments) == 1 && arguments[0] == "status") {
 		fmt.Fprintln(app.out, "回测状态: 日线回测引擎已启用，交易流水和资金曲线会落盘。")
-		fmt.Fprintln(app.out, "默认策略: 放量突破 + 快慢均线；成交安排为信号次日开盘，遵守 T+1 与 100 股整手。")
+		fmt.Fprintf(app.out, "入场模型: %s。\n", backtest.EntryModeCatalogText())
+		fmt.Fprintln(app.out, "成交安排为信号次日开盘，遵守 T+1、费用、滑点与 100 股整手。")
 		fmt.Fprintf(app.out, "回测目录: %s\n", app.paths.BacktestsDir)
 		return nil
 	}
@@ -141,7 +143,8 @@ func (app *App) runBacktestRun(ctx context.Context, arguments []string) error {
 		adjustment = backtest.AdjustmentNone
 	}
 	parameters := backtest.TechnicalParameters{
-		FastMA: *intFlags["fast-ma"], SlowMA: *intFlags["slow-ma"], BreakoutDays: *intFlags["breakout-days"],
+		EntryMode: *stringFlags["entry-mode"],
+		FastMA:    *intFlags["fast-ma"], SlowMA: *intFlags["slow-ma"], BreakoutDays: *intFlags["breakout-days"],
 		VolumeRatioMin: *floatFlags["volume-ratio"], StopLoss: *floatFlags["stop-loss"], TakeProfit: *floatFlags["take-profit"],
 		MaxHoldingDays: *intFlags["max-holding-days"], MaxPosition: *floatFlags["max-position"],
 	}

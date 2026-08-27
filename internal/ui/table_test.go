@@ -654,7 +654,7 @@ func TestStandardDashboardContainsKeyMarketData(t *testing.T) {
 	)
 	for _, expected := range []string{
 		"贵州茅台", "现价", "买一", "卖一", "1307.55", "1308.29",
-		"振幅", "量比", "PE(TTM)", "总市值", "日内", "●",
+		"振幅", "量比", "PE(TTM)", "总市值", "日内", "●", "0%",
 	} {
 		if !strings.Contains(frame, expected) {
 			t.Fatalf("dashboard missing %q:\n%s", expected, frame)
@@ -662,6 +662,40 @@ func TestStandardDashboardContainsKeyMarketData(t *testing.T) {
 	}
 	if strings.Contains(frame, "\x1b[") {
 		t.Fatalf("color-disabled dashboard contains ANSI escapes")
+	}
+}
+
+func TestPriceRailMarksPreviousCloseAsZeroPercent(t *testing.T) {
+	quote := dashboardQuote()
+	lines := priceRail(quote, 76, false)
+	if len(lines) != 2 || !strings.Contains(lines[0], "┼") || !strings.Contains(lines[1], "0%") {
+		t.Fatalf("previous close marker missing: %#v", lines)
+	}
+	marker := strings.Index(lines[0], "┼")
+	label := strings.Index(lines[1], "0%")
+	markerColumn, labelColumn := -1, -1
+	if marker >= 0 {
+		markerColumn = displayWidth(lines[0][:marker])
+	}
+	if label >= 0 {
+		labelColumn = displayWidth(lines[1][:label])
+	}
+	if markerColumn < 0 || labelColumn < 0 || markerColumn-labelColumn > 1 || labelColumn-markerColumn > 1 {
+		t.Fatalf("zero label is not aligned with previous close: %#v", lines)
+	}
+}
+
+func TestPriceRailHandlesFlatOrMissingPreviousClose(t *testing.T) {
+	quote := dashboardQuote()
+	quote.Low, quote.High, quote.Current, quote.PreviousClose = "10.00", "10.00", "10.00", "10.00"
+	lines := priceRail(quote, 76, false)
+	if len(lines) != 2 || !strings.Contains(lines[0], "◆") || !strings.Contains(lines[1], "0%") {
+		t.Fatalf("flat range did not preserve the zero point: %#v", lines)
+	}
+	quote.PreviousClose = "--"
+	lines = priceRail(quote, 76, false)
+	if len(lines) != 1 || strings.Contains(strings.Join(lines, "\n"), "0%") {
+		t.Fatalf("missing previous close should hide zero point: %#v", lines)
 	}
 }
 

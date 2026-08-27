@@ -31,6 +31,64 @@ func NewContinuousOptimizationStore(root string) *ContinuousOptimizationStore {
 	return &ContinuousOptimizationStore{root: root}
 }
 
+func (store *ContinuousOptimizationStore) LifecyclePath(id string) (string, error) {
+	if !validArchiveID(id) {
+		return "", fmt.Errorf("无效持续优化实验 ID %q", id)
+	}
+	return filepath.Join(store.root, id, "lifecycle.json"), nil
+}
+
+func (store *ContinuousOptimizationStore) SaveLifecycle(lifecycle backtest.CandidateLifecycle) error {
+	path, err := store.LifecyclePath(lifecycle.ExperimentID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "summary.json")); os.IsNotExist(err) {
+		return fmt.Errorf("未找到持续优化实验 %s", lifecycle.ExperimentID)
+	} else if err != nil {
+		return err
+	}
+	if lifecycle.Observation != nil {
+		if err := writeBacktestArtifacts(filepath.Join(filepath.Dir(path), "forward-observation"), *lifecycle.Observation); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(lifecycle, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, append(data, '\n'), 0o600)
+}
+
+func (store *ContinuousOptimizationStore) LoadLifecycle(id string) (backtest.CandidateLifecycle, error) {
+	path, err := store.LifecyclePath(id)
+	if err != nil {
+		return backtest.CandidateLifecycle{}, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return backtest.CandidateLifecycle{}, nil
+	}
+	if err != nil {
+		return backtest.CandidateLifecycle{}, err
+	}
+	var lifecycle backtest.CandidateLifecycle
+	if err := json.Unmarshal(data, &lifecycle); err != nil {
+		return lifecycle, err
+	}
+	lifecycle.Directory = filepath.Dir(path)
+	if lifecycle.Observation, err = loadBacktestArtifacts(filepath.Join(lifecycle.Directory, "forward-observation")); err != nil {
+		return lifecycle, err
+	}
+	if lifecycle.Policy.MinimumTradingDays <= 0 {
+		lifecycle.Policy = backtest.DefaultCandidateObservationPolicy()
+	}
+	if lifecycle.Assessment.Checks == nil {
+		lifecycle.Assessment = backtest.AssessCandidateObservation(lifecycle.Policy, lifecycle.Observation)
+	}
+	return lifecycle, nil
+}
+
 func (store *ContinuousOptimizationStore) Save(result backtest.ContinuousOptimizationResult) (backtest.ContinuousOptimizationResult, error) {
 	if result.GeneratedAt.IsZero() {
 		result.GeneratedAt = time.Now()

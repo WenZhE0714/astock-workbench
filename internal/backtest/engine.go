@@ -69,7 +69,7 @@ func validateRequest(request Request) error {
 		return fmt.Errorf("当前仅支持策略 technical-breakout")
 	}
 	p := request.Technical
-	if p.FastMA < 2 || p.SlowMA <= p.FastMA || p.BreakoutDays < 2 || p.VolumeRatioMin <= 0 ||
+	if !ValidEntryMode(p.EffectiveEntryMode()) || p.FastMA < 2 || p.SlowMA <= p.FastMA || p.BreakoutDays < 2 || p.VolumeRatioMin <= 0 ||
 		p.StopLoss <= 0 || p.TakeProfit <= 0 || p.MaxHoldingDays < 1 || p.MaxPosition <= 0 || p.MaxPosition > 1 {
 		return fmt.Errorf("技术策略参数无效")
 	}
@@ -97,6 +97,57 @@ func averageBars(bars []domain.DailyBar, end, period int, value func(domain.Dail
 	return total / float64(period)
 }
 
+func standardDeviationBars(bars []domain.DailyBar, end, period int, value func(domain.DailyBar) float64) float64 {
+	mean := averageBars(bars, end, period, value)
+	if math.IsNaN(mean) {
+		return math.NaN()
+	}
+	total := 0.0
+	for index := end - period + 1; index <= end; index++ {
+		delta := value(bars[index]) - mean
+		total += delta * delta
+	}
+	return math.Sqrt(total / float64(period))
+}
+
+func rsiBars(bars []domain.DailyBar, end, period int) float64 {
+	if period < 1 || end-period < 0 || end >= len(bars) {
+		return math.NaN()
+	}
+	gain, loss := 0.0, 0.0
+	for index := end - period + 1; index <= end; index++ {
+		change := bars[index].Close - bars[index-1].Close
+		if change > 0 {
+			gain += change
+		} else {
+			loss -= change
+		}
+	}
+	if loss == 0 {
+		if gain == 0 {
+			return 50
+		}
+		return 100
+	}
+	strength := gain / loss
+	return 100 - 100/(1+strength)
+}
+
+func priceRangeWidth(bars []domain.DailyBar, end, period int) float64 {
+	if period < 2 || end-period+1 < 0 || end >= len(bars) {
+		return math.NaN()
+	}
+	high, low := bars[end-period+1].High, bars[end-period+1].Low
+	for index := end - period + 2; index <= end; index++ {
+		high = math.Max(high, bars[index].High)
+		low = math.Min(low, bars[index].Low)
+	}
+	if low <= 0 {
+		return math.NaN()
+	}
+	return high/low - 1
+}
+
 func technicalSnapshot(bars []domain.DailyBar, index int, parameters TechnicalParameters) (SignalSnapshot, bool) {
 	warmup := max(parameters.SlowMA, parameters.BreakoutDays+1, 21)
 	if index < warmup {
@@ -111,48 +162,171 @@ func technicalSnapshot(bars []domain.DailyBar, index int, parameters TechnicalPa
 		volumeRatio = bar.Volume / volumeAverage
 	}
 	priorHigh := bars[index-parameters.BreakoutDays].High
+	priorLow := bars[index-parameters.BreakoutDays].Low
 	for candidate := index - parameters.BreakoutDays + 1; candidate < index; candidate++ {
 		if bars[candidate].High > priorHigh {
 			priorHigh = bars[candidate].High
 		}
+		if bars[candidate].Low < priorLow {
+			priorLow = bars[candidate].Low
+		}
+	}
+	shortWindow := min(10, parameters.BreakoutDays)
+	priorShortHigh := bars[index-shortWindow].High
+	for candidate := index - shortWindow + 1; candidate < index; candidate++ {
+		priorShortHigh = math.Max(priorShortHigh, bars[candidate].High)
+	}
+	ma20 := averageBars(bars, index, 20, func(item domain.DailyBar) float64 { return item.Close })
+	std20 := standardDeviationBars(bars, index, 20, func(item domain.DailyBar) float64 { return item.Close })
+	width20 := priceRangeWidth(bars, index-1, 20)
+	width10 := priceRangeWidth(bars, index-1, 10)
+	compression := math.NaN()
+	if width20 > 0 {
+		compression = width10 / width20
 	}
 	return SignalSnapshot{
 		Date: bar.Date, Close: bar.Close, Low: bar.Low,
 		PreviousClose:  bars[index-1].Close,
 		PreviousFastMA: averageBars(bars, index-1, parameters.FastMA, func(item domain.DailyBar) float64 { return item.Close }),
-		FastMA:         fast, SlowMA: slow,
-		PriorHigh: priorHigh, VolumeRatio: volumeRatio,
+		FastMA:         fast, SlowMA: slow, PriorHigh: priorHigh, PriorLow: priorLow, PriorShortHigh: priorShortHigh,
+		BollingerLower: ma20 - 2*std20, RSI14: rsiBars(bars, index, 14),
+		Return20: bar.Close/bars[index-20].Close - 1, RangeCompression: compression, VolumeRatio: volumeRatio,
 	}, true
 }
 
 func entrySignal(snapshot SignalSnapshot, parameters TechnicalParameters) (SignalSnapshot, bool) {
-	if snapshot.FastMA <= snapshot.SlowMA || math.IsNaN(snapshot.VolumeRatio) || snapshot.VolumeRatio < parameters.VolumeRatioMin {
+	mode := parameters.EffectiveEntryMode()
+	if mode != EntryModeMeanRevert && mode != EntryModeAdaptive && snapshot.FastMA <= snapshot.SlowMA {
 		return snapshot, false
 	}
-	mode := parameters.EffectiveEntryMode()
-	triggered := false
+	selectedMode := mode
 	reason := ""
-	switch mode {
-	case EntryModeBreakout:
-		triggered = snapshot.Close > snapshot.PriorHigh
-		reason = fmt.Sprintf("收盘 %.2f 突破前%d日高点 %.2f", snapshot.Close, parameters.BreakoutDays, snapshot.PriorHigh)
-	case EntryModeReclaim:
-		triggered = snapshot.PreviousClose <= snapshot.PreviousFastMA && snapshot.Close > snapshot.FastMA
-		reason = fmt.Sprintf("收盘 %.2f 重新站上 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
-	case EntryModePullback:
-		triggered = snapshot.Low <= snapshot.FastMA && snapshot.Close >= snapshot.FastMA
-		reason = fmt.Sprintf("日内回踩 MA%d %.2f 后收于均线上方", parameters.FastMA, snapshot.FastMA)
+	triggered := false
+	if mode == EntryModeAdaptive {
+		selectedMode, reason, triggered = adaptiveEntrySelection(snapshot, parameters)
+	} else {
+		minimumVolume, maximumVolume := entryVolumeBounds(mode, parameters.VolumeRatioMin)
+		if math.IsNaN(snapshot.VolumeRatio) || snapshot.VolumeRatio < minimumVolume || snapshot.VolumeRatio > maximumVolume {
+			return snapshot, false
+		}
+		reason, triggered = entryCondition(snapshot, parameters, mode)
 	}
 	if !triggered {
 		return snapshot, false
 	}
 	snapshot.Action = "买入"
-	snapshot.Reasons = []string{
-		reason,
-		fmt.Sprintf("MA%d %.2f 高于 MA%d %.2f", parameters.FastMA, snapshot.FastMA, parameters.SlowMA, snapshot.SlowMA),
-		fmt.Sprintf("成交量为前20日均量的 %.2f 倍，达到 %.2f 倍门槛", snapshot.VolumeRatio, parameters.VolumeRatioMin),
+	snapshot.EntryMode = mode
+	if mode == EntryModeAdaptive {
+		snapshot.SelectedEntryMode = selectedMode
 	}
+	snapshot.Reasons = []string{reason}
+	if snapshot.FastMA > snapshot.SlowMA {
+		snapshot.Reasons = append(snapshot.Reasons, fmt.Sprintf("MA%d %.2f 高于 MA%d %.2f", parameters.FastMA, snapshot.FastMA, parameters.SlowMA, snapshot.SlowMA))
+	}
+	minimumVolume, maximumVolume := entryVolumeBounds(selectedMode, parameters.VolumeRatioMin)
+	snapshot.VolumeRequirement = fmt.Sprintf("%.2f-%.2f倍前20日均量", minimumVolume, maximumVolume)
+	snapshot.Reasons = append(snapshot.Reasons, fmt.Sprintf("成交量为前20日均量的 %.2f 倍，满足%s（基线 %.2f）", snapshot.VolumeRatio, snapshot.VolumeRequirement, parameters.VolumeRatioMin))
 	return snapshot, true
+}
+
+// entryCondition contains the shape-specific rules shared by the fixed modes
+// and the adaptive ensemble. Keeping the condition separate from the common
+// volume/recording path makes the ensemble deterministic and auditable.
+func entryCondition(snapshot SignalSnapshot, parameters TechnicalParameters, mode string) (string, bool) {
+	switch mode {
+	case EntryModeBreakout:
+		breakoutDistance := relativeDistance(snapshot.Close, snapshot.PriorHigh)
+		return fmt.Sprintf("收盘 %.2f 突破前%d日高点 %.2f", snapshot.Close, parameters.BreakoutDays, snapshot.PriorHigh), breakoutDistance > 0 && breakoutDistance <= .25
+	case EntryModeReclaim:
+		triggered := snapshot.PreviousClose <= snapshot.PreviousFastMA && snapshot.Close > snapshot.FastMA && snapshot.Close <= snapshot.FastMA*1.15
+		return fmt.Sprintf("收盘 %.2f 重新站上 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA), triggered
+	case EntryModePullback:
+		triggered := snapshot.Low <= snapshot.FastMA && snapshot.Close >= snapshot.FastMA
+		return fmt.Sprintf("日内回踩 MA%d %.2f 后收于均线上方", parameters.FastMA, snapshot.FastMA), triggered
+	case EntryModeMomentum:
+		triggered := snapshot.PreviousClose > snapshot.PreviousFastMA && snapshot.Close > snapshot.FastMA && snapshot.Close > snapshot.PreviousClose && snapshot.Return20 >= .08 && snapshot.Return20 <= .50 && (snapshot.RSI14 <= 0 || snapshot.RSI14 <= 78)
+		return fmt.Sprintf("20日动量 %+.2f%%，价格连续位于 MA%d 上方并继续走强", snapshot.Return20*100, parameters.FastMA), triggered
+	case EntryModeMeanRevert:
+		triggered := snapshot.FastMA > snapshot.SlowMA && snapshot.Low <= snapshot.BollingerLower && snapshot.Close > snapshot.BollingerLower && snapshot.Close > snapshot.PreviousClose && snapshot.RSI14 > 0 && snapshot.RSI14 <= 45 && snapshot.Close <= snapshot.FastMA*1.05
+		return fmt.Sprintf("上升结构内触及布林下轨 %.2f 后反弹，RSI14 %.1f", snapshot.BollingerLower, snapshot.RSI14), triggered
+	case EntryModeVolSqueeze:
+		breakoutDistance := relativeDistance(snapshot.Close, snapshot.PriorShortHigh)
+		triggered := snapshot.RangeCompression > 0 && snapshot.RangeCompression <= .60 && breakoutDistance > 0 && breakoutDistance <= .25
+		return fmt.Sprintf("10日波动区间压缩至20日的 %.0f%%，收盘突破短周期高点 %.2f", snapshot.RangeCompression*100, snapshot.PriorShortHigh), triggered
+	case EntryModeAdaptive:
+		return adaptiveEntryCondition(snapshot, parameters)
+	default:
+		return "", false
+	}
+}
+
+func adaptiveEntryCondition(snapshot SignalSnapshot, parameters TechnicalParameters) (string, bool) {
+	_, reason, triggered := adaptiveEntrySelection(snapshot, parameters)
+	return reason, triggered
+}
+
+// adaptiveEntrySelection evaluates the already-validated setup catalogue in a
+// fixed priority order. It deliberately does not learn or randomize weights:
+// the selected shape and its own volume bounds remain reproducible in a report.
+func adaptiveEntrySelection(snapshot SignalSnapshot, parameters TechnicalParameters) (string, string, bool) {
+	if !finiteValues(snapshot.VolumeRatio) || snapshot.FastMA <= snapshot.SlowMA {
+		return "", "", false
+	}
+	for _, mode := range []string{
+		EntryModeVolSqueeze,
+		EntryModeBreakout,
+		EntryModeReclaim,
+		EntryModePullback,
+		EntryModeMomentum,
+		EntryModeMeanRevert,
+	} {
+		minimum, maximum := entryVolumeBounds(mode, parameters.VolumeRatioMin)
+		if snapshot.VolumeRatio < minimum || snapshot.VolumeRatio > maximum {
+			continue
+		}
+		condition, ok := entryCondition(snapshot, parameters, mode)
+		if ok {
+			return mode, fmt.Sprintf("自适应选择%s：%s", EntryModeLabel(mode), condition), true
+		}
+	}
+	return "", "", false
+}
+
+// entryVolumeBounds gives each setup a liquidity interpretation instead of
+// applying the breakout threshold blindly to every model. Pullbacks and
+// mean-reversion entries prefer controlled volume; momentum and squeeze
+// entries require expansion but reject climax bars. The user parameter remains
+// the lower-bound anchor for expansion-oriented models.
+func entryVolumeBounds(mode string, baseline float64) (float64, float64) {
+	if !finiteValues(baseline) || baseline <= 0 {
+		baseline = 1
+	}
+	switch mode {
+	case EntryModeReclaim:
+		return math.Max(.8, baseline*.75), math.Max(3.5, baseline+1)
+	case EntryModePullback:
+		return .5, math.Max(1.8, math.Min(2.5, baseline*1.5))
+	case EntryModeMomentum:
+		return math.Max(1.0, baseline), math.Max(3.0, baseline+1)
+	case EntryModeMeanRevert:
+		return .6, 2.2
+	case EntryModeVolSqueeze:
+		return math.Max(1.1, baseline), math.Max(4.0, baseline+1)
+	case EntryModeAdaptive:
+		// The ensemble delegates the final volume interpretation to the
+		// selected shape, so this outer range only removes missing data and
+		// obvious climax bars before the per-shape check runs.
+		return .6, 4.5
+	default:
+		return baseline, math.Max(4.5, baseline+1)
+	}
+}
+
+func relativeDistance(value, reference float64) float64 {
+	if value <= 0 || reference <= 0 || !finiteValues(value, reference) {
+		return math.NaN()
+	}
+	return value/reference - 1
 }
 
 func exitSignal(snapshot SignalSnapshot, position *positionState, parameters TechnicalParameters) (SignalSnapshot, string, bool) {
@@ -163,16 +337,75 @@ func exitSignal(snapshot SignalSnapshot, position *positionState, parameters Tec
 		reason = fmt.Sprintf("收盘触发 %.2f%% 止损", parameters.StopLoss*100)
 	case returnRate >= parameters.TakeProfit:
 		reason = fmt.Sprintf("收盘触发 %.2f%% 止盈", parameters.TakeProfit*100)
-	case snapshot.Close < snapshot.FastMA:
-		reason = fmt.Sprintf("收盘 %.2f 跌破 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
-	case position.holdingDays >= parameters.MaxHoldingDays:
-		reason = fmt.Sprintf("持有达到 %d 个交易日", parameters.MaxHoldingDays)
 	default:
-		return snapshot, "", false
+		reason = modelExitReason(snapshot, position, parameters, returnRate)
+		if reason == "" && position.holdingDays >= parameters.MaxHoldingDays {
+			reason = fmt.Sprintf("持有达到 %d 个交易日", parameters.MaxHoldingDays)
+		}
+		if reason == "" {
+			return snapshot, "", false
+		}
 	}
 	snapshot.Action = "卖出"
+	snapshot.EntryMode = parameters.EffectiveEntryMode()
+	if snapshot.EntryMode == EntryModeAdaptive {
+		snapshot.SelectedEntryMode = position.entrySignal.SelectedEntryMode
+	}
 	snapshot.Reasons = []string{reason}
 	return snapshot, reason, true
+}
+
+func modelExitReason(snapshot SignalSnapshot, position *positionState, parameters TechnicalParameters, returnRate float64) string {
+	entry := position.entrySignal
+	switch parameters.EffectiveEntryMode() {
+	case EntryModeBreakout:
+		invalidation := math.Max(snapshot.FastMA, entry.PriorHigh)
+		if invalidation > 0 && snapshot.Close < invalidation {
+			return fmt.Sprintf("突破失效：收盘 %.2f 跌破突破位/MA%d %.2f", snapshot.Close, parameters.FastMA, invalidation)
+		}
+	case EntryModeReclaim:
+		if snapshot.Close < snapshot.FastMA {
+			return fmt.Sprintf("趋势收复失效：收盘 %.2f 再次跌破 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
+		}
+	case EntryModePullback:
+		invalidation := math.Max(snapshot.SlowMA, entry.Low)
+		if invalidation > 0 && snapshot.Close < invalidation {
+			return fmt.Sprintf("回踩结构失效：收盘 %.2f 跌破结构位 %.2f", snapshot.Close, invalidation)
+		}
+	case EntryModeMomentum:
+		if snapshot.Close < snapshot.FastMA {
+			return fmt.Sprintf("动量衰竭：收盘 %.2f 跌破 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
+		}
+		if returnRate > 0 && snapshot.RSI14 >= 82 {
+			return fmt.Sprintf("动量过热：RSI14 %.1f 达到82，锁定已有收益", snapshot.RSI14)
+		}
+	case EntryModeMeanRevert:
+		if returnRate > 0 && snapshot.Close >= snapshot.FastMA {
+			return fmt.Sprintf("均值回归目标完成：收盘 %.2f 回到 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
+		}
+		if entry.Low > 0 && snapshot.Close < entry.Low {
+			return fmt.Sprintf("反弹失效：收盘 %.2f 跌破入场信号低点 %.2f", snapshot.Close, entry.Low)
+		}
+	case EntryModeVolSqueeze:
+		invalidation := math.Max(snapshot.FastMA, entry.PriorShortHigh)
+		if invalidation > 0 && snapshot.Close < invalidation {
+			return fmt.Sprintf("收缩突破失效：收盘 %.2f 跌破短周期突破位/MA%d %.2f", snapshot.Close, parameters.FastMA, invalidation)
+		}
+	case EntryModeAdaptive:
+		if entry.SelectedEntryMode != "" && entry.SelectedEntryMode != EntryModeAdaptive {
+			delegated := parameters
+			delegated.EntryMode = entry.SelectedEntryMode
+			return modelExitReason(snapshot, position, delegated, returnRate)
+		}
+		if snapshot.Close < snapshot.FastMA {
+			return fmt.Sprintf("自适应多形态失效：收盘 %.2f 跌破 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
+		}
+	default:
+		if snapshot.Close < snapshot.FastMA {
+			return fmt.Sprintf("收盘 %.2f 跌破 MA%d %.2f", snapshot.Close, parameters.FastMA, snapshot.FastMA)
+		}
+	}
+	return ""
 }
 
 func onePriceBar(bar domain.DailyBar) bool {

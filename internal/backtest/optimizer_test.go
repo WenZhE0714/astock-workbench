@@ -62,6 +62,7 @@ func TestGenerateCandidatesIsBoundedDeterministicAndDeduplicated(t *testing.T) {
 		t.Fatalf("candidate generation is not bounded and deterministic: %d %d", len(first), len(second))
 	}
 	seen := make(map[string]bool)
+	modes := make(map[string]bool)
 	foundBaseline := false
 	for _, candidate := range first {
 		key := parameterKey(candidate)
@@ -69,10 +70,16 @@ func TestGenerateCandidatesIsBoundedDeterministicAndDeduplicated(t *testing.T) {
 			t.Fatalf("duplicate candidate %s", key)
 		}
 		seen[key] = true
+		modes[candidate.EffectiveEntryMode()] = true
 		foundBaseline = foundBaseline || key == parameterKey(baseline)
 	}
 	if !foundBaseline {
 		t.Fatal("baseline candidate must always be included")
+	}
+	for _, mode := range EntryModes() {
+		if !modes[mode] {
+			t.Fatalf("bounded candidate set omitted entry mode %s: %#v", mode, modes)
+		}
 	}
 }
 

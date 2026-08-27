@@ -14,26 +14,40 @@ const (
 var marketLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // MarketSession is the shared scheduling contract for realtime scans. It uses
-// Shanghai exchange clock time and intentionally does not claim holiday
-// awareness until a point-in-time exchange calendar is available.
+// Shanghai exchange clock time and accepts an optional point-in-time exchange
+// calendar. When a calendar does not cover the requested date, weekday rules
+// remain the explicit fallback rather than silently treating the date as a
+// holiday.
 type MarketSession struct {
 	State               string
 	ScanAllowed         bool
 	FinalizationAllowed bool
+	TradingDay          bool
+	CalendarKnown       bool
 	TradingDate         string
 	CloseAt             time.Time
 	NextScanAt          time.Time
 }
 
 func MarketSessionAt(now time.Time) MarketSession {
+	return MarketSessionAtWithCalendar(now, nil)
+}
+
+// MarketSessionAtWithCalendar classifies the exchange session using the
+// supplied sorted trading dates. The input is normalized defensively so callers
+// can pass raw provider rows without sharing mutable state.
+func MarketSessionAtWithCalendar(now time.Time, calendarDates []string) MarketSession {
 	local := now.In(marketLocation)
 	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, marketLocation)
 	closeAt := day.Add(15 * time.Hour)
+	calendarDates = NormalizeTradingDates(calendarDates)
+	tradingDay, calendarKnown := tradingDateStatus(day.Format(calendarDateLayout), calendarDates)
 	session := MarketSession{
-		State: MarketStateClosed, TradingDate: day.Format("2006-01-02"), CloseAt: closeAt,
+		State: MarketStateClosed, TradingDay: tradingDay, CalendarKnown: calendarKnown,
+		TradingDate: day.Format(calendarDateLayout), CloseAt: closeAt,
 	}
-	if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
-		session.NextScanAt = nextWeekdayAt(day.AddDate(0, 0, 1), 9, 15)
+	if !tradingDay {
+		session.NextScanAt = nextTradingAt(day, calendarDates, 9, 15)
 		return session
 	}
 	auctionAt := day.Add(9*time.Hour + 15*time.Minute)
@@ -57,13 +71,13 @@ func MarketSessionAt(now time.Time) MarketSession {
 		session.ScanAllowed = true
 	default:
 		session.FinalizationAllowed = !local.After(closeAt.Add(closingSnapshotWindow))
-		session.NextScanAt = nextWeekdayAt(day.AddDate(0, 0, 1), 9, 15)
+		session.NextScanAt = nextTradingAt(day, calendarDates, 9, 15)
 	}
 	return session
 }
 
 func (session MarketSession) ShouldFinalize(previous time.Time) bool {
-	if !session.FinalizationAllowed {
+	if !session.FinalizationAllowed || !session.TradingDay {
 		return false
 	}
 	if previous.IsZero() {

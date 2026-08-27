@@ -15,11 +15,15 @@ import (
 )
 
 const (
-	defaultLeaderLimit    = 20
-	maximumUniverse       = 50
-	maximumMinuteLoads    = 6
-	historyMemoryTTL      = 15 * time.Minute
-	minimumFactorCoverage = 0.55
+	defaultLeaderLimit            = 20
+	maximumUniverse               = 50
+	maximumMinuteLoads            = 6
+	historyMemoryTTL              = 15 * time.Minute
+	minimumFactorCoverage         = 0.55
+	minimumRealtimePortfolioScore = 55.0
+	minimumRankingPool            = 5
+	portfolioTopFraction          = 0.30
+	portfolioIndustryFraction     = 0.40
 )
 
 type componentFamily struct {
@@ -60,8 +64,19 @@ type Scanner struct {
 	store      Store
 	strategies []Strategy
 	now        func() time.Time
+	calendar   TradingCalendarProvider
 	historyMu  sync.Mutex
 	histories  map[string]historyCacheEntry
+}
+
+// SetTradingCalendarProvider injects the same exchange calendar used by the
+// Web scheduler and shadow accounts. Passing nil restores benchmark-date
+// fallback behavior.
+func (scanner *Scanner) SetTradingCalendarProvider(provider TradingCalendarProvider) {
+	if scanner == nil {
+		return
+	}
+	scanner.calendar = provider
 }
 
 func NewScanner(market MarketClient, quotes QuoteClient, history HistoryClient, minutes MinuteClient, store Store) *Scanner {
@@ -77,6 +92,35 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 	}
 	now := scanner.now()
 	warnings := make([]string, 0)
+	// Establish the exchange session before requesting rankings, quotes or
+	// minutes. Known holidays and make-up days should short-circuit the whole
+	// scan instead of spending network capacity on a snapshot that cannot be
+	// used.
+	benchmark, benchmarkError := scanner.fetchHistory(ctx, "sh000300")
+	if benchmarkError != nil {
+		warnings = append(warnings, "沪深300历史数据不可用: "+benchmarkError.Error())
+	}
+	calendarDates := TradingDatesFromBars(benchmark)
+	if scanner.calendar != nil {
+		provided, calendarErr := scanner.calendar(ctx, now)
+		if calendarErr != nil {
+			warnings = append(warnings, "交易日历提供器不可用，回退沪深300日期: "+calendarErr.Error())
+		} else if normalized := NormalizeTradingDates(provided); len(normalized) > 0 {
+			calendarDates = normalized
+		} else {
+			warnings = append(warnings, "交易日历提供器未返回有效日期，回退沪深300日期")
+		}
+	}
+	session := MarketSessionAtWithCalendar(now, calendarDates)
+	if !session.TradingDay {
+		return ScanResult{}, fmt.Errorf("当前日期不在交易日历中，暂停实时扫描")
+	}
+	if benchmarkError == nil && !session.CalendarKnown {
+		// The history window may end before the current session. Keep the
+		// weekday fallback, but leave an auditable warning instead of implying
+		// that the provider supplied a complete future holiday calendar.
+		warnings = append(warnings, "交易日历未覆盖当前日期，当前会话按工作日规则降级")
+	}
 	symbols := stockSymbols(watchlist)
 	if includeLeaders {
 		leaders, err := scanner.market.FetchStockRanking(ctx, domain.MarketScanByAmount, true, defaultLeaderLimit)
@@ -105,11 +149,6 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 	}
 	quotes := scanner.fetchQuotes(ctx, symbols, &warnings)
 	boards := scanner.fetchBoards(ctx, &warnings)
-	benchmark, benchmarkError := scanner.fetchHistory(ctx, "sh000300")
-	if benchmarkError != nil {
-		warnings = append(warnings, "沪深300历史数据不可用: "+benchmarkError.Error())
-	}
-
 	type historyResult struct {
 		symbol string
 		bars   []domain.DailyBar
@@ -163,7 +202,7 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 			copied := item
 			board = &copied
 		}
-		input := Snapshot{Now: now, Stock: stock, Bars: bars, Minutes: minutes[symbol], Board: board, Benchmark: benchmark}
+		input := Snapshot{Now: now, Stock: stock, Bars: bars, Minutes: minutes[symbol], Board: board, Benchmark: benchmark, CalendarDates: calendarDates}
 		if quote, found := quotes[symbol]; found {
 			copied := quote
 			input.Quote = &copied
@@ -176,19 +215,36 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 		}
 		signals = append(signals, scanner.evaluate(input))
 	}
-	sort.SliceStable(signals, func(left, right int) bool {
-		if signals[left].Score == signals[right].Score {
-			return signals[left].Speed > signals[right].Speed
-		}
-		return signals[left].Score > signals[right].Score
-	})
-	result := ScanResult{GeneratedAt: now, Universe: "watchlist+leaders", MarketState: MarketSessionAt(now).State, Signals: signals, Warnings: uniqueStrings(warnings, 30)}
+	signals = applyCrossSectionOverlay(signals)
+	stale, current := quoteDateCoverage(signals, session.TradingDate)
+	if stale > 0 && current == 0 {
+		return ScanResult{}, fmt.Errorf("行情日期未推进到%s，暂停实时扫描（%d个信号仍为旧交易日）", session.TradingDate, stale)
+	}
+	if stale > 0 && current > 0 {
+		warnings = append(warnings, fmt.Sprintf("行情日期混杂：%d个信号为当前交易日，%d个信号仍为旧交易日", current, stale))
+	}
+	result := ScanResult{GeneratedAt: now, Universe: "watchlist+leaders", MarketState: session.State, TradingDate: session.TradingDate, TradingDay: session.TradingDay, CalendarKnown: session.CalendarKnown, Signals: signals, Warnings: uniqueStrings(warnings, 30)}
 	if scanner.store != nil {
 		if saveError := scanner.store.Append(result); saveError != nil {
 			result.Warnings = append(result.Warnings, "信号留痕失败: "+saveError.Error())
 		}
 	}
 	return result, nil
+}
+
+func quoteDateCoverage(signals []Signal, tradingDate string) (stale, current int) {
+	for _, signal := range signals {
+		if len(signal.QuoteTime) < len(calendarDateLayout) {
+			continue
+		}
+		date := signal.QuoteTime[:len(calendarDateLayout)]
+		if date == tradingDate {
+			current++
+		} else {
+			stale++
+		}
+	}
+	return stale, current
 }
 
 func (scanner *Scanner) fetchHistory(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
@@ -230,18 +286,45 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 		state = StateInvalid
 	}
 	indicators, hasIndicators := calculateIndicators(input)
+	regime := marketregime.Insufficient
+	if hasIndicators {
+		regime = indicators.marketRegime
+	}
+	riskMultiplier, riskOverlayReason, riskAvailable := marketRiskOverlay(regime)
+	riskAdjustedScore := math.Round(score*riskMultiplier*10) / 10
+	state = StateWeak
+	if riskAdjustedScore >= 72 {
+		state = StateTriggered
+	} else if riskAdjustedScore >= minimumRealtimePortfolioScore {
+		state = StateWatching
+	}
+	if coverage < minimumFactorCoverage {
+		state = StateInvalid
+	}
+	if !riskAvailable {
+		state = StateInvalid
+	}
 	price := input.Stock.Price
 	triggerPrice, invalidationPrice, dataDate, source := 0.0, 0.0, "", ""
+	entryShape, entryShapeLabel, entryShapeScore := "", "", 0.0
+	entryShapeEvidence := []string(nil)
+	entryShapeTriggerPrice, entryShapeInvalidationPrice := 0.0, 0.0
 	if hasIndicators {
 		if price <= 0 {
 			price = indicators.latest.Close
 		}
+		entryShape, entryShapeLabel, entryShapeScore, entryShapeEvidence, entryShapeTriggerPrice, entryShapeInvalidationPrice = classifyEntryShape(input, indicators)
+		// Keep the original generic references stable for outcome evaluation and
+		// shadow execution. Shape-specific levels are exposed separately.
 		triggerPrice = math.Max(indicators.prior20High, indicators.ma5)
 		invalidationPrice = math.Max(indicators.ma20, indicators.prior20Low)
 		dataDate, source = indicators.latest.Date, indicators.latest.Source
 	}
 	reasons := topReasons(components, contributions, 5)
 	risks := signalRisks(input, indicators, hasIndicators)
+	if riskOverlayReason != "" {
+		risks = append(risks, riskOverlayReason)
+	}
 	quoteTime := ""
 	if input.Quote != nil {
 		quoteTime = input.Quote.QuoteTime
@@ -249,11 +332,369 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 	return Signal{
 		ID:     input.Now.Format("20060102T150405") + "-" + input.Stock.Symbol,
 		Symbol: input.Stock.Symbol, Name: input.Stock.Name, Industry: input.Stock.Industry,
-		State: state, Score: math.Round(score*10) / 10, Price: price, Percent: input.Stock.Percent, Speed: input.Stock.Speed,
+		State: state, Score: math.Round(score*10) / 10,
+		RiskAdjustedScore: riskAdjustedScore, RiskMultiplier: riskMultiplier, MarketRegime: string(regime), RiskOverlayReason: riskOverlayReason,
+		Price: price, Percent: input.Stock.Percent, Speed: input.Stock.Speed,
 		TriggerPrice: triggerPrice, InvalidationPrice: invalidationPrice,
+		EntryShape: entryShape, EntryShapeLabel: entryShapeLabel, EntryShapeScore: entryShapeScore, EntryShapeEvidence: entryShapeEvidence,
+		EntryShapeTriggerPrice: entryShapeTriggerPrice, EntryShapeInvalidationPrice: entryShapeInvalidationPrice,
 		AsOf: input.Now, QuoteTime: quoteTime, DataDate: dataDate, DataSource: source,
-		Components: components, Reasons: reasons, Risks: risks, Warnings: uniqueStrings(warnings, 10),
+		Components: components, Reasons: reasons, Risks: uniqueStrings(risks, 8), Warnings: uniqueStrings(warnings, 10),
 	}
+}
+
+// classifyEntryShape adds a human-auditable setup label beside the composite
+// score. It intentionally uses completed daily bars plus the current quote and
+// never changes component weights or signal state.
+func classifyEntryShape(input Snapshot, value indicators) (string, string, float64, []string, float64, float64) {
+	price := currentPrice(input, value.latest.Close)
+	if price <= 0 {
+		return "", "", 0, nil, 0, 0
+	}
+	type candidate struct {
+		id, label string
+		score     float64
+		evidence  []string
+		trigger   float64
+		invalid   float64
+	}
+	candidates := make([]candidate, 0, 6)
+	add := func(item candidate) {
+		if item.score > 0 {
+			item.score = math.Round(math.Min(100, item.score)*10) / 10
+			candidates = append(candidates, item)
+		}
+	}
+
+	if finite(value.prior20High) && value.prior20High > 0 {
+		distance := (price/value.prior20High - 1) * 100
+		score := 0.0
+		evidence := []string{fmt.Sprintf("现价距前20日高点 %+.2f%%", distance)}
+		label := "结构突破（量能待确认）"
+		if distance >= 0 {
+			score += 60
+		} else if distance >= -2 {
+			score += 35
+		}
+		if finite(value.volumeRatio) {
+			evidence = append(evidence, fmt.Sprintf("量比 %.2f", value.volumeRatio))
+			if value.volumeRatio >= 1.2 && value.volumeRatio <= 4 {
+				score += 25
+				label = "放量突破"
+			} else if value.volumeRatio > 4 {
+				label = "结构突破（量能过热）"
+			} else {
+				label = "结构突破（量能偏弱）"
+			}
+		} else {
+			// Without same-window volume evidence this is only a structural
+			// breakout candidate, never a confirmed "放量突破" setup.
+			score = math.Min(score, 60)
+			evidence = append(evidence, "量能数据不足，不能确认放量")
+		}
+		if price >= value.ma20 {
+			score += 15
+			evidence = append(evidence, fmt.Sprintf("价格位于MA20 %.2f上方", value.ma20))
+		}
+		add(candidate{id: "breakout", label: label, score: score, evidence: evidence, trigger: value.prior20High, invalid: math.Max(value.ma20, value.prior20Low)})
+	}
+
+	if finite(value.ma20) && value.ma20 > 0 {
+		distance := math.Abs(price/value.ma20-1) * 100
+		score := 0.0
+		evidence := []string{fmt.Sprintf("现价距MA20 %.2f%%", distance)}
+		if price >= value.ma20 && distance <= 2 {
+			score += 45
+		}
+		if value.previous.Close <= value.previousMA20 && price >= value.ma20 {
+			score += 35
+			evidence = append(evidence, "前一完整日收盘位于MA20下方，本次重新收复")
+		}
+		if value.ma20 > value.ma60 {
+			score += 20
+			evidence = append(evidence, "MA20高于MA60")
+		}
+		add(candidate{id: "trend-reclaim", label: "趋势收复", score: score, evidence: evidence, trigger: value.ma20, invalid: value.ma20})
+
+		pullbackScore := 0.0
+		pullbackEvidence := []string{fmt.Sprintf("日内低点相对MA20 %.2f%%", (value.latest.Low/value.ma20-1)*100)}
+		if value.latest.Low <= value.ma20*1.015 && price >= value.ma20 {
+			pullbackScore += 65
+		}
+		if value.ma20 > value.ma60 {
+			pullbackScore += 25
+			pullbackEvidence = append(pullbackEvidence, "中期均线保持多头")
+		}
+		if finite(value.volumeRatio) && value.volumeRatio <= 1.2 {
+			pullbackScore += 10
+			pullbackEvidence = append(pullbackEvidence, fmt.Sprintf("回踩量比 %.2f，抛压受控", value.volumeRatio))
+		}
+		add(candidate{id: "ma-pullback", label: "均线回踩", score: pullbackScore, evidence: pullbackEvidence, trigger: value.ma20, invalid: value.ma60})
+	}
+
+	if finite(value.return20) {
+		score := 0.0
+		evidence := []string{fmt.Sprintf("20日收益 %+.2f%%", value.return20)}
+		if value.return20 >= 8 && value.return20 <= 50 {
+			score += 55
+		}
+		if price > value.ma20 {
+			score += 25
+			evidence = append(evidence, "价格保持在MA20上方")
+		}
+		if !finite(value.rsi14) || value.rsi14 <= 78 {
+			score += 20
+		} else {
+			evidence = append(evidence, fmt.Sprintf("RSI14 %.1f，接近过热区", value.rsi14))
+		}
+		add(candidate{id: "momentum-continuation", label: "动量延续", score: score, evidence: evidence, trigger: math.Max(value.prior20High, value.ma5), invalid: value.ma20})
+	}
+
+	if finite(value.bollingerLower) && value.bollingerLower > 0 && finite(value.rsi14) {
+		score := 0.0
+		evidence := []string{fmt.Sprintf("低点相对布林下轨 %.2f%%", (value.latest.Low/value.bollingerLower-1)*100), fmt.Sprintf("RSI14 %.1f", value.rsi14)}
+		if value.ma20 > value.ma60 && value.latest.Low <= value.bollingerLower*1.02 && price > value.bollingerLower {
+			score += 65
+		}
+		if value.rsi14 <= 45 {
+			score += 25
+		}
+		if price > value.previous.Close {
+			score += 10
+			evidence = append(evidence, "收盘较前一完整日反弹")
+		}
+		add(candidate{id: "mean-reversion", label: "均值回归反弹", score: score, evidence: evidence, trigger: value.ma20, invalid: value.prior20Low})
+	}
+
+	if finite(value.rangeCompression) && value.rangeCompression > 0 {
+		score := 0.0
+		evidence := []string{fmt.Sprintf("10日/20日波动区间 %.0f%%", value.rangeCompression*100)}
+		label := "波动收缩（量能待确认）"
+		if value.rangeCompression <= .6 {
+			score += 55
+		}
+		if price >= value.priorShortHigh {
+			score += 30
+			evidence = append(evidence, fmt.Sprintf("价格触及短周期高点 %.2f", value.priorShortHigh))
+		}
+		if finite(value.volumeRatio) && value.volumeRatio >= 1.1 && value.volumeRatio <= 4 {
+			score += 15
+			label = "波动收缩突破"
+			evidence = append(evidence, fmt.Sprintf("量比 %.2f，未达极端爆量", value.volumeRatio))
+		} else if finite(value.volumeRatio) {
+			label = "波动收缩（量能未确认）"
+		} else {
+			evidence = append(evidence, "量能数据不足，不能确认突破")
+		}
+		add(candidate{id: "volatility-squeeze", label: label, score: score, evidence: evidence, trigger: value.priorShortHigh, invalid: value.ma20})
+	}
+
+	if len(candidates) == 0 {
+		return "", "", 0, nil, 0, 0
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		if candidates[left].score != candidates[right].score {
+			return candidates[left].score > candidates[right].score
+		}
+		return candidates[left].id < candidates[right].id
+	})
+	best := candidates[0]
+	return best.id, best.label, best.score, best.evidence, best.trigger, best.invalid
+}
+
+func marketRiskOverlay(regime marketregime.Regime) (float64, string, bool) {
+	switch regime {
+	case marketregime.Bull:
+		return 1, "市场风险覆盖：牛市，保留100%风险预算", true
+	case marketregime.Range:
+		return .85, "市场风险覆盖：震荡，风险预算降至85%", true
+	case marketregime.Bear:
+		return .60, "市场风险覆盖：熊市，风险预算降至60%", true
+	case marketregime.HighVol:
+		return .45, "市场风险覆盖：高波动，风险预算降至45%", true
+	default:
+		return 1, "市场风险覆盖：基准数据不足，暂停新增组合资格", false
+	}
+}
+
+// applyCrossSectionOverlay keeps the complete audited signal set while adding
+// deterministic same-scan ranking and a conservative portfolio-entry gate.
+func applyCrossSectionOverlay(signals []Signal) []Signal {
+	result := append([]Signal(nil), signals...)
+	sort.SliceStable(result, func(left, right int) bool {
+		if result[left].Score != result[right].Score {
+			return result[left].Score > result[right].Score
+		}
+		if result[left].Speed != result[right].Speed {
+			return result[left].Speed > result[right].Speed
+		}
+		return result[left].Symbol < result[right].Symbol
+	})
+	total := len(result)
+	tradableIndexes := make([]int, 0, total)
+	for index, signal := range result {
+		if comparableSignal(signal) {
+			tradableIndexes = append(tradableIndexes, index)
+		}
+	}
+	sort.SliceStable(tradableIndexes, func(left, right int) bool {
+		leftSignal, rightSignal := result[tradableIndexes[left]], result[tradableIndexes[right]]
+		leftScore, rightScore := leftSignal.RiskAdjustedScore, rightSignal.RiskAdjustedScore
+		if leftScore <= 0 {
+			leftScore = leftSignal.Score
+		}
+		if rightScore <= 0 {
+			rightScore = rightSignal.Score
+		}
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		if leftSignal.Score != rightSignal.Score {
+			return leftSignal.Score > rightSignal.Score
+		}
+		if leftSignal.Speed != rightSignal.Speed {
+			return leftSignal.Speed > rightSignal.Speed
+		}
+		return leftSignal.Symbol < rightSignal.Symbol
+	})
+	tradableTotal := len(tradableIndexes)
+	tradableRank := make(map[int]int, tradableTotal)
+	for rank, index := range tradableIndexes {
+		tradableRank[index] = rank + 1
+	}
+	for index := range result {
+		signal := &result[index]
+		signal.CrossSectionRank = index + 1
+		signal.CrossSectionTotal = total
+		if total <= 1 {
+			signal.CrossSectionPercentile = 100
+		} else {
+			signal.CrossSectionPercentile = math.Round(float64(total-index-1)/float64(total-1)*1000) / 10
+		}
+		topPercent := math.Ceil(float64(signal.CrossSectionRank) / float64(total) * 100)
+		rankingReason := fmt.Sprintf("横截面排名 %d/%d，处于全池前%.0f%%", signal.CrossSectionRank, total, topPercent)
+		signal.Reasons = uniqueStrings(append([]string{rankingReason}, signal.Reasons...), 6)
+		signal.TradableTotal = tradableTotal
+		if rank, ok := tradableRank[index]; ok {
+			signal.TradableRank = rank
+			if tradableTotal <= 1 {
+				signal.TradablePercentile = 100
+			} else {
+				signal.TradablePercentile = math.Round(float64(tradableTotal-rank)/float64(tradableTotal-1)*1000) / 10
+			}
+			signal.Reasons = uniqueStrings(append([]string{fmt.Sprintf("可交易池排名 %d/%d", rank, tradableTotal)}, signal.Reasons...), 6)
+		}
+	}
+	for index := range result {
+		signal := &result[index]
+		signal.PortfolioEligible, signal.PortfolioReason = basePortfolioEligibility(*signal)
+	}
+	// Rank the complete audited set, but apply concentration limits only after
+	// the score/risk gate. This keeps weak or incomplete signals visible in the
+	// audit trail without allowing a single industry to consume the whole new
+	// capital budget.
+	eligibleIndustryCounts := make(map[string]int)
+	eligibleIndustryTotal := 0
+	for _, signal := range result {
+		if !signal.PortfolioEligible {
+			continue
+		}
+		industry := normalizedIndustry(signal.Industry)
+		if industry == "" {
+			continue
+		}
+		eligibleIndustryCounts[industry]++
+		eligibleIndustryTotal++
+	}
+	industryCap := 0
+	if eligibleIndustryTotal > 0 {
+		industryCap = int(math.Ceil(float64(eligibleIndustryTotal) * portfolioIndustryFraction))
+		if industryCap < 1 {
+			industryCap = 1
+		}
+	}
+	acceptedIndustryCounts := make(map[string]int)
+	for index := range result {
+		signal := &result[index]
+		if !signal.PortfolioEligible || industryCap <= 0 {
+			continue
+		}
+		industry := normalizedIndustry(signal.Industry)
+		if industry != "" && eligibleIndustryCounts[industry] > industryCap && acceptedIndustryCounts[industry] >= industryCap {
+			signal.PortfolioEligible = false
+			signal.PortfolioReason = fmt.Sprintf("行业集中度保护：%s已有%d个更高排名组合候选，本信号不新增同业暴露", industry, industryCap)
+			continue
+		}
+		if industry != "" {
+			acceptedIndustryCounts[industry]++
+		}
+	}
+	return result
+}
+
+func portfolioEligibility(signal Signal) (bool, string) {
+	return basePortfolioEligibility(signal)
+}
+
+func basePortfolioEligibility(signal Signal) (bool, string) {
+	if signal.State == StateInvalid {
+		return false, "关键因子或市场状态数据不足，不纳入新增仓位"
+	}
+	if signal.State != StateTriggered && signal.State != StateWatching {
+		return false, "风险调整后的信号状态未达到观察门槛"
+	}
+	if signal.RiskAdjustedScore < minimumRealtimePortfolioScore {
+		return false, fmt.Sprintf("风险调整分 %.1f 低于组合门槛 %.0f", signal.RiskAdjustedScore, minimumRealtimePortfolioScore)
+	}
+	if signal.TradableTotal > 0 {
+		if signal.TradableRank == 0 {
+			return false, "信号未进入可交易池：关键数据不足或风险覆盖不可用"
+		}
+		if signal.TradableTotal >= minimumRankingPool {
+			maximumRank := int(math.Ceil(float64(signal.TradableTotal) * portfolioTopFraction))
+			if signal.TradableRank > maximumRank {
+				return false, fmt.Sprintf("可交易池排名 %d/%d，未进入前%.0f%%", signal.TradableRank, signal.TradableTotal, portfolioTopFraction*100)
+			}
+		}
+	} else if signal.CrossSectionTotal >= minimumRankingPool {
+		maximumRank := int(math.Ceil(float64(signal.CrossSectionTotal) * portfolioTopFraction))
+		if signal.CrossSectionRank > maximumRank {
+			return false, fmt.Sprintf("横截面排名 %d/%d，未进入前%.0f%%", signal.CrossSectionRank, signal.CrossSectionTotal, portfolioTopFraction*100)
+		}
+	}
+	if signal.TradableRank > 0 {
+		return true, fmt.Sprintf("原始分 %.1f、风险调整分 %.1f，可交易池排名 %d/%d，按风险预算进入组合候选", signal.Score, signal.RiskAdjustedScore, signal.TradableRank, signal.TradableTotal)
+	}
+	return true, fmt.Sprintf("原始分 %.1f、风险调整分 %.1f，横截面排名 %d/%d，可按风险预算进入组合候选", signal.Score, signal.RiskAdjustedScore, signal.CrossSectionRank, signal.CrossSectionTotal)
+}
+
+func comparableSignal(signal Signal) bool {
+	if signal.State == StateInvalid || !finite(signal.Score) {
+		return false
+	}
+	// Signals emitted before the risk overlay existed have no overlay fields;
+	// preserve their ranking compatibility when their core score is valid.
+	if signal.RiskMultiplier > 0 || signal.MarketRegime != "" || signal.RiskAdjustedScore > 0 {
+		if !finite(signal.RiskAdjustedScore) || signal.RiskAdjustedScore < minimumRealtimePortfolioScore || signal.RiskMultiplier <= 0 {
+			return false
+		}
+	}
+	if len(signal.Components) > 0 {
+		available := 0
+		for _, component := range signal.Components {
+			if component.State != "数据不足" && finite(component.Score) {
+				available++
+			}
+		}
+		if float64(available)/float64(len(signal.Components)) < minimumFactorCoverage {
+			return false
+		}
+	}
+	return signal.State == StateTriggered || signal.State == StateWatching
+}
+
+func normalizedIndustry(industry string) string {
+	return strings.TrimSpace(industry)
 }
 
 func (scanner *Scanner) fetchQuotes(ctx context.Context, symbols []string, warnings *[]string) map[string]domain.Quote {

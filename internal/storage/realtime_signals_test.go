@@ -57,6 +57,42 @@ func TestRealtimeSignalStoreReturnsLatestCompleteSnapshot(t *testing.T) {
 	}
 }
 
+func TestRealtimeSignalStoreRejectsSnapshotMarkedAsHoliday(t *testing.T) {
+	store := NewRealtimeSignalStore(t.TempDir())
+	holiday := storageRealtimeTime(2026, 8, 21, 10, 0)
+	if err := store.Append(realtime.ScanResult{
+		GeneratedAt: holiday, TradingDate: "2026-08-21", TradingDay: false,
+		MarketState: realtime.MarketStateClosed, Signals: []realtime.Signal{{ID: "holiday"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.Latest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !latest.GeneratedAt.IsZero() {
+		t.Fatalf("holiday snapshot was restored: %+v", latest)
+	}
+}
+
+func TestRealtimeSignalStoreKeepsPersistedMakeupSaturdaySnapshot(t *testing.T) {
+	store := NewRealtimeSignalStore(t.TempDir())
+	when := storageRealtimeTime(2026, 8, 22, 10, 0)
+	if err := store.Append(realtime.ScanResult{
+		GeneratedAt: when, TradingDate: "2026-08-22", TradingDay: true,
+		MarketState: realtime.MarketStateTrading, Signals: []realtime.Signal{{ID: "makeup"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.Latest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.GeneratedAt.IsZero() || latest.Signals[0].ID != "makeup" {
+		t.Fatalf("persisted make-up Saturday snapshot was filtered: %+v", latest)
+	}
+}
+
 func storageRealtimeTime(year, month, day, hour, minute int) time.Time {
 	return time.Date(year, time.Month(month), day, hour, minute, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 }

@@ -35,19 +35,43 @@ type Signal struct {
 	Industry          string      `json:"industry,omitempty"`
 	State             SignalState `json:"state"`
 	Score             float64     `json:"score"`
-	Price             float64     `json:"price"`
-	Percent           float64     `json:"percent"`
-	Speed             float64     `json:"speed_percent"`
-	TriggerPrice      float64     `json:"trigger_price,omitempty"`
-	InvalidationPrice float64     `json:"invalidation_price,omitempty"`
-	AsOf              time.Time   `json:"as_of"`
-	QuoteTime         string      `json:"quote_time,omitempty"`
-	DataDate          string      `json:"data_date,omitempty"`
-	DataSource        string      `json:"data_source,omitempty"`
-	Components        []Component `json:"components"`
-	Reasons           []string    `json:"reasons"`
-	Risks             []string    `json:"risks"`
-	Warnings          []string    `json:"warnings,omitempty"`
+	RiskAdjustedScore float64     `json:"risk_adjusted_score,omitempty"`
+	RiskMultiplier    float64     `json:"risk_multiplier,omitempty"`
+	MarketRegime      string      `json:"market_regime,omitempty"`
+	RiskOverlayReason string      `json:"risk_overlay_reason,omitempty"`
+	CrossSectionRank  int         `json:"cross_section_rank,omitempty"`
+	CrossSectionTotal int         `json:"cross_section_total,omitempty"`
+	// CrossSectionPercentile is 0-100 and increases with relative strength.
+	CrossSectionPercentile float64 `json:"cross_section_percentile,omitempty"`
+	// TradableRank/Total are calculated from the comparable, sufficiently
+	// covered signal pool. Full-pool rank remains available for audit but never
+	// lets an invalid or incomplete signal consume a portfolio slot.
+	TradableRank       int     `json:"tradable_rank,omitempty"`
+	TradableTotal      int     `json:"tradable_total,omitempty"`
+	TradablePercentile float64 `json:"tradable_percentile,omitempty"`
+	PortfolioEligible  bool    `json:"portfolio_eligible"`
+	PortfolioReason    string  `json:"portfolio_reason,omitempty"`
+	Price              float64 `json:"price"`
+	Percent            float64 `json:"percent"`
+	Speed              float64 `json:"speed_percent"`
+	TriggerPrice       float64 `json:"trigger_price,omitempty"`
+	InvalidationPrice  float64 `json:"invalidation_price,omitempty"`
+	// EntryShape is an explanatory setup classification. It is independent of
+	// the nine-factor composite score and is never an execution instruction.
+	EntryShape                  string      `json:"entry_shape,omitempty"`
+	EntryShapeLabel             string      `json:"entry_shape_label,omitempty"`
+	EntryShapeScore             float64     `json:"entry_shape_score,omitempty"`
+	EntryShapeEvidence          []string    `json:"entry_shape_evidence,omitempty"`
+	EntryShapeTriggerPrice      float64     `json:"entry_shape_trigger_price,omitempty"`
+	EntryShapeInvalidationPrice float64     `json:"entry_shape_invalidation_price,omitempty"`
+	AsOf                        time.Time   `json:"as_of"`
+	QuoteTime                   string      `json:"quote_time,omitempty"`
+	DataDate                    string      `json:"data_date,omitempty"`
+	DataSource                  string      `json:"data_source,omitempty"`
+	Components                  []Component `json:"components"`
+	Reasons                     []string    `json:"reasons"`
+	Risks                       []string    `json:"risks"`
+	Warnings                    []string    `json:"warnings,omitempty"`
 }
 
 const (
@@ -352,11 +376,14 @@ type OutcomeAssessment struct {
 }
 
 type ScanResult struct {
-	GeneratedAt time.Time `json:"generated_at"`
-	Universe    string    `json:"universe"`
-	MarketState string    `json:"market_state"`
-	Signals     []Signal  `json:"signals"`
-	Warnings    []string  `json:"warnings,omitempty"`
+	GeneratedAt   time.Time `json:"generated_at"`
+	Universe      string    `json:"universe"`
+	MarketState   string    `json:"market_state"`
+	TradingDate   string    `json:"trading_date,omitempty"`
+	TradingDay    bool      `json:"trading_day,omitempty"`
+	CalendarKnown bool      `json:"calendar_known,omitempty"`
+	Signals       []Signal  `json:"signals"`
+	Warnings      []string  `json:"warnings,omitempty"`
 }
 
 type Snapshot struct {
@@ -367,6 +394,10 @@ type Snapshot struct {
 	Minutes   []domain.MinutePoint
 	Board     *domain.BoardFlow
 	Benchmark []domain.DailyBar
+	// CalendarDates is the immutable benchmark-date snapshot used for
+	// point-in-time session classification. It is optional; nil preserves the
+	// weekday fallback for embedders that do not provide a calendar.
+	CalendarDates []string
 }
 
 type Strategy interface {
@@ -388,6 +419,11 @@ type QuoteClient interface {
 type HistoryClient interface {
 	FetchDailyBars(context.Context, string) ([]domain.DailyBar, error)
 }
+
+// TradingCalendarProvider supplies a point-in-time exchange calendar. It is
+// optional; scanners fall back to benchmark K-line dates and finally to the
+// weekday clock when the provider is unavailable.
+type TradingCalendarProvider func(context.Context, time.Time) ([]string, error)
 
 type MinuteClient interface {
 	FetchMinutePoints(context.Context, string) ([]domain.MinutePoint, error)

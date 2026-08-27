@@ -42,3 +42,22 @@ export ASTOCK_TRADINGAGENTS_PYTHON="$HOME/tradingagents-astock/.venv/bin/python"
 ```
 
 不要把你的 `.env` 或 API Key 一起打包。
+
+## 让 Web 自动运行（macOS）
+
+如果需要关闭终端后继续执行交易时段扫描、信号前测和影子账户实时事件推进，可在目标机器上执行：
+
+```bash
+./astock-darwin-arm64 service install --listen 127.0.0.1:8765
+./astock-darwin-arm64 service status
+```
+
+这会安装当前用户的 LaunchAgent，仅保持只读 `astock web` 服务；项目不会连接真实券商或提交订单。
+生产部署建议额外设置 `ASTOCK_TRADING_CALENDAR_FILE`，指向交易所/供应商导出的交易日列表（每行
+`YYYY-MM-DD` 或 JSON 字符串数组），以覆盖法定节假日和补班日；未配置时自动使用沪深 300 日 K
+日期作为降级日历。
+停止自动运行时执行：
+
+```bash
+./astock-darwin-arm64 service uninstall
+```

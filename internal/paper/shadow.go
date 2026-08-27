@@ -9,6 +9,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
@@ -22,30 +23,44 @@ type HistoryClient interface {
 }
 
 type Config struct {
-	InitialCash               float64 `json:"initial_cash"`
-	MinimumScore              float64 `json:"minimum_score"`
-	MaxPositionPercent        float64 `json:"max_position_percent"`
-	MaxPortfolioPercent       float64 `json:"max_portfolio_percent"`
-	CashReservePercent        float64 `json:"cash_reserve_percent"`
-	MaxDailyDeploymentPercent float64 `json:"max_daily_deployment_percent"`
-	InitialEntryPercent       float64 `json:"initial_entry_percent"`
-	MaxEntryTranches          int     `json:"max_entry_tranches"`
-	AdditionScoreStep         float64 `json:"addition_score_step"`
-	MaxParticipationPercent   float64 `json:"max_participation_percent"`
-	SlippageBPS               float64 `json:"slippage_bps"`
-	CommissionRate            float64 `json:"commission_rate"`
-	MinimumCommission         float64 `json:"minimum_commission"`
-	StampDutyRate             float64 `json:"stamp_duty_rate"`
-	TransferFeeRate           float64 `json:"transfer_fee_rate"`
-	HoldingDays               int     `json:"holding_days"`
-	LotSize                   int     `json:"lot_size"`
+	InitialCash                float64 `json:"initial_cash"`
+	MinimumScore               float64 `json:"minimum_score"`
+	MaxPositionPercent         float64 `json:"max_position_percent"`
+	MaxIndustryPercent         float64 `json:"max_industry_percent"`
+	MaxPortfolioPercent        float64 `json:"max_portfolio_percent"`
+	CashReservePercent         float64 `json:"cash_reserve_percent"`
+	MaxDailyDeploymentPercent  float64 `json:"max_daily_deployment_percent"`
+	InitialEntryPercent        float64 `json:"initial_entry_percent"`
+	MaxEntryTranches           int     `json:"max_entry_tranches"`
+	AdditionScoreStep          float64 `json:"addition_score_step"`
+	MaxOpenPositions           int     `json:"max_open_positions"`
+	MaxDailyRotations          int     `json:"max_daily_rotations"`
+	RotationScoreGap           float64 `json:"rotation_score_gap"`
+	RotationMinimumHoldDays    int     `json:"rotation_minimum_hold_days"`
+	MaxPortfolioRiskPercent    float64 `json:"max_portfolio_risk_percent"`
+	MaxPositionRiskPercent     float64 `json:"max_position_risk_percent"`
+	MaxLossPercent             float64 `json:"max_loss_percent"`
+	MinimumRiskDistancePercent float64 `json:"minimum_risk_distance_percent"`
+	RiskCooldownDays           int     `json:"risk_cooldown_days"`
+	MaxParticipationPercent    float64 `json:"max_participation_percent"`
+	SlippageBPS                float64 `json:"slippage_bps"`
+	CommissionRate             float64 `json:"commission_rate"`
+	MinimumCommission          float64 `json:"minimum_commission"`
+	StampDutyRate              float64 `json:"stamp_duty_rate"`
+	TransferFeeRate            float64 `json:"transfer_fee_rate"`
+	HoldingDays                int     `json:"holding_days"`
+	LotSize                    int     `json:"lot_size"`
 }
 
 func DefaultConfig() Config {
 	return Config{
 		InitialCash: 1_000_000, MinimumScore: 55, MaxPositionPercent: 20,
+		MaxIndustryPercent:  30,
 		MaxPortfolioPercent: 80, CashReservePercent: 20, MaxDailyDeploymentPercent: 35,
 		InitialEntryPercent: 50, MaxEntryTranches: 3, AdditionScoreStep: 4,
+		MaxOpenPositions: 8, MaxDailyRotations: 2, RotationScoreGap: 8, RotationMinimumHoldDays: 2,
+		MaxPortfolioRiskPercent: 6, MaxPositionRiskPercent: 1.5, MaxLossPercent: 10,
+		MinimumRiskDistancePercent: 3, RiskCooldownDays: 3,
 		MaxParticipationPercent: 10, SlippageBPS: 5, CommissionRate: .0003,
 		MinimumCommission: 5, StampDutyRate: .0005, TransferFeeRate: .00001,
 		HoldingDays: 5, LotSize: 100,
@@ -53,15 +68,25 @@ func DefaultConfig() Config {
 }
 
 type Options struct {
-	Config Config
-	Limit  int
-	Now    func() time.Time
+	Config        Config
+	Limit         int
+	Now           func() time.Time
+	CalendarDates []string `json:"-"`
+	// Realtime enables the point-in-time shadow layer. It is deliberately kept
+	// out of the execution fingerprint: quote snapshots are inputs to an event,
+	// not account configuration.
+	Realtime       bool            `json:"-"`
+	RealtimeAt     time.Time       `json:"-"`
+	RealtimeQuotes []PositionQuote `json:"-"`
 }
 
 type ShadowOrder struct {
 	ID                string   `json:"id"`
+	EventID           string   `json:"event_id,omitempty"`
+	EventSource       string   `json:"event_source,omitempty"`
 	Symbol            string   `json:"symbol"`
 	Name              string   `json:"name,omitempty"`
+	Industry          string   `json:"industry,omitempty"`
 	Side              string   `json:"side"`
 	SignalDate        string   `json:"signal_date"`
 	AttemptDate       string   `json:"attempt_date"`
@@ -88,8 +113,12 @@ const (
 
 type ShadowRejection struct {
 	OrderID       string   `json:"order_id"`
+	EventID       string   `json:"event_id,omitempty"`
+	EventTime     string   `json:"event_time,omitempty"`
+	EventSource   string   `json:"event_source,omitempty"`
 	Symbol        string   `json:"symbol"`
 	Name          string   `json:"name,omitempty"`
+	Industry      string   `json:"industry,omitempty"`
 	Side          string   `json:"side"`
 	SignalDate    string   `json:"signal_date"`
 	AttemptDate   string   `json:"attempt_date,omitempty"`
@@ -104,6 +133,7 @@ type ShadowTrade struct {
 	ExitOrderID              string  `json:"exit_order_id,omitempty"`
 	Symbol                   string  `json:"symbol"`
 	Name                     string  `json:"name,omitempty"`
+	Industry                 string  `json:"industry,omitempty"`
 	SignalDate               string  `json:"signal_date"`
 	EntryDate                string  `json:"entry_date"`
 	ExitDate                 string  `json:"exit_date"`
@@ -120,6 +150,7 @@ type ShadowTrade struct {
 	TotalFee                 float64 `json:"total_fee"`
 	HoldingDays              int     `json:"holding_days"`
 	PositionAction           string  `json:"position_action,omitempty"`
+	ExitReason               string  `json:"exit_reason,omitempty"`
 	ExitTime                 string  `json:"exit_time,omitempty"`
 }
 
@@ -127,6 +158,7 @@ type ShadowOpenPosition struct {
 	SignalID                string              `json:"signal_id,omitempty"`
 	Symbol                  string              `json:"symbol"`
 	Name                    string              `json:"name,omitempty"`
+	Industry                string              `json:"industry,omitempty"`
 	SignalDate              string              `json:"signal_date"`
 	EntryDate               string              `json:"entry_date"`
 	Quantity                int                 `json:"quantity"`
@@ -152,6 +184,8 @@ type ShadowOpenPosition struct {
 	Lots                    []ShadowPositionLot `json:"lots,omitempty"`
 	AdditionCount           int                 `json:"addition_count,omitempty"`
 	TargetPositionPercent   float64             `json:"target_position_percent,omitempty"`
+	RiskExitPending         bool                `json:"risk_exit_pending,omitempty"`
+	RiskExitReason          string              `json:"risk_exit_reason,omitempty"`
 }
 
 type ShadowPositionLot struct {
@@ -163,6 +197,7 @@ type ShadowPositionLot struct {
 	EntryAmount       float64  `json:"entry_amount"`
 	EntryFee          float64  `json:"entry_fee"`
 	SignalID          string   `json:"signal_id,omitempty"`
+	Industry          string   `json:"industry,omitempty"`
 	SignalDate        string   `json:"signal_date,omitempty"`
 	SignalClose       float64  `json:"signal_close,omitempty"`
 	SignalScore       float64  `json:"signal_score,omitempty"`
@@ -173,53 +208,75 @@ type ShadowPositionLot struct {
 }
 
 type PositionQuote struct {
-	Symbol    string
-	Price     float64
-	QuoteTime string
-	Source    string
+	Symbol        string
+	Price         float64
+	PreviousClose float64
+	Open          float64
+	LimitUp       float64
+	LimitDown     float64
+	Amount        float64
+	QuoteTime     string
+	Source        string
 }
 
 type Report struct {
-	EngineVersion            string               `json:"engine_version,omitempty"`
-	ConfigFingerprint        string               `json:"config_fingerprint,omitempty"`
-	SignalLimit              int                  `json:"signal_limit,omitempty"`
-	CheckpointPhase          string               `json:"checkpoint_phase,omitempty"`
-	GeneratedAt              time.Time            `json:"generated_at"`
-	ValuedAt                 *time.Time           `json:"valued_at,omitempty"`
-	AsOf                     string               `json:"as_of"`
-	Config                   Config               `json:"config"`
-	SignalCount              int                  `json:"signal_count"`
-	CandidateCount           int                  `json:"candidate_count"`
-	PendingCandidates        int                  `json:"pending_candidates"`
-	FilledEntries            int                  `json:"filled_entries"`
-	CompletedTrades          int                  `json:"completed_trades"`
-	RejectedOrders           int                  `json:"rejected_orders"`
-	OpenPositions            int                  `json:"open_positions"`
-	InitialCash              float64              `json:"initial_cash"`
-	RemainingCash            float64              `json:"remaining_cash"`
-	TotalTurnover            float64              `json:"total_turnover"`
-	TotalFees                float64              `json:"total_fees"`
-	TotalMarketValue         float64              `json:"total_market_value"`
-	TotalEquity              float64              `json:"total_equity"`
-	RealizedProfit           float64              `json:"realized_profit"`
-	UnrealizedProfit         float64              `json:"unrealized_profit"`
-	TotalProfit              float64              `json:"total_profit"`
-	TotalReturnPercent       float64              `json:"total_return_percent"`
-	TheoreticalAverageReturn float64              `json:"theoretical_average_return_percent"`
-	ExecutableAverageReturn  float64              `json:"executable_average_return_percent"`
-	ExecutionGapPercent      float64              `json:"execution_gap_percent"`
-	Trades                   []ShadowTrade        `json:"trades,omitempty"`
-	Positions                []ShadowOpenPosition `json:"positions,omitempty"`
-	Orders                   []ShadowOrder        `json:"orders,omitempty"`
-	Rejections               []ShadowRejection    `json:"rejections,omitempty"`
-	Warnings                 []string             `json:"warnings,omitempty"`
-	Decisions                []ShadowDecision     `json:"decisions,omitempty"`
+	EngineVersion            string                   `json:"engine_version,omitempty"`
+	ConfigFingerprint        string                   `json:"config_fingerprint,omitempty"`
+	SignalLimit              int                      `json:"signal_limit,omitempty"`
+	CheckpointPhase          string                   `json:"checkpoint_phase,omitempty"`
+	ExecutionMode            string                   `json:"execution_mode,omitempty"`
+	LastRealtimeAt           string                   `json:"last_realtime_at,omitempty"`
+	RealtimeEvents           int                      `json:"realtime_events,omitempty"`
+	GeneratedAt              time.Time                `json:"generated_at"`
+	ValuedAt                 *time.Time               `json:"valued_at,omitempty"`
+	AsOf                     string                   `json:"as_of"`
+	Config                   Config                   `json:"config"`
+	SignalCount              int                      `json:"signal_count"`
+	CandidateCount           int                      `json:"candidate_count"`
+	PendingCandidates        int                      `json:"pending_candidates"`
+	FilledEntries            int                      `json:"filled_entries"`
+	CompletedTrades          int                      `json:"completed_trades"`
+	RejectedOrders           int                      `json:"rejected_orders"`
+	OpenPositions            int                      `json:"open_positions"`
+	InitialCash              float64                  `json:"initial_cash"`
+	RemainingCash            float64                  `json:"remaining_cash"`
+	TotalTurnover            float64                  `json:"total_turnover"`
+	TotalFees                float64                  `json:"total_fees"`
+	TotalMarketValue         float64                  `json:"total_market_value"`
+	TotalEquity              float64                  `json:"total_equity"`
+	RealizedProfit           float64                  `json:"realized_profit"`
+	UnrealizedProfit         float64                  `json:"unrealized_profit"`
+	TotalProfit              float64                  `json:"total_profit"`
+	TotalReturnPercent       float64                  `json:"total_return_percent"`
+	TheoreticalAverageReturn float64                  `json:"theoretical_average_return_percent"`
+	ExecutableAverageReturn  float64                  `json:"executable_average_return_percent"`
+	ExecutionGapPercent      float64                  `json:"execution_gap_percent"`
+	Trades                   []ShadowTrade            `json:"trades,omitempty"`
+	Positions                []ShadowOpenPosition     `json:"positions,omitempty"`
+	Orders                   []ShadowOrder            `json:"orders,omitempty"`
+	Rejections               []ShadowRejection        `json:"rejections,omitempty"`
+	Warnings                 []string                 `json:"warnings,omitempty"`
+	Decisions                []ShadowDecision         `json:"decisions,omitempty"`
+	IndustryExposures        []ShadowIndustryExposure `json:"industry_exposures,omitempty"`
+}
+
+type ShadowIndustryExposure struct {
+	Industry        string   `json:"industry"`
+	InvestedCost    float64  `json:"invested_cost"`
+	MarketValue     float64  `json:"market_value"`
+	ExposurePercent float64  `json:"exposure_percent"`
+	LimitPercent    float64  `json:"limit_percent"`
+	Symbols         []string `json:"symbols,omitempty"`
 }
 
 type ShadowDecision struct {
 	ID                    string   `json:"id"`
+	EventID               string   `json:"event_id,omitempty"`
+	EventTime             string   `json:"event_time,omitempty"`
+	EventSource           string   `json:"event_source,omitempty"`
 	Symbol                string   `json:"symbol"`
 	Name                  string   `json:"name,omitempty"`
+	Industry              string   `json:"industry,omitempty"`
 	Date                  string   `json:"date"`
 	Action                string   `json:"action"`
 	Reason                string   `json:"reason"`
@@ -230,10 +287,14 @@ type ShadowDecision struct {
 }
 
 const (
-	ShadowEngineVersion = "tplus1-v7"
+	ShadowEngineVersion = "tplus1-v10"
 	CheckpointOpen      = "open"
 	CheckpointClose     = "close"
+	ExecutionModeDaily  = "daily-checkpoint"
+	ExecutionModeLive   = "intraday-event"
 )
+
+const shadowCalendarCacheTTL = 2 * time.Minute
 
 var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
@@ -266,6 +327,13 @@ func TradingCheckpointAt(now time.Time, calendarDates []string) Checkpoint {
 	today := local.Format("2006-01-02")
 	todayIndex := sort.SearchStrings(calendarDates, today)
 	todayIsTrading := todayIndex < len(calendarDates) && calendarDates[todayIndex] == today
+	calendarCoversDate := len(calendarDates) > 0 && today >= calendarDates[0] && today <= calendarDates[len(calendarDates)-1]
+	if len(calendarDates) > 0 && !calendarCoversDate {
+		// A finite history window is not an authority about future holidays.
+		// Outside that window, fall back to the exchange weekday clock while
+		// still using the last known close for weekends and pre-open times.
+		return fallbackTradingCheckpoint(local, calendarDates)
+	}
 	marketOpen := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, shanghaiLocation)
 	closeSettled := time.Date(local.Year(), local.Month(), local.Day(), 15, 5, 0, 0, shanghaiLocation)
 	if todayIsTrading && !local.Before(marketOpen) {
@@ -287,6 +355,25 @@ func TradingCheckpointAt(now time.Time, calendarDates []string) Checkpoint {
 	phase := CheckpointClose
 	if !local.Before(marketOpen) && local.Before(closeSettled) {
 		phase = CheckpointOpen
+	}
+	return Checkpoint{Date: today, Phase: phase}
+}
+
+func fallbackTradingCheckpoint(local time.Time, calendarDates []string) Checkpoint {
+	today := local.Format("2006-01-02")
+	marketOpen := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, shanghaiLocation)
+	closeSettled := time.Date(local.Year(), local.Month(), local.Day(), 15, 5, 0, 0, shanghaiLocation)
+	if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday || local.Before(marketOpen) {
+		for index := len(calendarDates) - 1; index >= 0; index-- {
+			if calendarDates[index] < today {
+				return Checkpoint{Date: calendarDates[index], Phase: CheckpointClose}
+			}
+		}
+		return Checkpoint{Date: today, Phase: CheckpointClose}
+	}
+	phase := CheckpointOpen
+	if !local.Before(closeSettled) {
+		phase = CheckpointClose
 	}
 	return Checkpoint{Date: today, Phase: phase}
 }
@@ -351,38 +438,12 @@ func ValidateTransition(previous, next Report) error {
 	if next.AsOf < previous.AsOf {
 		return fmt.Errorf("候选账户日期 %s 早于现有账户日期 %s", next.AsOf, previous.AsOf)
 	}
-	previousOrders := ordersThroughCheckpoint(previous.Orders, previous.AsOf, previous.CheckpointPhase)
-	nextOrders := ordersThroughCheckpoint(next.Orders, previous.AsOf, previous.CheckpointPhase)
-	if len(previousOrders) != len(nextOrders) {
-		return fmt.Errorf("截至 %s 的成交单数量从 %d 变为 %d", previous.AsOf, len(previousOrders), len(nextOrders))
-	}
-	for index := range previousOrders {
-		if !sameSettledOrder(previousOrders[index], nextOrders[index]) {
-			return fmt.Errorf("截至 %s 的成交单被改写: %s", previous.AsOf, previousOrders[index].ID)
-		}
-	}
-	previousTrades := tradesThroughCheckpoint(previous.Trades, previous.AsOf, previous.CheckpointPhase)
-	nextTrades := tradesThroughCheckpoint(next.Trades, previous.AsOf, previous.CheckpointPhase)
-	if len(previousTrades) != len(nextTrades) {
-		return fmt.Errorf("截至 %s 的完成交易数量从 %d 变为 %d", previous.AsOf, len(previousTrades), len(nextTrades))
-	}
-	for index := range previousTrades {
-		if !sameSettledTrade(previousTrades[index], nextTrades[index]) {
-			return fmt.Errorf("截至 %s 的完成交易被改写: %s", previous.AsOf, previousTrades[index].ID)
-		}
-	}
-	previousRejections := rejectionsThroughCheckpoint(previous.Rejections, previous.AsOf, previous.CheckpointPhase)
-	nextRejections := rejectionsThroughCheckpoint(next.Rejections, previous.AsOf, previous.CheckpointPhase)
-	if len(previousRejections) != len(nextRejections) {
-		return fmt.Errorf("截至 %s 的拒绝记录数量从 %d 变为 %d", previous.AsOf, len(previousRejections), len(nextRejections))
-	}
-	for index := range previousRejections {
-		if !sameRejection(previousRejections[index], nextRejections[index]) {
-			return fmt.Errorf("截至 %s 的拒绝记录被改写: %s", previous.AsOf, previousRejections[index].OrderID)
-		}
+	nextOrders, nextTrades, nextRejections, err := settledTransitionEvents(previous, next)
+	if err != nil {
+		return err
 	}
 	if previous.EngineVersion == ShadowEngineVersion {
-		metrics := ledgerMetricsThroughCheckpoint(next, previous.AsOf, previous.CheckpointPhase)
+		metrics := ledgerMetricsForEvents(next, nextOrders, nextTrades, nextRejections)
 		if !sameFloat(previous.RemainingCash, metrics.remainingCash) ||
 			!sameFloat(previous.TotalTurnover, metrics.totalTurnover) ||
 			!sameFloat(previous.TotalFees, metrics.totalFees) ||
@@ -393,6 +454,13 @@ func ValidateTransition(previous, next Report) error {
 		}
 	}
 	for _, position := range previous.Positions {
+		// Older v10 snapshots could retain a zero-quantity shell after the last
+		// lot was sold. It is not an open position and must not be fed back into
+		// the active map, otherwise the next realtime signal is misclassified as
+		// an add-on and the continuity guard correctly rejects the rewrite.
+		if position.Quantity <= 0 && !hasPositivePositionLot(position) {
+			continue
+		}
 		if nextPosition, found := matchingPosition(next.Positions, position); found {
 			if position.Quantity == nextPosition.Quantity {
 				if !samePositionBasis(position, nextPosition) {
@@ -407,6 +475,232 @@ func ValidateTransition(previous, next Report) error {
 		}
 		if !positionQuantityTransitionValid(previous, next, position, 0) || !positionLotsTransitionValid(previous, next, position, nil) {
 			return fmt.Errorf("已有持仓无后续卖出记录却消失: %s", position.Symbol)
+		}
+	}
+	return nil
+}
+
+// settledTransitionEvents keeps the old exact-prefix behavior for daily
+// reports, while allowing a live report to append events after its quote
+// watermark on the same trading date.
+func settledTransitionEvents(previous, next Report) ([]ShadowOrder, []ShadowTrade, []ShadowRejection, error) {
+	previousOrders := ordersThroughCheckpoint(previous.Orders, previous.AsOf, previous.CheckpointPhase)
+	previousTrades := tradesThroughCheckpoint(previous.Trades, previous.AsOf, previous.CheckpointPhase)
+	previousRejections := rejectionsThroughCheckpoint(previous.Rejections, previous.AsOf, previous.CheckpointPhase)
+	nextOrdersAll := ordersThroughCheckpoint(next.Orders, previous.AsOf, previous.CheckpointPhase)
+	nextTradesAll := tradesThroughCheckpoint(next.Trades, previous.AsOf, previous.CheckpointPhase)
+	nextRejectionsAll := rejectionsThroughCheckpoint(next.Rejections, previous.AsOf, previous.CheckpointPhase)
+	live := previous.LastRealtimeAt != "" || next.LastRealtimeAt != "" || previous.ExecutionMode == ExecutionModeLive || next.ExecutionMode == ExecutionModeLive
+	if !live {
+		if err := compareOrderPrefix(previousOrders, nextOrdersAll, previous.AsOf); err != nil {
+			return nil, nil, nil, err
+		}
+		if err := compareTradePrefix(previousTrades, nextTradesAll, previous.AsOf); err != nil {
+			return nil, nil, nil, err
+		}
+		if err := compareRejectionPrefix(previousRejections, nextRejectionsAll, previous.AsOf); err != nil {
+			return nil, nil, nil, err
+		}
+		return nextOrdersAll, nextTradesAll, nextRejectionsAll, nil
+	}
+	watermark := reportEventWatermark(previous)
+	nextOrders := liveOrdersAtOrBefore(nextOrdersAll, previous.AsOf, previous.CheckpointPhase, watermark)
+	nextTrades := liveTradesAtOrBefore(nextTradesAll, previous.AsOf, previous.CheckpointPhase, watermark)
+	nextRejections := liveRejectionsAtOrBefore(nextRejectionsAll, previous.AsOf, previous.CheckpointPhase, watermark)
+	if err := compareOrderPrefix(previousOrders, nextOrders, previous.AsOf); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := compareTradePrefix(previousTrades, nextTrades, previous.AsOf); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := compareRejectionPrefix(previousRejections, nextRejections, previous.AsOf); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateNewLiveOrders(nextOrdersAll, previousOrders, previous.AsOf, watermark); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateNewLiveTrades(nextTradesAll, previousTrades, previous.AsOf, watermark); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateNewLiveRejections(nextRejectionsAll, previousRejections, previous.AsOf, watermark); err != nil {
+		return nil, nil, nil, err
+	}
+	return nextOrders, nextTrades, nextRejections, nil
+}
+
+func previousOrdersForReport(report Report) []ShadowOrder {
+	return ordersThroughCheckpoint(report.Orders, report.AsOf, report.CheckpointPhase)
+}
+
+func findOrderByID(items []ShadowOrder, id string) (ShadowOrder, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return ShadowOrder{}, false
+}
+
+func findTradeByID(items []ShadowTrade, id string) (ShadowTrade, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return ShadowTrade{}, false
+}
+
+func findRejectionByID(items []ShadowRejection, id string) (ShadowRejection, bool) {
+	for _, item := range items {
+		if item.OrderID == id {
+			return item, true
+		}
+	}
+	return ShadowRejection{}, false
+}
+
+func findTradeInSlice(items []ShadowTrade, id string) bool {
+	_, found := findTradeByID(items, id)
+	return found
+}
+
+func findRejectionInSlice(items []ShadowRejection, id string) bool {
+	_, found := findRejectionByID(items, id)
+	return found
+}
+
+func compareOrderPrefix(previous, next []ShadowOrder, date string) error {
+	if len(previous) != len(next) {
+		return fmt.Errorf("截至 %s 的成交单数量从 %d 变为 %d", date, len(previous), len(next))
+	}
+	for _, old := range previous {
+		current, found := findOrderByID(next, old.ID)
+		if !found || !sameSettledOrder(old, current) {
+			return fmt.Errorf("截至 %s 的成交单被改写: %s", date, old.ID)
+		}
+	}
+	return nil
+}
+
+func compareTradePrefix(previous, next []ShadowTrade, date string) error {
+	if len(previous) != len(next) {
+		return fmt.Errorf("截至 %s 的完成交易数量从 %d 变为 %d", date, len(previous), len(next))
+	}
+	for _, old := range previous {
+		current, found := findTradeByID(next, old.ID)
+		if !found || !sameSettledTrade(old, current) {
+			return fmt.Errorf("截至 %s 的完成交易被改写: %s", date, old.ID)
+		}
+	}
+	return nil
+}
+
+func compareRejectionPrefix(previous, next []ShadowRejection, date string) error {
+	if len(previous) != len(next) {
+		return fmt.Errorf("截至 %s 的拒绝记录数量从 %d 变为 %d", date, len(previous), len(next))
+	}
+	for _, old := range previous {
+		current, found := findRejectionByID(next, old.OrderID)
+		if !found || !sameRejection(old, current) {
+			return fmt.Errorf("截至 %s 的拒绝记录被改写: %s", date, old.OrderID)
+		}
+	}
+	return nil
+}
+
+func liveOrdersAtOrBefore(orders []ShadowOrder, date, phase, watermark string) []ShadowOrder {
+	items := ordersThroughCheckpoint(orders, date, phase)
+	if watermark == "" {
+		return items
+	}
+	result := make([]ShadowOrder, 0, len(items))
+	for _, item := range items {
+		if item.AttemptDate < date || item.AttemptDate == date && (item.ExecutionTime == "" || item.ExecutionTime <= watermark) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func liveTradesAtOrBefore(trades []ShadowTrade, date, phase, watermark string) []ShadowTrade {
+	items := tradesThroughCheckpoint(trades, date, phase)
+	if watermark == "" {
+		return items
+	}
+	result := make([]ShadowTrade, 0, len(items))
+	for _, item := range items {
+		if item.ExitDate < date || item.ExitDate == date && (item.ExitTime == "" || item.ExitTime <= watermark) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func liveRejectionsAtOrBefore(rejections []ShadowRejection, date, phase, watermark string) []ShadowRejection {
+	items := rejectionsThroughCheckpoint(rejections, date, phase)
+	if watermark == "" {
+		return items
+	}
+	result := make([]ShadowRejection, 0, len(items))
+	for _, item := range items {
+		itemDate := item.AttemptDate
+		if itemDate == "" {
+			itemDate = item.SignalDate
+		}
+		if itemDate < date || itemDate == date && (item.EventTime == "" || item.EventTime <= watermark) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func validateNewLiveOrders(items, previous []ShadowOrder, date, watermark string) error {
+	known := make(map[string]bool, len(previous))
+	for _, item := range previous {
+		known[item.ID] = true
+	}
+	for _, item := range items {
+		if known[item.ID] {
+			continue
+		}
+		if item.AttemptDate < date || item.AttemptDate == date && (watermark == "" || item.ExecutionTime == "" || item.ExecutionTime <= watermark) {
+			return fmt.Errorf("发现早于实时水位的新增成交单: %s", item.ID)
+		}
+	}
+	return nil
+}
+
+func validateNewLiveTrades(items, previous []ShadowTrade, date, watermark string) error {
+	known := make(map[string]bool, len(previous))
+	for _, item := range previous {
+		known[item.ID] = true
+	}
+	for _, item := range items {
+		if known[item.ID] {
+			continue
+		}
+		if item.ExitDate < date || item.ExitDate == date && (watermark == "" || item.ExitTime == "" || item.ExitTime <= watermark) {
+			return fmt.Errorf("发现早于实时水位的新增完成交易: %s", item.ID)
+		}
+	}
+	return nil
+}
+
+func validateNewLiveRejections(items, previous []ShadowRejection, date, watermark string) error {
+	known := make(map[string]bool, len(previous))
+	for _, item := range previous {
+		known[item.OrderID] = true
+	}
+	for _, item := range items {
+		if known[item.OrderID] {
+			continue
+		}
+		itemDate := item.AttemptDate
+		if itemDate == "" {
+			itemDate = item.SignalDate
+		}
+		if itemDate < date || itemDate == date && (watermark == "" || item.EventTime == "" || item.EventTime <= watermark) {
+			return fmt.Errorf("发现早于实时水位的新增拒绝记录: %s", item.OrderID)
 		}
 	}
 	return nil
@@ -453,10 +747,7 @@ func ordersThroughCheckpoint(orders []ShadowOrder, date, phase string) []ShadowO
 }
 
 func orderSettledAtOpen(order ShadowOrder) bool {
-	if order.PositionAction == "exit" {
-		return false
-	}
-	if order.Side == "buy" || order.PositionAction == "reduce" {
+	if order.Side == "buy" || order.PositionAction == "reduce" || order.PositionAction == "risk_exit" {
 		return true
 	}
 	if len(order.ExecutionTime) >= 16 {
@@ -502,7 +793,7 @@ func tradesThroughCheckpoint(trades []ShadowTrade, date, phase string) []ShadowT
 }
 
 func tradeSettledAtOpen(trade ShadowTrade) bool {
-	if trade.PositionAction == "reduce" {
+	if trade.PositionAction == "reduce" || trade.PositionAction == "risk_exit" {
 		return true
 	}
 	if len(trade.ExitTime) >= 16 {
@@ -569,6 +860,72 @@ func rejectionsThroughCheckpoint(rejections []ShadowRejection, date, phase strin
 	return result
 }
 
+// The daily checkpoint is intentionally coarse, but a live report can contain
+// several events on one date. Use its last quote timestamp as a monotonic
+// watermark so a later sync appends valid events instead of looking like a
+// retroactive rewrite.
+func ordersThroughWatermark(orders []ShadowOrder, previous Report) []ShadowOrder {
+	items := ordersThroughCheckpoint(orders, previous.AsOf, previous.CheckpointPhase)
+	return filterOrdersByWatermark(items, previous.AsOf, reportEventWatermark(previous))
+}
+
+func tradesThroughWatermark(trades []ShadowTrade, previous Report) []ShadowTrade {
+	items := tradesThroughCheckpoint(trades, previous.AsOf, previous.CheckpointPhase)
+	watermark := reportEventWatermark(previous)
+	if watermark == "" {
+		return items
+	}
+	result := make([]ShadowTrade, 0, len(items))
+	for _, trade := range items {
+		if trade.ExitDate != previous.AsOf || trade.ExitTime == "" || trade.ExitTime <= watermark {
+			result = append(result, trade)
+		}
+	}
+	return result
+}
+
+func rejectionsThroughWatermark(rejections []ShadowRejection, previous Report) []ShadowRejection {
+	items := rejectionsThroughCheckpoint(rejections, previous.AsOf, previous.CheckpointPhase)
+	watermark := reportEventWatermark(previous)
+	if watermark == "" {
+		return items
+	}
+	result := make([]ShadowRejection, 0, len(items))
+	for _, rejection := range items {
+		if rejection.AttemptDate != previous.AsOf || rejection.EventTime == "" || rejection.EventTime <= watermark {
+			result = append(result, rejection)
+		}
+	}
+	return result
+}
+
+func filterOrdersByWatermark(orders []ShadowOrder, date, watermark string) []ShadowOrder {
+	if watermark == "" {
+		return orders
+	}
+	result := make([]ShadowOrder, 0, len(orders))
+	for _, order := range orders {
+		if order.AttemptDate != date || order.ExecutionTime == "" || order.ExecutionTime <= watermark {
+			result = append(result, order)
+		}
+	}
+	return result
+}
+
+func reportEventWatermark(report Report) string {
+	if report.LastRealtimeAt != "" {
+		return report.LastRealtimeAt
+	}
+	if report.AsOf == "" || report.CheckpointPhase != CheckpointOpen || report.GeneratedAt.IsZero() {
+		return ""
+	}
+	local := report.GeneratedAt.In(shanghaiLocation)
+	if local.Format("2006-01-02") != report.AsOf {
+		return ""
+	}
+	return local.Format("2006-01-02 15:04:05")
+}
+
 func sameSettledOrder(left, right ShadowOrder) bool {
 	return left.ID == right.ID && left.Symbol == right.Symbol && left.Side == right.Side &&
 		left.SignalDate == right.SignalDate && left.AttemptDate == right.AttemptDate &&
@@ -591,7 +948,15 @@ func sameRejection(left, right ShadowRejection) bool {
 }
 
 func makeRejection(signal realtime.Signal, side, attemptDate, reason string) ShadowRejection {
-	return ShadowRejection{OrderID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Side: side, SignalDate: signalDate(signal), AttemptDate: attemptDate, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...)}
+	return ShadowRejection{OrderID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Side: side, SignalDate: signalDate(signal), AttemptDate: attemptDate, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...)}
+}
+
+func makeRejectionWithID(signal realtime.Signal, side, attemptDate, reason, id string) ShadowRejection {
+	rejection := makeRejection(signal, side, attemptDate, reason)
+	if strings.TrimSpace(id) != "" {
+		rejection.OrderID = id
+	}
+	return rejection
 }
 
 type ledgerMetrics struct {
@@ -652,6 +1017,15 @@ func matchingPosition(positions []ShadowOpenPosition, target ShadowOpenPosition)
 	return ShadowOpenPosition{}, false
 }
 
+func hasPositivePositionLot(position ShadowOpenPosition) bool {
+	for _, lot := range position.Lots {
+		if lot.Quantity > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func samePositionBasis(left, right ShadowOpenPosition) bool {
 	if left.Symbol != right.Symbol {
 		return false
@@ -680,7 +1054,7 @@ func samePositionBasis(left, right ShadowOpenPosition) bool {
 
 func normalizePositionLots(position ShadowOpenPosition, orders []ShadowOrder, cfg Config, calendarDates, symbolDates []string) []shadowLot {
 	if len(position.Lots) == 0 {
-		entry := ShadowOrder{ID: position.SignalID + "-buy", Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled, ExecutionTime: position.EntryTime, SignalScore: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, SignalReasons: append([]string(nil), position.SignalReasons...)}
+		entry := ShadowOrder{ID: position.SignalID + "-buy", Symbol: position.Symbol, Name: position.Name, Industry: position.Industry, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled, ExecutionTime: position.EntryTime, SignalScore: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, SignalReasons: append([]string(nil), position.SignalReasons...)}
 		if existing, found := matchingFilledOrder(orders, position); found {
 			entry = existing
 		}
@@ -708,7 +1082,10 @@ func normalizePositionLots(position ShadowOpenPosition, orders []ShadowOrder, cf
 	}
 	lots := make([]shadowLot, 0, len(position.Lots))
 	for _, lot := range position.Lots {
-		entry := ShadowOrder{ID: lot.OrderID, Symbol: position.Symbol, Name: position.Name, Side: "buy", SignalDate: lot.SignalDate, AttemptDate: lot.EntryDate, Quantity: lot.Quantity, Price: lot.EntryPrice, RawPrice: lot.EntryPrice, Amount: lot.EntryAmount, Status: OrderFilled, ExecutionTime: lot.EntryTime, SignalScore: lot.SignalScore, TriggerPrice: lot.TriggerPrice, InvalidationPrice: lot.InvalidationPrice, SignalReasons: append([]string(nil), lot.SignalReasons...)}
+		entry := ShadowOrder{ID: lot.OrderID, Symbol: position.Symbol, Name: position.Name, Industry: lot.Industry, Side: "buy", SignalDate: lot.SignalDate, AttemptDate: lot.EntryDate, Quantity: lot.Quantity, Price: lot.EntryPrice, RawPrice: lot.EntryPrice, Amount: lot.EntryAmount, Status: OrderFilled, ExecutionTime: lot.EntryTime, SignalScore: lot.SignalScore, TriggerPrice: lot.TriggerPrice, InvalidationPrice: lot.InvalidationPrice, SignalReasons: append([]string(nil), lot.SignalReasons...)}
+		if entry.Industry == "" {
+			entry.Industry = position.Industry
+		}
 		if entry.ID == "" {
 			entry.ID = lot.SignalID + "-buy"
 		}
@@ -728,7 +1105,7 @@ func normalizePositionLots(position ShadowOpenPosition, orders []ShadowOrder, cf
 func positionQuantityTransitionValid(previous, next Report, position ShadowOpenPosition, nextQuantity int) bool {
 	expected := position.Quantity
 	for _, order := range next.Orders {
-		if order.Symbol != position.Symbol || order.Status != OrderFilled || !eventAfterCheckpoint(order.AttemptDate, order.PositionAction, previous) {
+		if order.Symbol != position.Symbol || order.Status != OrderFilled || !eventAfterReportCheckpoint(order.AttemptDate, order.ExecutionTime, order.PositionAction, previous) {
 			continue
 		}
 		if order.Side == "sell" {
@@ -758,12 +1135,12 @@ func positionLotsTransitionValid(previous, next Report, position ShadowOpenPosit
 	closedLots := make(map[string]int)
 	unassignedSellQuantity := 0
 	for _, trade := range next.Trades {
-		if trade.Symbol == position.Symbol && trade.EntryOrderID != "" && eventAfterCheckpoint(trade.ExitDate, trade.PositionAction, previous) {
+		if trade.Symbol == position.Symbol && trade.EntryOrderID != "" && eventAfterReportCheckpoint(trade.ExitDate, trade.ExitTime, trade.PositionAction, previous) {
 			closedLots[trade.EntryOrderID] += trade.Quantity
 		}
 	}
 	for _, order := range next.Orders {
-		if order.Symbol == position.Symbol && order.Side == "sell" && order.Status == OrderFilled && eventAfterCheckpoint(order.AttemptDate, order.PositionAction, previous) {
+		if order.Symbol == position.Symbol && order.Side == "sell" && order.Status == OrderFilled && eventAfterReportCheckpoint(order.AttemptDate, order.ExecutionTime, order.PositionAction, previous) {
 			matched := false
 			for _, trade := range next.Trades {
 				if trade.ExitOrderID == order.ID {
@@ -812,31 +1189,89 @@ func containsSamePositionLot(lots []ShadowPositionLot, target ShadowPositionLot)
 func newBuyMatchesLot(previous Report, orders []ShadowOrder, symbol string, lot ShadowPositionLot) bool {
 	for _, order := range orders {
 		if order.ID == lot.OrderID && order.Symbol == symbol && order.Side == "buy" && order.Status == OrderFilled &&
-			eventAfterCheckpoint(order.AttemptDate, order.PositionAction, previous) && order.Quantity == lot.Quantity && sameFloat(order.Price, lot.EntryPrice) {
+			eventAfterReportCheckpoint(order.AttemptDate, order.ExecutionTime, order.PositionAction, previous) && order.Quantity == lot.Quantity && sameFloat(order.Price, lot.EntryPrice) {
 			return true
 		}
 	}
 	return false
 }
 
-func eventAfterCheckpoint(date, action string, previous Report) bool {
+func eventAfterReportCheckpoint(date, eventTime, action string, previous Report) bool {
 	if date > previous.AsOf {
 		return true
 	}
-	return date == previous.AsOf && previous.CheckpointPhase == CheckpointOpen && action == "exit"
+	if date < previous.AsOf {
+		return false
+	}
+	if watermark := reportEventWatermark(previous); watermark != "" && eventTime != "" {
+		return eventTime > watermark
+	}
+	return previous.CheckpointPhase == CheckpointOpen && (action == "exit" || action == "risk_exit" || action == "reduce")
+}
+
+func realtimeEventAfterReport(eventTime string, previous Report) bool {
+	if eventTime == "" {
+		return true
+	}
+	if previous.LastRealtimeAt == "" {
+		return true
+	}
+	return eventTime > previous.LastRealtimeAt
 }
 
 func sameFloat(left, right float64) bool {
 	return math.Abs(left-right) <= 1e-8*math.Max(1, math.Max(math.Abs(left), math.Abs(right)))
 }
 
+func clamp(value, minimum, maximum float64) float64 {
+	return math.Max(minimum, math.Min(value, maximum))
+}
+
 type Evaluator struct {
-	history HistoryClient
-	now     func() time.Time
+	history           HistoryClient
+	now               func() time.Time
+	calendarMu        sync.Mutex
+	calendarDates     []string
+	calendarFetchedAt time.Time
 }
 
 func NewEvaluator(history HistoryClient) *Evaluator {
 	return &Evaluator{history: history, now: time.Now}
+}
+
+// tradingCalendar returns a short-lived, immutable copy of the benchmark
+// trading dates. The same evaluator is shared by the three shadow profiles;
+// caching here keeps their checkpoint and T+1 decisions on one calendar read.
+// Errors are deliberately not cached so a transient provider failure can
+// recover on the next attempt.
+func (e *Evaluator) tradingCalendar(ctx context.Context, now time.Time, override []string) ([]string, error) {
+	if len(override) > 0 {
+		return append([]string(nil), override...), nil
+	}
+	if e == nil || e.history == nil {
+		return nil, fmt.Errorf("交易日日历服务未初始化")
+	}
+	e.calendarMu.Lock()
+	if len(e.calendarDates) > 0 && !e.calendarFetchedAt.IsZero() && now.Sub(e.calendarFetchedAt) >= 0 && now.Sub(e.calendarFetchedAt) < shadowCalendarCacheTTL {
+		dates := append([]string(nil), e.calendarDates...)
+		e.calendarMu.Unlock()
+		return dates, nil
+	}
+	e.calendarMu.Unlock()
+
+	bars, err := e.history.FetchDailyBars(ctx, "sh000300")
+	if err != nil {
+		return nil, err
+	}
+	dates := barDates(normalizedBars(bars))
+	if len(dates) == 0 {
+		return nil, fmt.Errorf("沪深300未返回有效交易日")
+	}
+	e.calendarMu.Lock()
+	e.calendarDates = append([]string(nil), dates...)
+	e.calendarFetchedAt = now
+	e.calendarMu.Unlock()
+	return dates, nil
 }
 
 type shadowPlan struct {
@@ -844,6 +1279,8 @@ type shadowPlan struct {
 	bars           []domain.DailyBar
 	action         string
 	lotOrderID     string
+	orderID        string
+	exitReason     string
 	signalClose    float64
 	capacity       float64
 	entryIndex     int
@@ -859,12 +1296,22 @@ type shadowPosition struct {
 	fallback        *ShadowOpenPosition
 	lastSignalDate  string
 	lastSignalScore float64
+	targetPercent   float64
+	riskExitReason  string
 }
 
 type shadowLot struct {
 	plan      shadowPlan
 	entry     ShadowOrder
 	entryCost float64
+}
+
+type shadowRotationCandidate struct {
+	symbol   string
+	position shadowPosition
+	bar      domain.DailyBar
+	barIndex int
+	score    float64
 }
 
 func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []realtime.Signal, options Options) (Report, error) {
@@ -879,9 +1326,12 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 	if now == nil {
 		now = time.Now
 	}
-	calendarBars, calendarError := e.history.FetchDailyBars(ctx, "sh000300")
-	calendarDates := barDates(normalizedBars(calendarBars))
-	checkpoint := TradingCheckpointAt(now(), calendarDates)
+	currentNow := now()
+	calendarDates, calendarError := e.tradingCalendar(ctx, currentNow, options.CalendarDates)
+	if calendarError != nil {
+		calendarDates = nil
+	}
+	checkpoint := TradingCheckpointAt(currentNow, calendarDates)
 	if calendarError != nil || len(calendarDates) == 0 {
 		previous.Warnings = append(previous.Warnings, "沪深300交易日历不可用，停牌识别将退化为个股交易日")
 	}
@@ -890,9 +1340,10 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 	report.Config = cfg
 	report.ConfigFingerprint = OptionsFingerprint(cfg, options.Limit)
 	report.SignalLimit = options.Limit
-	report.GeneratedAt = now()
+	report.GeneratedAt = currentNow
 	report.AsOf = checkpoint.Date
 	report.CheckpointPhase = checkpoint.Phase
+	report.ExecutionMode = ExecutionModeDaily
 	report.SignalCount = len(signals)
 	if report.AsOf < previous.AsOf {
 		return previous, fmt.Errorf("影子账户检查点倒退: %s -> %s", previous.AsOf, report.AsOf)
@@ -900,12 +1351,19 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 	active := make(map[string]shadowPosition, len(previous.Positions))
 	archivedSignals := representativeSignals(signals, 0)
 	for index := range report.Rejections {
-		if report.Rejections[index].SignalScore > 0 && len(report.Rejections[index].SignalReasons) > 0 {
+		if report.Rejections[index].SignalScore > 0 && len(report.Rejections[index].SignalReasons) > 0 && report.Rejections[index].Industry != "" {
 			continue
 		}
 		if signal, found := matchingArchivedRejectionSignal(archivedSignals, report.Rejections[index]); found {
-			report.Rejections[index].SignalScore = signal.Score
-			report.Rejections[index].SignalReasons = append([]string(nil), signal.Reasons...)
+			if report.Rejections[index].SignalScore <= 0 {
+				report.Rejections[index].SignalScore = signal.Score
+			}
+			if len(report.Rejections[index].SignalReasons) == 0 {
+				report.Rejections[index].SignalReasons = append([]string(nil), signal.Reasons...)
+			}
+			if report.Rejections[index].Industry == "" {
+				report.Rejections[index].Industry = signal.Industry
+			}
 		}
 	}
 	for _, position := range previous.Positions {
@@ -917,13 +1375,16 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			continue
 		}
 		bars = normalizedBars(bars)
-		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Price: position.SignalClose, Score: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, Reasons: append([]string(nil), position.SignalReasons...)}
+		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Industry: position.Industry, Price: position.SignalClose, Score: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, Reasons: append([]string(nil), position.SignalReasons...)}
 		if enriched, found := matchingArchivedSignal(archivedSignals, position); found {
 			if signal.ID == "" {
 				signal.ID = enriched.ID
 			}
 			if signal.Name == "" {
 				signal.Name = enriched.Name
+			}
+			if signal.Industry == "" {
+				signal.Industry = enriched.Industry
 			}
 			if signal.Price <= 0 {
 				signal.Price = enriched.Price
@@ -952,6 +1413,11 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			lotSignal := signal
 			lotSignal.ID = strings.TrimSuffix(lots[index].entry.ID, "-buy")
 			lotSignal.Score = lots[index].entry.SignalScore
+			lotSignal.Industry = lots[index].entry.Industry
+			if lotSignal.Industry == "" {
+				lotSignal.Industry = signal.Industry
+				lots[index].entry.Industry = signal.Industry
+			}
 			lotSignal.TriggerPrice = lots[index].entry.TriggerPrice
 			lotSignal.InvalidationPrice = lots[index].entry.InvalidationPrice
 			lotSignal.Reasons = append([]string(nil), lots[index].entry.SignalReasons...)
@@ -964,11 +1430,18 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			lots[index].plan.exitIndex = barIndex(bars, lots[index].plan.targetExitDate)
 			if orderIndex := matchingOrderIndex(report.Orders, lots[index].entry); orderIndex >= 0 {
 				report.Orders[orderIndex].ExecutionTime = lots[index].entry.ExecutionTime
+				if report.Orders[orderIndex].Industry == "" {
+					report.Orders[orderIndex].Industry = lots[index].entry.Industry
+				}
 			}
 		}
-		active[position.Symbol] = shadowPosition{plan: shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose}, lots: lots, lastSignalDate: position.SignalDate, lastSignalScore: position.SignalScore}
+		targetPercent := position.TargetPositionPercent
+		if targetPercent <= 0 {
+			targetPercent = cfg.MaxPositionPercent
+		}
+		active[position.Symbol] = shadowPosition{plan: shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose}, lots: lots, fallback: nil, lastSignalDate: position.SignalDate, lastSignalScore: position.SignalScore, targetPercent: targetPercent, riskExitReason: position.RiskExitReason}
 	}
-	newPlans, err := e.plansAfter(ctx, signals, cfg, previous.AsOf, checkpoint, calendarDates)
+	newPlans, err := e.plansAfter(ctx, signals, cfg, previous.AsOf, checkpoint, calendarDates, active)
 	if err != nil {
 		return previous, err
 	}
@@ -996,14 +1469,86 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 	if previous.EngineVersion != ShadowEngineVersion && report.TotalTurnover <= 0 {
 		report.TotalTurnover = filledOrderTurnover(report.Orders)
 	}
-	report = simulateFrom(report, newPlans, cfg, report.RemainingCash, active)
+	report = simulateFromCheckpoint(report, newPlans, cfg, report.RemainingCash, active, previous.AsOf)
+	if options.Realtime && checkpoint.Phase == CheckpointOpen && checkpoint.Date == localTradingDate(currentNow) {
+		var realtimeErr error
+		report, realtimeErr = e.advanceRealtime(ctx, report, signals, options, calendarDates, currentNow)
+		if realtimeErr != nil {
+			// A quote or minute-data outage must not discard the settled daily
+			// ledger. Preserve the report and expose the degradation to the UI.
+			report.Warnings = appendUniqueWarning(report.Warnings, "盘中影子层未推进: "+realtimeErr.Error())
+		}
+	}
 	return report, nil
 }
 
-func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, cfg Config, after string, checkpoint Checkpoint, calendarDates []string) ([]shadowPlan, error) {
+// AdvanceRealtime processes one current-session quote snapshot without
+// rebuilding the daily ledger. The Web scheduler uses this path after the
+// account has reached today's open checkpoint, so every fresh scan can update
+// risk, position and execution decisions without replaying all archived
+// signals and historical bars.
+func (e *Evaluator) AdvanceRealtime(ctx context.Context, previous Report, signals []realtime.Signal, options Options) (Report, error) {
+	if e == nil || e.history == nil {
+		return Report{}, fmt.Errorf("影子执行评估器未初始化")
+	}
+	if !options.Realtime {
+		return previous, fmt.Errorf("盘中快速推进未启用实时行情")
+	}
+	cfg := canonicalConfig(options.Config)
+	currentNow := options.RealtimeAt
+	if currentNow.IsZero() {
+		now := e.now
+		if options.Now != nil {
+			now = options.Now
+		}
+		if now == nil {
+			now = time.Now
+		}
+		currentNow = now()
+	}
+	calendarDates, calendarError := e.tradingCalendar(ctx, currentNow, options.CalendarDates)
+	if calendarError != nil {
+		calendarDates = nil
+	}
+	checkpoint := TradingCheckpointAt(currentNow, calendarDates)
+	if previous.EngineVersion != ShadowEngineVersion || previous.AsOf != checkpoint.Date || previous.CheckpointPhase != CheckpointOpen || checkpoint.Phase != CheckpointOpen {
+		return previous, fmt.Errorf("影子账户尚未到达当前交易日开盘检查点")
+	}
+	if previous.ConfigFingerprint != "" && previous.ConfigFingerprint != OptionsFingerprint(cfg, options.Limit) {
+		return previous, fmt.Errorf("影子账户配置已变化，需要先完成日线检查点推进")
+	}
+
+	report := cloneReport(previous)
+	report.EngineVersion = ShadowEngineVersion
+	report.Config = cfg
+	report.ConfigFingerprint = OptionsFingerprint(cfg, options.Limit)
+	report.SignalLimit = options.Limit
+	// `signals` is the current scan snapshot on this fast path, not the full
+	// archived signal set used to build the account. Preserve the cumulative
+	// report count so a 30-second intraday update cannot make history appear to
+	// disappear in the UI.
+	if report.SignalCount == 0 {
+		report.SignalCount = len(signals)
+	}
+	if calendarError != nil || len(calendarDates) == 0 {
+		report.Warnings = appendUniqueWarning(report.Warnings, "沪深300交易日历不可用，停牌识别将退化为个股交易日")
+	}
+	return e.advanceRealtime(ctx, report, signals, options, calendarDates, currentNow)
+}
+
+func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, cfg Config, after string, checkpoint Checkpoint, calendarDates []string, active map[string]shadowPosition) ([]shadowPlan, error) {
 	selected := representativeSignals(signals, 0)
 	bySymbol := make(map[string][]realtime.Signal)
 	for _, signal := range selected {
+		date := signalDate(signal)
+		if date < after || date >= checkpoint.Date || !shadowSignalActionable(signal) {
+			continue
+		}
+		if !shadowSignalEntryEligible(signal, cfg) {
+			if _, held := active[signal.Symbol]; !held {
+				continue
+			}
+		}
 		bySymbol[signal.Symbol] = append(bySymbol[signal.Symbol], signal)
 	}
 	plans := make([]shadowPlan, 0, len(selected))
@@ -1111,7 +1656,64 @@ func holdingExitDate(calendarDates []string, entryDate string, holdingDays int) 
 	return calendarDates[exitIndex]
 }
 
+func positionRiskExitReason(position shadowPosition, closePrice float64, cfg Config) string {
+	if closePrice <= 0 || len(position.lots) == 0 {
+		return ""
+	}
+	invalidation := 0.0
+	for _, lot := range position.lots {
+		candidate := lot.entry.InvalidationPrice
+		if candidate <= 0 {
+			candidate = lot.plan.signal.InvalidationPrice
+		}
+		if candidate > invalidation {
+			invalidation = candidate
+		}
+	}
+	if invalidation <= 0 {
+		invalidation = position.plan.signal.InvalidationPrice
+	}
+	if invalidation > 0 && closePrice < invalidation {
+		return fmt.Sprintf("前一交易日收盘 %.2f 跌破失效位 %.2f，按风险层退出全部可卖批次", closePrice, invalidation)
+	}
+	cost := positionCost(position)
+	quantity := positionQuantity(position)
+	if cost <= 0 || quantity <= 0 {
+		return ""
+	}
+	returnPercent := (closePrice*float64(quantity)/cost - 1) * 100
+	if returnPercent <= -cfg.MaxLossPercent {
+		return fmt.Sprintf("前一交易日收盘亏损 %.2f%% 达到单股最大亏损 %.2f%%，按风险层退出全部可卖批次", returnPercent, cfg.MaxLossPercent)
+	}
+	return ""
+}
+
+func riskCooldownActive(trades []ShadowTrade, symbol string, bars []domain.DailyBar, entryDate string, cooldownDays int) (string, bool) {
+	if cooldownDays <= 0 {
+		return "", false
+	}
+	latestExit := ""
+	for _, trade := range trades {
+		if trade.Symbol == symbol && trade.PositionAction == "risk_exit" && trade.ExitDate > latestExit {
+			latestExit = trade.ExitDate
+		}
+	}
+	if latestExit == "" {
+		return "", false
+	}
+	exitIndex := barIndex(bars, latestExit)
+	entryIndex := barIndex(bars, entryDate)
+	if exitIndex < 0 || entryIndex < 0 {
+		return latestExit, entryDate <= latestExit
+	}
+	return latestExit, entryIndex-exitIndex <= cooldownDays
+}
+
 func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, active map[string]shadowPosition) Report {
+	return simulateFromCheckpoint(report, plans, cfg, cash, active, "")
+}
+
+func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash float64, active map[string]shadowPosition, afterDate string) Report {
 	if !finite(cash) {
 		cash = report.RemainingCash
 	}
@@ -1119,27 +1721,156 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 		cash = cfg.InitialCash
 	}
 	events := make(map[string][]int)
+	dateSet := make(map[string]struct{})
 	for index, plan := range plans {
 		if plan.entryDate != "" {
 			events[plan.entryDate] = append(events[plan.entryDate], index)
+			dateSet[plan.entryDate] = struct{}{}
 		}
 		if plan.exitDate != "" && plan.exitDate != plan.entryDate {
 			events[plan.exitDate] = append(events[plan.exitDate], index)
+			dateSet[plan.exitDate] = struct{}{}
+		}
+		for _, bar := range plan.bars {
+			startDate := plan.entryDate
+			if afterDate != "" {
+				startDate = afterDate
+			}
+			if bar.Date != "" && bar.Date > startDate && bar.Date <= report.AsOf {
+				dateSet[bar.Date] = struct{}{}
+			}
 		}
 	}
-	dates := make([]string, 0, len(events))
-	for date := range events {
+	for symbol, position := range active {
+		if position.fallback != nil {
+			continue
+		}
+		if positionQuantity(position) <= 0 {
+			delete(active, symbol)
+			continue
+		}
+		entryDate := ""
+		for _, lot := range position.lots {
+			if entryDate == "" || (lot.entry.AttemptDate != "" && lot.entry.AttemptDate < entryDate) {
+				entryDate = lot.entry.AttemptDate
+			}
+		}
+		for _, bar := range position.plan.bars {
+			startDate := entryDate
+			if afterDate != "" {
+				startDate = afterDate
+			}
+			if bar.Date != "" && bar.Date > startDate && bar.Date <= report.AsOf {
+				dateSet[bar.Date] = struct{}{}
+			}
+		}
+	}
+	dates := make([]string, 0, len(dateSet))
+	for date := range dateSet {
 		dates = append(dates, date)
 	}
 	sort.Strings(dates)
 	dailyDeployment := make(map[string]float64)
+	dailyRotations := make(map[string]int)
 	for _, date := range dates {
 		indexes := events[date]
 		handledOpening := make(map[int]bool, len(indexes))
+		rotatedOutToday := make(map[string]bool)
+
+		for symbol, position := range active {
+			if afterDate != "" && (date < afterDate || date == afterDate) {
+				continue
+			}
+			if position.fallback != nil || len(position.lots) == 0 {
+				continue
+			}
+			barIndex := barIndex(position.plan.bars, date)
+			if barIndex <= 0 {
+				continue
+			}
+			previousBar := position.plan.bars[barIndex-1]
+			reason := position.riskExitReason
+			if reason == "" {
+				reason = positionRiskExitReason(position, previousBar.Close, cfg)
+			}
+			if reason == "" {
+				continue
+			}
+			position.riskExitReason = reason
+			active[symbol] = position
+			signal := position.plan.signal
+			signal.ID = signal.ID + "-risk-" + date
+			signal.AsOf = parseShanghaiDate(previousBar.Date)
+			signal.Price = previousBar.Close
+			plans = append(plans, shadowPlan{
+				signal: signal, bars: position.plan.bars, action: "risk_exit", entryIndex: barIndex,
+				entryDate: date, orderID: position.plan.signal.Symbol + "-risk-" + date + "-sell", exitReason: reason,
+			})
+			index := len(plans) - 1
+			indexes = append(indexes, index)
+			events[date] = append(events[date], index)
+		}
+
+		// Risk exits are generated only from the previous completed close and
+		// execute at the next tradable open. They flatten every T+1-eligible lot
+		// before any discretionary reduction or new entry is considered.
+		for _, index := range indexes {
+			plan := plans[index]
+			if plan.action != "risk_exit" || plan.entryDate != date || plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
+				continue
+			}
+			handledOpening[index] = true
+			position, exists := active[plan.signal.Symbol]
+			if !exists || position.fallback != nil {
+				continue
+			}
+			bar := plan.bars[plan.entryIndex]
+			if bar.Open <= 0 || onePriceBar(bar) || limitLockedAtExit(plan.signal, plan.bars, plan.entryIndex) {
+				appendShadowDecision(&report, plan.signal, date, "wait", plan.exitReason+"；但开盘一字板或停牌，风险退出顺延", positionQuantity(position), 0)
+				continue
+			}
+			remainingLots := make([]shadowLot, 0, len(position.lots))
+			exited := 0
+			for lotIndex, lot := range position.lots {
+				if lot.entry.AttemptDate == "" || lot.entry.AttemptDate >= date {
+					remainingLots = append(remainingLots, lot)
+					continue
+				}
+				sell := makeOrder(plan.signal, "sell", date, bar.Open, lot.entry.Quantity, cfg, 0)
+				sell.ID = fmt.Sprintf("%s-%d", plan.orderID, lotIndex+1)
+				sell.Status = OrderFilled
+				sell.Reason = plan.exitReason
+				sell.ExecutionTime = simulatedOpeningExecutionTime(date)
+				sell.PositionAction = "risk_exit"
+				sell.PositionSequence = lotIndex + 1
+				fee := transactionFee(sell.Amount, "sell", cfg)
+				cash += sell.Amount - fee
+				report.Orders = append(report.Orders, sell)
+				report.Trades = append(report.Trades, tradeForLot(lot, sell, bar.Open, date, plan.entryIndex, fee, len(report.Trades)+1))
+				report.CompletedTrades++
+				report.TotalTurnover += sell.Amount
+				report.TotalFees += fee
+				exited += lot.entry.Quantity
+			}
+			position.lots = remainingLots
+			if exited == 0 {
+				appendShadowDecision(&report, plan.signal, date, "hold", plan.exitReason+"；但没有满足T+1的可卖批次", positionQuantity(position), 0)
+				continue
+			}
+			appendShadowDecision(&report, plan.signal, date, "risk_exit", plan.exitReason, positionQuantity(position), 0)
+			if len(position.lots) == 0 {
+				delete(active, plan.signal.Symbol)
+			} else {
+				active[plan.signal.Symbol] = position
+			}
+		}
 
 		// Opening reductions settle before opening entries. A-share sale proceeds
 		// can fund another opening buy, while proceeds from the later close cannot.
 		for _, index := range indexes {
+			if handledOpening[index] {
+				continue
+			}
 			plan := plans[index]
 			if plan.entryDate != date || plan.entryIndex < 0 || plan.entryIndex >= len(plan.bars) {
 				continue
@@ -1208,8 +1939,16 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 			if !exists && !shadowSignalEntryEligible(plan.signal, cfg) {
 				continue
 			}
+			if !exists && rotatedOutToday[plan.signal.Symbol] {
+				appendShadowDecision(&report, plan.signal, date, "wait", "该股票当日已被组合轮出，不在同一开盘重新买回", 0, targetPositionPercent(plan.signal, cfg))
+				continue
+			}
 			if exists && !shadowSignalEntryEligible(plan.signal, cfg) {
 				appendShadowDecision(&report, plan.signal, date, "hold", "信号未满足加仓门槛，维持现有仓位", positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			if exists && position.riskExitReason != "" {
+				appendShadowDecision(&report, plan.signal, date, "wait", position.riskExitReason+"；风险退出完成前不再加仓", positionQuantity(position), 0)
 				continue
 			}
 			if exists && (len(position.lots) >= cfg.MaxEntryTranches || plan.signal.Score < position.lastSignalScore+cfg.AdditionScoreStep) {
@@ -1218,6 +1957,39 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 					reason = "已达到最大分批建仓次数，维持现有仓位"
 				}
 				appendShadowDecision(&report, plan.signal, date, "hold", reason, positionQuantity(position), cfg.MaxPositionPercent)
+				continue
+			}
+			rotation := shadowRotationCandidate{}
+			if !exists && len(active) >= cfg.MaxOpenPositions {
+				if len(active) > cfg.MaxOpenPositions {
+					appendShadowDecision(&report, plan.signal, date, "wait", fmt.Sprintf("历史持仓 %d 个高于当前 %d 个上限，先等待减仓或到期退出", len(active), cfg.MaxOpenPositions), 0, targetPositionPercent(plan.signal, cfg))
+					continue
+				}
+				if dailyRotations[date] >= cfg.MaxDailyRotations {
+					appendShadowDecision(&report, plan.signal, date, "wait", fmt.Sprintf("组合持仓已满，且当日换仓已达到 %d 次上限", cfg.MaxDailyRotations), 0, targetPositionPercent(plan.signal, cfg))
+					continue
+				}
+				var rotationReason string
+				rotation, rotationReason = selectShadowRotationCandidate(active, plan.signal, date, cfg)
+				if rotation.symbol == "" {
+					appendShadowDecision(&report, plan.signal, date, "wait", rotationReason, 0, targetPositionPercent(plan.signal, cfg))
+					continue
+				}
+				if rotation.bar.Open <= 0 || onePriceBar(rotation.bar) || limitLockedAtExit(rotation.position.plan.signal, rotation.position.plan.bars, rotation.barIndex) {
+					appendShadowDecision(&report, plan.signal, date, "wait", fmt.Sprintf("候选领先最弱持仓 %s，但该持仓开盘一字板或停牌，无法轮出", rotationDisplayName(rotation)), 0, targetPositionPercent(plan.signal, cfg))
+					continue
+				}
+			}
+			if exitDate, blocked := riskCooldownActive(report.Trades, plan.signal.Symbol, plan.bars, date, cfg.RiskCooldownDays); blocked {
+				appendShadowDecision(&report, plan.signal, date, "wait", fmt.Sprintf("风险退出后冷却期未结束（最近退出 %s），暂不重新开仓", exitDate), positionQuantity(position), targetPositionPercent(plan.signal, cfg))
+				continue
+			}
+			if plan.signal.InvalidationPrice > 0 && bar.Open <= plan.signal.InvalidationPrice {
+				rejection := makeRejection(plan.signal, "buy", date, fmt.Sprintf("次日开盘 %.2f 已跌破信号失效位 %.2f，不再追认原买入信号", bar.Open, plan.signal.InvalidationPrice))
+				if !hasRejection(report.Rejections, rejection) {
+					report.RejectedOrders++
+					report.Rejections = append(report.Rejections, rejection)
+				}
 				continue
 			}
 			if onePriceBar(bar) || limitLockedAtEntry(plan.signal, plan.bars, plan.entryIndex) || bar.Open <= 0 {
@@ -1229,9 +2001,16 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 				continue
 			}
 			capacity := plan.capacity * cfg.MaxParticipationPercent / 100
-			budget, reason := entryBudget(cfg, cash, dailyDeployment[date], active, position, exists)
+			budgetActive := active
+			budgetCash := cash
+			if rotation.symbol != "" {
+				budgetActive = cloneShadowPositions(active)
+				delete(budgetActive, rotation.symbol)
+				budgetCash += rotationSaleProceeds(rotation, cfg)
+			}
+			budget, targetPercent, reason := entryBudget(cfg, plan.signal, bar.Open, budgetCash, dailyDeployment[date], budgetActive, position, exists)
 			if budget <= 0 {
-				appendShadowDecision(&report, plan.signal, date, "wait", reason, positionQuantity(position), cfg.MaxPositionPercent)
+				appendShadowDecision(&report, plan.signal, date, "wait", reason, positionQuantity(position), targetPercent)
 				continue
 			}
 			quantity := quantityWithinBudget(bar.Open, budget, capacity, cfg)
@@ -1250,9 +2029,28 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 			}
 			buy := makeOrder(plan.signal, "buy", date, bar.Open, quantity, cfg, capacity)
 			fee := transactionFee(buy.Amount, "buy", cfg)
-			if buy.Amount+fee > cash || cash-buy.Amount-fee < cfg.InitialCash*cfg.CashReservePercent/100 {
+			projectedCash := cash
+			if rotation.symbol != "" {
+				projectedCash += rotationSaleProceeds(rotation, cfg)
+			}
+			if buy.Amount+fee > projectedCash || projectedCash-buy.Amount-fee < cfg.InitialCash*cfg.CashReservePercent/100 {
 				appendShadowDecision(&report, plan.signal, date, "wait", "现金缓冲不足，等待后续交易日", positionQuantity(position), cfg.MaxPositionPercent)
 				continue
+			}
+			if rotation.symbol != "" {
+				rotationOrders, rotationTrades, rotationProceeds, rotationFees := executeShadowRotationOut(rotation, plan.signal, date, cfg, len(report.Trades)+1)
+				cash += rotationProceeds
+				report.Orders = append(report.Orders, rotationOrders...)
+				report.Trades = append(report.Trades, rotationTrades...)
+				report.CompletedTrades += len(rotationTrades)
+				for _, order := range rotationOrders {
+					report.TotalTurnover += order.Amount
+				}
+				report.TotalFees += rotationFees
+				delete(active, rotation.symbol)
+				rotatedOutToday[rotation.symbol] = true
+				dailyRotations[date]++
+				appendShadowDecision(&report, rotation.position.plan.signal, date, "rotate_out", fmt.Sprintf("组合持仓已满；新候选 %s %.1f 分领先 %.1f 分，轮出最弱持仓", shadowSignalDisplayName(plan.signal), plan.signal.Score, rotation.score), 0, 0)
 			}
 			buy.Status = OrderFilled
 			if exists {
@@ -1260,6 +2058,10 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 				buy.PositionSequence = len(position.lots) + 1
 			} else {
 				buy.PositionAction = "open"
+				if rotation.symbol != "" {
+					buy.PositionAction = "rotate_in"
+					buy.Reason = fmt.Sprintf("新候选 %.1f 分领先轮出持仓 %s %.1f 分，执行有限换仓", plan.signal.Score, rotationDisplayName(rotation), rotation.score)
+				}
 				buy.PositionSequence = 1
 			}
 			cash -= buy.Amount + fee
@@ -1277,11 +2079,18 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 				position.plan = plan
 				position.lastSignalDate = signalDate(plan.signal)
 				position.lastSignalScore = plan.signal.Score
+				position.targetPercent = targetPercent
 				active[plan.signal.Symbol] = position
-				appendShadowDecision(&report, plan.signal, date, "add", "信号显著增强，按目标仓位分批加仓", positionQuantity(position), cfg.MaxPositionPercent)
+				appendShadowDecision(&report, plan.signal, date, "add", "信号显著增强，按质量、波动与风险距离动态加仓", positionQuantity(position), targetPercent)
 			} else {
-				active[plan.signal.Symbol] = shadowPosition{plan: plan, lots: []shadowLot{lot}, lastSignalDate: signalDate(plan.signal), lastSignalScore: plan.signal.Score}
-				appendShadowDecision(&report, plan.signal, date, "open", "首次建仓仅使用目标仓位的一部分，保留后续操作空间", buy.Quantity, cfg.MaxPositionPercent)
+				active[plan.signal.Symbol] = shadowPosition{plan: plan, lots: []shadowLot{lot}, lastSignalDate: signalDate(plan.signal), lastSignalScore: plan.signal.Score, targetPercent: targetPercent}
+				action := "open"
+				reason := "首次建仓按信号质量、波动风险与失效距离定仓，并仅使用目标仓位的一部分"
+				if rotation.symbol != "" {
+					action = "rotate_in"
+					reason = fmt.Sprintf("组合满员时仅换入显著更强候选；领先 %s %.1f 分", rotationDisplayName(rotation), plan.signal.Score-rotation.score)
+				}
+				appendShadowDecision(&report, plan.signal, date, action, reason, buy.Quantity, targetPercent)
 			}
 		}
 
@@ -1339,7 +2148,13 @@ func simulateFrom(report Report, plans []shadowPlan, cfg Config, cash float64, a
 	report.Positions = report.Positions[:0]
 	for _, position := range active {
 		if position.fallback != nil {
+			if position.fallback.Quantity <= 0 {
+				continue
+			}
 			report.Positions = append(report.Positions, *position.fallback)
+			continue
+		}
+		if positionQuantity(position) <= 0 {
 			continue
 		}
 		report.Positions = append(report.Positions, aggregateShadowPosition(position, cfg, report.AsOf))
@@ -1390,6 +2205,123 @@ func oldestAvailableLot(lots []shadowLot, date string) int {
 	return oldest
 }
 
+func cloneShadowPositions(input map[string]shadowPosition) map[string]shadowPosition {
+	result := make(map[string]shadowPosition, len(input))
+	for symbol, position := range input {
+		result[symbol] = position
+	}
+	return result
+}
+
+func selectShadowRotationCandidate(active map[string]shadowPosition, incoming realtime.Signal, date string, cfg Config) (shadowRotationCandidate, string) {
+	symbols := make([]string, 0, len(active))
+	for symbol := range active {
+		symbols = append(symbols, symbol)
+	}
+	sort.Strings(symbols)
+	best := shadowRotationCandidate{}
+	bestScore := math.Inf(1)
+	bestEntryDate := ""
+	for _, symbol := range symbols {
+		position := active[symbol]
+		if position.fallback != nil || position.riskExitReason != "" || len(position.lots) == 0 {
+			continue
+		}
+		currentBarIndex := barIndex(position.plan.bars, date)
+		if currentBarIndex < 0 {
+			continue
+		}
+		bar := position.plan.bars[currentBarIndex]
+		if bar.Open <= 0 || onePriceBar(bar) || limitLockedAtExit(position.plan.signal, position.plan.bars, currentBarIndex) {
+			continue
+		}
+		entryDate := ""
+		eligible := true
+		for _, lot := range position.lots {
+			if lot.entry.AttemptDate == "" || lot.entry.AttemptDate >= date {
+				eligible = false
+				break
+			}
+			entryIndex := barIndex(position.plan.bars, lot.entry.AttemptDate)
+			if entryIndex < 0 || currentBarIndex-entryIndex < cfg.RotationMinimumHoldDays {
+				eligible = false
+				break
+			}
+			if entryDate == "" || lot.entry.AttemptDate < entryDate {
+				entryDate = lot.entry.AttemptDate
+			}
+		}
+		if !eligible {
+			continue
+		}
+		score := position.lastSignalScore
+		if !finite(score) || score <= 0 {
+			score = position.plan.signal.Score
+		}
+		if score < bestScore || (score == bestScore && (bestEntryDate == "" || entryDate < bestEntryDate)) {
+			best = shadowRotationCandidate{symbol: symbol, position: position, bar: bar, barIndex: currentBarIndex, score: score}
+			bestScore = score
+			bestEntryDate = entryDate
+		}
+	}
+	if best.symbol == "" {
+		return shadowRotationCandidate{}, fmt.Sprintf("组合持仓已满，但没有同时满足 T+1、至少 %d 个交易日持有期和开盘可交易条件的轮出持仓", cfg.RotationMinimumHoldDays)
+	}
+	if incoming.Score < bestScore+cfg.RotationScoreGap {
+		return shadowRotationCandidate{}, fmt.Sprintf("组合持仓已满；新候选 %.1f 分未领先最弱可轮出持仓 %s %.1f 分达到 %.1f 分", incoming.Score, rotationDisplayName(best), bestScore, cfg.RotationScoreGap)
+	}
+	return best, ""
+}
+
+func rotationSaleProceeds(rotation shadowRotationCandidate, cfg Config) float64 {
+	proceeds := 0.0
+	price := rotation.bar.Open * (1 - cfg.SlippageBPS/10000)
+	for _, lot := range rotation.position.lots {
+		amount := price * float64(lot.entry.Quantity)
+		proceeds += amount - transactionFee(amount, "sell", cfg)
+	}
+	return proceeds
+}
+
+func executeShadowRotationOut(rotation shadowRotationCandidate, incoming realtime.Signal, date string, cfg Config, tradeSequence int) ([]ShadowOrder, []ShadowTrade, float64, float64) {
+	orders := make([]ShadowOrder, 0, len(rotation.position.lots))
+	trades := make([]ShadowTrade, 0, len(rotation.position.lots))
+	proceeds, fees := 0.0, 0.0
+	for index, lot := range rotation.position.lots {
+		signal := lot.plan.signal
+		if signal.Symbol == "" {
+			signal = rotation.position.plan.signal
+		}
+		sell := makeOrder(signal, "sell", date, rotation.bar.Open, lot.entry.Quantity, cfg, 0)
+		sell.ID = fmt.Sprintf("%s-rotate-%s-sell-%d", rotation.symbol, date, index+1)
+		sell.Status = OrderFilled
+		sell.ExecutionTime = simulatedOpeningExecutionTime(date)
+		sell.PositionAction = "rotate_out"
+		sell.PositionSequence = index + 1
+		sell.Reason = fmt.Sprintf("组合换仓：%s %.1f 分显著强于当前持仓 %.1f 分", shadowSignalDisplayName(incoming), incoming.Score, rotation.score)
+		fee := transactionFee(sell.Amount, "sell", cfg)
+		orders = append(orders, sell)
+		trades = append(trades, tradeForLot(lot, sell, rotation.bar.Open, date, rotation.barIndex, fee, tradeSequence+index))
+		proceeds += sell.Amount - fee
+		fees += fee
+	}
+	return orders, trades, proceeds, fees
+}
+
+func rotationDisplayName(rotation shadowRotationCandidate) string {
+	if rotation.position.plan.signal.Name != "" {
+		return rotation.position.plan.signal.Name
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(rotation.symbol, "sh"), "sz")
+}
+
+func shadowSignalDisplayName(signal realtime.Signal) string {
+	if signal.Name != "" {
+		return signal.Name
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(signal.Symbol, "sh"), "sz")
+}
+
 func positionQuantity(position shadowPosition) int {
 	if position.fallback != nil {
 		return position.fallback.Quantity
@@ -1402,6 +2334,13 @@ func positionQuantity(position shadowPosition) int {
 }
 
 func positionCost(position shadowPosition) float64 {
+	if position.fallback != nil {
+		amount := position.fallback.EntryAmount
+		if amount <= 0 {
+			amount = position.fallback.EntryPrice * float64(position.fallback.Quantity)
+		}
+		return amount + position.fallback.EntryFee
+	}
 	cost := 0.0
 	for _, lot := range position.lots {
 		cost += lot.entryCost
@@ -1425,21 +2364,159 @@ func investedCost(active map[string]shadowPosition) float64 {
 	return total
 }
 
-func entryBudget(cfg Config, cash, deployedToday float64, active map[string]shadowPosition, position shadowPosition, exists bool) (float64, string) {
+func targetPositionPercent(signal realtime.Signal, cfg Config) float64 {
+	qualityRange := math.Max(1, 75-cfg.MinimumScore)
+	quality := clamp((shadowSignalScore(signal)-cfg.MinimumScore)/qualityRange, 0, 1)
+	qualityMultiplier := .6 + .4*quality
+	riskMultiplier := .8
+	if score, ok := signalComponentRatio(signal, "volatility-risk"); ok {
+		riskMultiplier = .65 + .35*score
+	}
+	regimeMultiplier := .9
+	if score, ok := signalComponentRatio(signal, "market-regime"); ok {
+		regimeMultiplier = .85 + .15*score
+	}
+	overlayMultiplier := 1.0
+	if signal.RiskMultiplier > 0 && finite(signal.RiskMultiplier) {
+		overlayMultiplier = clamp(signal.RiskMultiplier, .25, 1)
+	}
+	target := cfg.MaxPositionPercent * qualityMultiplier * riskMultiplier * regimeMultiplier * overlayMultiplier
+	return clamp(target, cfg.MaxPositionPercent*.25, cfg.MaxPositionPercent)
+}
+
+func targetPositionPercentAtPrice(signal realtime.Signal, rawPrice float64, cfg Config) float64 {
+	target := targetPositionPercent(signal, cfg)
+	riskDistance := riskDistancePercent(signal, rawPrice, cfg)
+	if riskDistance > 0 {
+		target = math.Min(target, cfg.MaxPositionRiskPercent/riskDistance*100)
+	}
+	return clamp(target, cfg.MaxPositionPercent*.25, cfg.MaxPositionPercent)
+}
+
+func signalComponentRatio(signal realtime.Signal, key string) (float64, bool) {
+	for _, component := range signal.Components {
+		if component.Key != key || strings.TrimSpace(component.State) == "数据不足" || !finite(component.Score) {
+			continue
+		}
+		maximum := component.Maximum
+		if maximum <= 0 || !finite(maximum) {
+			maximum = 20
+		}
+		return clamp(component.Score/maximum, 0, 1), true
+	}
+	return 0, false
+}
+
+func riskDistancePercent(signal realtime.Signal, rawPrice float64, cfg Config) float64 {
+	distance := cfg.MaxLossPercent
+	if signal.InvalidationPrice > 0 && signal.InvalidationPrice < rawPrice {
+		invalidationDistance := (rawPrice - signal.InvalidationPrice) / rawPrice * 100
+		if invalidationDistance > 0 {
+			distance = math.Min(distance, invalidationDistance)
+		}
+	}
+	return clamp(distance, cfg.MinimumRiskDistancePercent, cfg.MaxLossPercent)
+}
+
+func lotRiskAmount(lot shadowLot, cfg Config) float64 {
+	rawPrice := lot.entry.RawPrice
+	if rawPrice <= 0 {
+		rawPrice = lot.entry.Price
+	}
+	signal := lot.plan.signal
+	if signal.InvalidationPrice <= 0 {
+		signal.InvalidationPrice = lot.entry.InvalidationPrice
+	}
+	return lot.entryCost * riskDistancePercent(signal, rawPrice, cfg) / 100
+}
+
+func positionRiskAmount(position shadowPosition, cfg Config) float64 {
+	if position.fallback != nil {
+		amount := position.fallback.EntryAmount + position.fallback.EntryFee
+		if amount <= 0 {
+			amount = position.fallback.EntryPrice * float64(position.fallback.Quantity)
+		}
+		signal := realtime.Signal{InvalidationPrice: position.fallback.InvalidationPrice}
+		return amount * riskDistancePercent(signal, position.fallback.EntryPrice, cfg) / 100
+	}
+	total := 0.0
+	for _, lot := range position.lots {
+		total += lotRiskAmount(lot, cfg)
+	}
+	return total
+}
+
+func investedRisk(active map[string]shadowPosition, cfg Config) float64 {
+	total := 0.0
+	for _, position := range active {
+		total += positionRiskAmount(position, cfg)
+	}
+	return total
+}
+
+func positionIndustry(position shadowPosition) string {
+	if position.fallback != nil {
+		return industryExposureKey(position.fallback.Industry)
+	}
+	if industry := industryExposureKey(position.plan.signal.Industry); industry != "行业待补充" {
+		return industry
+	}
+	for _, lot := range position.lots {
+		if industry := industryExposureKey(lot.entry.Industry); industry != "行业待补充" {
+			return industry
+		}
+	}
+	return "行业待补充"
+}
+
+func industryExposureKey(industry string) string {
+	value := strings.TrimSpace(industry)
+	for _, suffix := range []string{"Ⅳ", "Ⅲ", "Ⅱ", "Ⅰ", " IV", " III", " II", " I"} {
+		if strings.HasSuffix(value, suffix) {
+			value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
+			break
+		}
+	}
+	if value == "" {
+		return "行业待补充"
+	}
+	return value
+}
+
+func industryInvestedCost(active map[string]shadowPosition, industry string) float64 {
+	total := 0.0
+	for _, position := range active {
+		if positionIndustry(position) == industry {
+			total += positionCost(position)
+		}
+	}
+	return total
+}
+
+func entryBudget(cfg Config, signal realtime.Signal, rawPrice, cash, deployedToday float64, active map[string]shadowPosition, position shadowPosition, exists bool) (float64, float64, string) {
+	targetPercent := targetPositionPercentAtPrice(signal, rawPrice, cfg)
 	reserve := cfg.InitialCash * cfg.CashReservePercent / 100
 	availableCash := cash - reserve
 	if availableCash <= 0 {
-		return 0, "已达到现金缓冲下限"
+		return 0, targetPercent, "已达到现金缓冲下限"
 	}
 	portfolioRoom := cfg.InitialCash*cfg.MaxPortfolioPercent/100 - investedCost(active)
 	if portfolioRoom <= 0 {
-		return 0, "组合仓位已达到上限"
+		return 0, targetPercent, "组合仓位已达到上限"
 	}
 	dailyRoom := cfg.InitialCash*cfg.MaxDailyDeploymentPercent/100 - deployedToday
 	if dailyRoom <= 0 {
-		return 0, "当日新增资金已达到上限"
+		return 0, targetPercent, "当日新增资金已达到上限"
 	}
-	targetPosition := cfg.InitialCash * cfg.MaxPositionPercent / 100
+	industry := industryExposureKey(signal.Industry)
+	industryRoom := math.Inf(1)
+	if industry != "行业待补充" {
+		industryRoom = cfg.InitialCash*cfg.MaxIndustryPercent/100 - industryInvestedCost(active, industry)
+		if industryRoom <= 0 {
+			return 0, targetPercent, fmt.Sprintf("%s行业仓位已达到 %.0f%% 上限", industry, cfg.MaxIndustryPercent)
+		}
+	}
+	targetPosition := cfg.InitialCash * targetPercent / 100
 	positionRoom := targetPosition
 	if exists {
 		positionRoom -= positionCost(position)
@@ -1452,10 +2529,20 @@ func entryBudget(cfg Config, cash, deployedToday float64, active map[string]shad
 		positionRoom *= cfg.InitialEntryPercent / 100
 	}
 	if positionRoom <= 0 {
-		return 0, "单股目标仓位已达到上限"
+		return 0, targetPercent, "单股动态目标仓位已达到上限"
 	}
-	budget := math.Min(availableCash, math.Min(portfolioRoom, math.Min(dailyRoom, positionRoom)))
-	return budget, ""
+	positionRiskRoom := cfg.InitialCash*cfg.MaxPositionRiskPercent/100 - positionRiskAmount(position, cfg)
+	if positionRiskRoom <= 0 {
+		return 0, targetPercent, "单股风险预算已达到上限"
+	}
+	portfolioRiskRoom := cfg.InitialCash*cfg.MaxPortfolioRiskPercent/100 - investedRisk(active, cfg)
+	if portfolioRiskRoom <= 0 {
+		return 0, targetPercent, "组合风险预算已达到上限"
+	}
+	riskDistance := riskDistancePercent(signal, rawPrice, cfg) / 100
+	riskBudgetRoom := math.Min(positionRiskRoom, portfolioRiskRoom) / riskDistance
+	budget := math.Min(availableCash, math.Min(portfolioRoom, math.Min(dailyRoom, math.Min(industryRoom, math.Min(positionRoom, riskBudgetRoom)))))
+	return budget, targetPercent, ""
 }
 
 func tradeForLot(lot shadowLot, sell ShadowOrder, exitClose float64, exitDate string, exitIndex int, fee float64, sequence int) ShadowTrade {
@@ -1469,7 +2556,11 @@ func tradeForLot(lot shadowLot, sell ShadowOrder, exitClose float64, exitDate st
 	if lot.plan.entryIndex >= 0 && exitIndex >= lot.plan.entryIndex {
 		holdingDays = exitIndex - lot.plan.entryIndex + 1
 	}
-	return ShadowTrade{ID: fmt.Sprintf("ST%04d", sequence), EntryOrderID: lot.entry.ID, ExitOrderID: sell.ID, Symbol: sell.Symbol, Name: sell.Name, SignalDate: lot.entry.SignalDate, EntryDate: lot.entry.AttemptDate, ExitDate: exitDate, Quantity: lot.entry.Quantity, SignalClose: lot.plan.signalClose, ExitClose: exitClose, EntryPrice: lot.entry.Price, ExitPrice: sell.Price, TheoreticalReturnPercent: theoretical, ExecutableReturnPercent: executable, ExecutionGapPercent: executable - theoretical, GrossProfit: (sell.Price - lot.entry.Price) * float64(sell.Quantity), NetProfit: netProfit, TotalFee: lot.entryCost - lot.entry.Amount + fee, HoldingDays: holdingDays, PositionAction: sell.PositionAction, ExitTime: sell.ExecutionTime}
+	industry := sell.Industry
+	if industry == "" {
+		industry = lot.entry.Industry
+	}
+	return ShadowTrade{ID: fmt.Sprintf("ST%04d", sequence), EntryOrderID: lot.entry.ID, ExitOrderID: sell.ID, Symbol: sell.Symbol, Name: sell.Name, Industry: industry, SignalDate: lot.entry.SignalDate, EntryDate: lot.entry.AttemptDate, ExitDate: exitDate, Quantity: lot.entry.Quantity, SignalClose: lot.plan.signalClose, ExitClose: exitClose, EntryPrice: lot.entry.Price, ExitPrice: sell.Price, TheoreticalReturnPercent: theoretical, ExecutableReturnPercent: executable, ExecutionGapPercent: executable - theoretical, GrossProfit: (sell.Price - lot.entry.Price) * float64(sell.Quantity), NetProfit: netProfit, TotalFee: lot.entryCost - lot.entry.Amount + fee, HoldingDays: holdingDays, PositionAction: sell.PositionAction, ExitReason: sell.Reason, ExitTime: sell.ExecutionTime}
 }
 
 func appendShadowDecision(report *Report, signal realtime.Signal, date, action, reason string, quantity int, targetPercent float64) {
@@ -1482,12 +2573,17 @@ func appendShadowDecision(report *Report, signal realtime.Signal, date, action, 
 			return
 		}
 	}
-	report.Decisions = append(report.Decisions, ShadowDecision{ID: id, Symbol: signal.Symbol, Name: signal.Name, Date: date, Action: action, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...), CurrentQuantity: quantity, TargetPositionPercent: targetPercent})
+	report.Decisions = append(report.Decisions, ShadowDecision{ID: id, Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Date: date, Action: action, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...), CurrentQuantity: quantity, TargetPositionPercent: targetPercent})
 }
 
 func aggregateShadowPosition(position shadowPosition, cfg Config, asOf string) ShadowOpenPosition {
 	if position.fallback != nil {
-		return *position.fallback
+		preserved := *position.fallback
+		preserved.RiskExitPending = position.riskExitReason != "" || preserved.RiskExitPending
+		if position.riskExitReason != "" {
+			preserved.RiskExitReason = position.riskExitReason
+		}
+		return preserved
 	}
 	quantity, available := 0, 0
 	entryAmount, entryFee, entryCost := 0.0, 0.0, 0.0
@@ -1508,7 +2604,7 @@ func aggregateShadowPosition(position shadowPosition, cfg Config, asOf string) S
 		if targetExit == "" || lot.plan.targetExitDate > targetExit {
 			targetExit = lot.plan.targetExitDate
 		}
-		lots = append(lots, ShadowPositionLot{OrderID: lot.entry.ID, EntryDate: lot.entry.AttemptDate, EntryTime: lot.entry.ExecutionTime, Quantity: lot.entry.Quantity, EntryPrice: lot.entry.Price, EntryAmount: lot.entry.Amount, EntryFee: lot.entryCost - lot.entry.Amount, SignalID: strings.TrimSuffix(lot.entry.ID, "-buy"), SignalDate: lot.entry.SignalDate, SignalClose: lot.plan.signalClose, SignalScore: lot.entry.SignalScore, TriggerPrice: lot.entry.TriggerPrice, InvalidationPrice: lot.entry.InvalidationPrice, SignalReasons: append([]string(nil), lot.entry.SignalReasons...), TargetExitDate: lot.plan.targetExitDate})
+		lots = append(lots, ShadowPositionLot{OrderID: lot.entry.ID, EntryDate: lot.entry.AttemptDate, EntryTime: lot.entry.ExecutionTime, Quantity: lot.entry.Quantity, EntryPrice: lot.entry.Price, EntryAmount: lot.entry.Amount, EntryFee: lot.entryCost - lot.entry.Amount, SignalID: strings.TrimSuffix(lot.entry.ID, "-buy"), Industry: lot.entry.Industry, SignalDate: lot.entry.SignalDate, SignalClose: lot.plan.signalClose, SignalScore: lot.entry.SignalScore, TriggerPrice: lot.entry.TriggerPrice, InvalidationPrice: lot.entry.InvalidationPrice, SignalReasons: append([]string(nil), lot.entry.SignalReasons...), TargetExitDate: lot.plan.targetExitDate})
 	}
 	lastBar := latestBar(position.plan.bars, asOf)
 	marketValue := lastBar.Close * float64(quantity)
@@ -1517,7 +2613,15 @@ func aggregateShadowPosition(position shadowPosition, cfg Config, asOf string) S
 	if quantity > 0 {
 		entryPrice = entryAmount / float64(quantity)
 	}
-	return ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, SignalDate: position.lastSignalDate, EntryDate: entryDate, EntryTime: entryTime, Quantity: quantity, EntryPrice: entryPrice, EntryAmount: entryAmount, EntryFee: entryFee, SignalClose: position.plan.signalClose, AvailableQuantity: available, SignalScore: position.lastSignalScore, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, entryCost), TargetExitDate: targetExit, Lots: lots, AdditionCount: maxInt(0, len(lots)-1), TargetPositionPercent: cfg.MaxPositionPercent}
+	targetPercent := position.targetPercent
+	if targetPercent <= 0 {
+		targetPercent = cfg.MaxPositionPercent
+	}
+	industry := position.plan.signal.Industry
+	if industry == "" && len(lots) > 0 {
+		industry = lots[len(lots)-1].Industry
+	}
+	return ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, Industry: industry, SignalDate: position.lastSignalDate, EntryDate: entryDate, EntryTime: entryTime, Quantity: quantity, EntryPrice: entryPrice, EntryAmount: entryAmount, EntryFee: entryFee, SignalClose: position.plan.signalClose, AvailableQuantity: available, SignalScore: position.lastSignalScore, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, entryCost), TargetExitDate: targetExit, Lots: lots, AdditionCount: maxInt(0, len(lots)-1), TargetPositionPercent: targetPercent, RiskExitPending: position.riskExitReason != "", RiskExitReason: position.riskExitReason}
 }
 
 func tPlusOneAvailableQuantity(entryDate, asOf string, quantity int) int {
@@ -1553,6 +2657,7 @@ func recomputeTradeStats(report *Report) {
 }
 
 func recomputeAccountMetrics(report *Report) {
+	report.Config = canonicalConfig(report.Config)
 	initialCash := report.InitialCash
 	if initialCash <= 0 || !finite(initialCash) {
 		initialCash = canonicalConfig(report.Config).InitialCash
@@ -1578,6 +2683,43 @@ func recomputeAccountMetrics(report *Report) {
 	if initialCash > 0 {
 		report.TotalReturnPercent = report.TotalProfit / initialCash * 100
 	}
+	recomputeIndustryExposures(report)
+}
+
+func recomputeIndustryExposures(report *Report) {
+	if report == nil {
+		return
+	}
+	byIndustry := make(map[string]*ShadowIndustryExposure)
+	for _, position := range report.Positions {
+		industry := industryExposureKey(position.Industry)
+		item := byIndustry[industry]
+		if item == nil {
+			item = &ShadowIndustryExposure{Industry: industry, LimitPercent: report.Config.MaxIndustryPercent}
+			byIndustry[industry] = item
+		}
+		cost := position.EntryAmount + position.EntryFee
+		if cost <= 0 {
+			cost = position.EntryPrice * float64(position.Quantity)
+		}
+		item.InvestedCost += cost
+		item.MarketValue += position.MarketValue
+		item.Symbols = append(item.Symbols, position.Symbol)
+	}
+	report.IndustryExposures = report.IndustryExposures[:0]
+	for _, item := range byIndustry {
+		if report.InitialCash > 0 {
+			item.ExposurePercent = item.InvestedCost / report.InitialCash * 100
+		}
+		sort.Strings(item.Symbols)
+		report.IndustryExposures = append(report.IndustryExposures, *item)
+	}
+	sort.SliceStable(report.IndustryExposures, func(i, j int) bool {
+		if report.IndustryExposures[i].ExposurePercent == report.IndustryExposures[j].ExposurePercent {
+			return report.IndustryExposures[i].Industry < report.IndustryExposures[j].Industry
+		}
+		return report.IndustryExposures[i].ExposurePercent > report.IndustryExposures[j].ExposurePercent
+	})
 }
 
 func filledOrderTurnover(orders []ShadowOrder) float64 {
@@ -1597,6 +2739,10 @@ func cloneReport(report Report) Report {
 	report.Rejections = append([]ShadowRejection(nil), report.Rejections...)
 	report.Warnings = append([]string(nil), report.Warnings...)
 	report.Decisions = append([]ShadowDecision(nil), report.Decisions...)
+	report.IndustryExposures = append([]ShadowIndustryExposure(nil), report.IndustryExposures...)
+	for index := range report.IndustryExposures {
+		report.IndustryExposures[index].Symbols = append([]string(nil), report.IndustryExposures[index].Symbols...)
+	}
 	return report
 }
 
@@ -1617,13 +2763,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 		limit = 500
 	}
 	selected := representativeSignals(signals, limit)
-	calendarBars, calendarError := e.history.FetchDailyBars(ctx, "sh000300")
-	calendarDates := barDates(normalizedBars(calendarBars))
-	if calendarError != nil || len(calendarDates) == 0 {
+	currentNow := now()
+	calendarDates, calendarError := e.tradingCalendar(ctx, currentNow, options.CalendarDates)
+	if calendarError != nil {
 		calendarDates = nil
 	}
-	checkpoint := TradingCheckpointAt(now(), calendarDates)
-	report := Report{EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, options.Limit), SignalLimit: options.Limit, CheckpointPhase: checkpoint.Phase, GeneratedAt: now(), AsOf: checkpoint.Date, Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
+	checkpoint := TradingCheckpointAt(currentNow, calendarDates)
+	report := Report{EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, options.Limit), SignalLimit: options.Limit, CheckpointPhase: checkpoint.Phase, ExecutionMode: ExecutionModeDaily, GeneratedAt: currentNow, AsOf: checkpoint.Date, Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
 	if len(selected) == 0 {
 		return report, nil
 	}
@@ -1654,6 +2800,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 			entryEligible := shadowSignalEntryEligible(signal, cfg)
 			if entryEligible {
 				report.CandidateCount++
+			}
+			if options.Realtime && signalDate(signal) == checkpoint.Date {
+				// Current-session signals belong to the point-in-time layer. Do not
+				// also label them as next-day pending daily plans.
+				continue
 			}
 			plan, reason, pending := makePlan(signal, bars, calendarDates, cfg.HoldingDays)
 			if reason != "" {
@@ -1687,7 +2838,15 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 		}
 		return plans[i].entryDate < plans[j].entryDate
 	})
-	return simulate(report, plans, cfg), nil
+	report = simulate(report, plans, cfg)
+	if options.Realtime && checkpoint.Phase == CheckpointOpen && checkpoint.Date == localTradingDate(currentNow) {
+		var realtimeErr error
+		report, realtimeErr = e.advanceRealtime(ctx, report, signals, options, calendarDates, currentNow)
+		if realtimeErr != nil {
+			report.Warnings = appendUniqueWarning(report.Warnings, "盘中影子层未推进: "+realtimeErr.Error())
+		}
+	}
+	return report, nil
 }
 
 func canonicalConfig(cfg Config) Config {
@@ -1700,6 +2859,9 @@ func canonicalConfig(cfg Config) Config {
 	}
 	if cfg.MaxPositionPercent <= 0 || cfg.MaxPositionPercent > 100 {
 		cfg.MaxPositionPercent = defaults.MaxPositionPercent
+	}
+	if cfg.MaxIndustryPercent <= 0 || cfg.MaxIndustryPercent > 100 {
+		cfg.MaxIndustryPercent = defaults.MaxIndustryPercent
 	}
 	if cfg.MaxPortfolioPercent <= 0 || cfg.MaxPortfolioPercent > 100 {
 		cfg.MaxPortfolioPercent = defaults.MaxPortfolioPercent
@@ -1718,6 +2880,33 @@ func canonicalConfig(cfg Config) Config {
 	}
 	if cfg.AdditionScoreStep <= 0 || !finite(cfg.AdditionScoreStep) {
 		cfg.AdditionScoreStep = defaults.AdditionScoreStep
+	}
+	if cfg.MaxOpenPositions <= 0 || cfg.MaxOpenPositions > 200 {
+		cfg.MaxOpenPositions = defaults.MaxOpenPositions
+	}
+	if cfg.MaxDailyRotations <= 0 || cfg.MaxDailyRotations > cfg.MaxOpenPositions {
+		cfg.MaxDailyRotations = minInt(defaults.MaxDailyRotations, cfg.MaxOpenPositions)
+	}
+	if cfg.RotationScoreGap <= 0 || !finite(cfg.RotationScoreGap) {
+		cfg.RotationScoreGap = defaults.RotationScoreGap
+	}
+	if cfg.RotationMinimumHoldDays <= 0 || cfg.RotationMinimumHoldDays > 60 {
+		cfg.RotationMinimumHoldDays = defaults.RotationMinimumHoldDays
+	}
+	if cfg.MaxPortfolioRiskPercent <= 0 || cfg.MaxPortfolioRiskPercent > 100 || !finite(cfg.MaxPortfolioRiskPercent) {
+		cfg.MaxPortfolioRiskPercent = defaults.MaxPortfolioRiskPercent
+	}
+	if cfg.MaxPositionRiskPercent <= 0 || cfg.MaxPositionRiskPercent > 100 || !finite(cfg.MaxPositionRiskPercent) {
+		cfg.MaxPositionRiskPercent = defaults.MaxPositionRiskPercent
+	}
+	if cfg.MaxLossPercent <= 0 || cfg.MaxLossPercent >= 100 || !finite(cfg.MaxLossPercent) {
+		cfg.MaxLossPercent = defaults.MaxLossPercent
+	}
+	if cfg.MinimumRiskDistancePercent <= 0 || cfg.MinimumRiskDistancePercent >= 100 || !finite(cfg.MinimumRiskDistancePercent) {
+		cfg.MinimumRiskDistancePercent = defaults.MinimumRiskDistancePercent
+	}
+	if cfg.RiskCooldownDays <= 0 || cfg.RiskCooldownDays > 60 {
+		cfg.RiskCooldownDays = defaults.RiskCooldownDays
 	}
 	if cfg.MaxParticipationPercent <= 0 || cfg.MaxParticipationPercent > 100 {
 		cfg.MaxParticipationPercent = defaults.MaxParticipationPercent
@@ -1784,7 +2973,17 @@ func shadowSignalActionable(signal realtime.Signal) bool {
 }
 
 func shadowSignalEntryEligible(signal realtime.Signal, cfg Config) bool {
-	return (signal.State == realtime.StateTriggered || signal.State == realtime.StateWatching) && signal.Score >= cfg.MinimumScore
+	if signal.RiskMultiplier > 0 || signal.CrossSectionTotal > 0 || signal.MarketRegime != "" {
+		return signal.PortfolioEligible && shadowSignalScore(signal) >= cfg.MinimumScore
+	}
+	return (signal.State == realtime.StateTriggered || signal.State == realtime.StateWatching) && shadowSignalScore(signal) >= cfg.MinimumScore
+}
+
+func shadowSignalScore(signal realtime.Signal) float64 {
+	if signal.RiskAdjustedScore > 0 && finite(signal.RiskAdjustedScore) {
+		return signal.RiskAdjustedScore
+	}
+	return signal.Score
 }
 
 func makePlan(signal realtime.Signal, bars []domain.DailyBar, calendarDates []string, holdingDays int) (shadowPlan, string, bool) {
@@ -1867,7 +3066,7 @@ func makeOrder(signal realtime.Signal, side, date string, rawPrice float64, quan
 		direction = -1
 	}
 	price := rawPrice * (1 + direction*cfg.SlippageBPS/10000)
-	return ShadowOrder{ID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Side: side, SignalDate: signalDate(signal), AttemptDate: date, Quantity: quantity, RawPrice: rawPrice, Price: price, Amount: price * float64(quantity), CapacityAmount: capacity, Status: "pending", ExecutionTime: simulatedExecutionTime(side, date), SignalScore: signal.Score, TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...)}
+	return ShadowOrder{ID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Side: side, SignalDate: signalDate(signal), AttemptDate: date, Quantity: quantity, RawPrice: rawPrice, Price: price, Amount: price * float64(quantity), CapacityAmount: capacity, Status: "pending", ExecutionTime: simulatedExecutionTime(side, date), SignalScore: signal.Score, TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...)}
 }
 
 func simulatedExecutionTime(side, date string) string {
@@ -1942,8 +3141,20 @@ func trailingAverageAmount(bars []domain.DailyBar, endIndex, length int) float64
 	total := 0.0
 	count := 0
 	for index := start; index <= endIndex; index++ {
-		if bars[index].Amount > 0 && finite(bars[index].Amount) {
-			total += bars[index].Amount
+		amount := bars[index].Amount
+		if amount <= 0 || !finite(amount) {
+			price := bars[index].Close
+			if bars[index].Open > 0 && bars[index].High > 0 && bars[index].Low > 0 {
+				price = (bars[index].Open + bars[index].Close + bars[index].High + bars[index].Low) / 4
+			}
+			// Volume units differ by provider. Volume times price is therefore a
+			// conservative lower bound when the upstream amount field is absent.
+			if price > 0 && bars[index].Volume > 0 && finite(bars[index].Volume) {
+				amount = price * bars[index].Volume
+			}
+		}
+		if amount > 0 && finite(amount) {
+			total += amount
 			count++
 		}
 	}

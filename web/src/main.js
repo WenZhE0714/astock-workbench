@@ -16,6 +16,12 @@ const marketIndexDefinitions = [
   { symbol: "sz399001", name: "深证成指" },
   { symbol: "sz399006", name: "创业板指" },
 ]
+const automationTaskDefinitions = [
+  { key: "scan", label: "扫描" },
+  { key: "outcomes", label: "前测" },
+  { key: "shadow", label: "影子" },
+  { key: "research", label: "研究" },
+]
 const dailyRangeOptions = [
   { key: "1m", label: "1月", count: 20 },
   { key: "3m", label: "3月", count: 60 },
@@ -48,9 +54,13 @@ createApp({
       realtimeAutoAt: 0,
       realtimeSessionCheckedAt: 0,
       realtimeMarketState: "",
+      realtimeTradingDay: null,
+      realtimeCalendarKnown: null,
       realtimeScanAllowed: false,
       realtimeFrozen: false,
       realtimeNextScanAt: "",
+      realtimeAutomation: { enabled: false, running: false, tasks: [], task_states: {} },
+      automationTriggerLoading: false,
       realtimeOutcomeLoading: false,
       realtimeOutcomeError: "",
       realtimeOutcomeReport: null,
@@ -59,7 +69,11 @@ createApp({
       realtimeSection: "candidates",
       shadowLoading: false,
       shadowError: "",
+      shadowPreserveReason: "",
       shadowReport: null,
+      shadowProfiles: [],
+      shadowProfileID: "balanced",
+      shadowRequestID: 0,
       shadowCheckedAt: 0,
       chartMode: "intraday",
       chartGeometry: null,
@@ -97,6 +111,15 @@ createApp({
         stop_loss_percent: 8, take_profit_percent: 20, max_holding_days: 40, max_position_percent: 20,
         initial_cash: 1000000, commission_bps: 3, stamp_duty_bps: 5, slippage_bps: 5,
       },
+      strategyEntryModes: [
+        { id: "breakout", label: "放量突破" },
+        { id: "trend-reclaim", label: "趋势收复" },
+        { id: "ma-pullback", label: "均线回踩" },
+        { id: "momentum-continuation", label: "动量延续" },
+        { id: "mean-reversion", label: "均值回归反弹" },
+        { id: "volatility-squeeze", label: "波动收缩突破" },
+        { id: "adaptive-ensemble", label: "自适应多形态" },
+      ],
       strategyLoading: false,
       strategyError: "",
       strategyResult: null,
@@ -104,6 +127,13 @@ createApp({
       strategyHistory: [],
       strategyHistoryLoading: false,
       strategyHistoryLoaded: false,
+	  strategyCandidates: [],
+	  strategyCandidatesLoading: false,
+	  strategyCandidatesLoaded: false,
+	  strategyCandidateError: "",
+	  strategyCandidateID: "",
+	  strategyCandidateActionLoading: "",
+	  strategyCandidateAutoRefreshing: false,
       strategyChartGeometry: null,
       strategyCrosshair: null,
     }
@@ -152,7 +182,28 @@ createApp({
       const coverage = (this.strategyResult && this.strategyResult.data_coverage) || {}
       return Object.entries(coverage).map(([symbol, item]) => ({ symbol, ...item }))
     },
+	strategyActiveCandidate() {
+	  return this.strategyCandidates.find(item => item && item.experiment_id === this.strategyCandidateID) || this.strategyCandidates[0] || null
+	},
+	strategyCandidateLifecycle() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.lifecycle) || {} },
+	strategyCandidateAssessment() { return this.strategyCandidateLifecycle.assessment || { checks: [] } },
+	strategyCandidateObservationMetrics() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.observation_metrics) || {} },
+	strategyLifecycleHeadline() {
+	  if (!this.strategyCandidatesLoaded) return "候选生命周期"
+	  if (!this.strategyCandidates.length) return "等待持续优化实验"
+	  return this.candidateStatusLabel(this.strategyCandidateLifecycle.status, this.strategyActiveCandidate.research_stage)
+	},
     realtimeSignals() { return this.realtimeResult && Array.isArray(this.realtimeResult.signals) ? this.realtimeResult.signals : [] },
+    realtimeAutomationTasks() {
+      const states = this.realtimeAutomation && this.realtimeAutomation.task_states && typeof this.realtimeAutomation.task_states === "object"
+        ? this.realtimeAutomation.task_states
+        : {}
+      return automationTaskDefinitions.map(definition => ({
+        ...definition,
+        ...(states[definition.key] || {}),
+        status: (states[definition.key] && states[definition.key].status) || "waiting",
+      }))
+    },
     realtimeScanButtonText() {
       if (this.realtimeLoading) return "正在扫描行情与因子…"
       if (this.realtimeSnapshotLoading) return "正在确认交易状态…"
@@ -165,7 +216,10 @@ createApp({
       const state = this.realtimeStateLabel(this.realtimeMarketState || (this.realtimeResult && this.realtimeResult.market_state))
       const frozen = this.realtimeFrozen ? " · 已冻结" : ""
       const next = this.realtimeNextScanAt ? ` · ${this.formatDateTime(this.realtimeNextScanAt)} 恢复` : ""
-      return `${state}${frozen}${next}`
+      const calendar = this.realtimeCalendarKnown === false ? " · 交易日历未覆盖，按工作日降级" : ""
+      const automation = this.realtimeAutomation && this.realtimeAutomation.enabled ? " · 服务端自动运行" : ""
+      const automationError = this.realtimeAutomation && this.realtimeAutomation.last_error ? " · 自动任务异常" : ""
+      return `${state}${frozen}${next}${calendar}${automation}${automationError}`
     },
     realtimeOutcomeSummaries() { return this.realtimeOutcomeReport && Array.isArray(this.realtimeOutcomeReport.summaries) ? this.realtimeOutcomeReport.summaries : [] },
     realtimeOutcomeSummary() {
@@ -242,7 +296,24 @@ createApp({
     shadowOrders() { return this.shadowReport && Array.isArray(this.shadowReport.orders) ? this.shadowReport.orders : [] },
     shadowRejections() { return this.shadowReport && Array.isArray(this.shadowReport.rejections) ? this.shadowReport.rejections : [] },
     shadowDecisions() { return this.shadowReport && Array.isArray(this.shadowReport.decisions) ? this.shadowReport.decisions : [] },
+    shadowLatestDecision() {
+      const realtime = this.shadowDecisions.filter(item => item && item.event_source === 'realtime')
+      const items = realtime.length ? realtime : this.shadowDecisions
+      return items.slice().sort((left, right) => String(left.event_time || left.date || '').localeCompare(String(right.event_time || right.date || ''))).pop() || null
+    },
+    shadowLatestOrder() {
+      const realtime = this.shadowOrders.filter(item => item && String(item.event_source || '').startsWith('realtime'))
+      const items = realtime.length ? realtime : this.shadowOrders
+      return items.slice().sort((left, right) => String(left.execution_time || left.attempt_date || '').localeCompare(String(right.execution_time || right.attempt_date || ''))).pop() || null
+    },
+    shadowAutomationTask() {
+      return this.realtimeAutomationTasks.find(item => item.key === 'shadow') || { status: 'waiting', detail: '等待服务端调度' }
+    },
+    shadowIndustryExposures() { return this.shadowReport && Array.isArray(this.shadowReport.industry_exposures) ? this.shadowReport.industry_exposures : [] },
     shadowConfig() { return (this.shadowReport && this.shadowReport.config) || {} },
+    shadowSelectedProfile() {
+      return this.shadowProfiles.find(item => item && item.id === this.shadowProfileID) || { id: this.shadowProfileID, name: this.shadowProfileID, strategy: "", description: "" }
+    },
     shadowInvestedPercent() {
       const report = this.shadowReport || {}
       const equity = Number(report.total_equity)
@@ -370,6 +441,10 @@ createApp({
     strategyModeLabel(mode) {
       if (mode === "trend-reclaim") return "趋势收复"
       if (mode === "ma-pullback") return "均线回踩"
+	  if (mode === "momentum-continuation") return "动量延续"
+	  if (mode === "mean-reversion") return "均值回归反弹"
+	  if (mode === "volatility-squeeze") return "波动收缩突破"
+	  if (mode === "adaptive-ensemble") return "自适应多形态"
       return "放量突破"
     },
     strategyName(symbol) {
@@ -400,12 +475,41 @@ createApp({
       return item.reason || ""
     },
     shadowActionLabel(action) {
-      return ({ open: "首次建仓", add: "加仓", reduce: "减仓", exit: "到期退出", hold: "持有", wait: "等待" })[action] || action || "--"
+      return ({ open: "首次建仓", add: "加仓", rotate_in: "轮入", rotate_out: "轮出", reduce: "减仓", risk_exit: "风险退出", exit: "到期退出", hold: "持有", wait: "等待" })[action] || action || "--"
     },
     shadowLotSummary(position) {
       const lots = Array.isArray(position && position.lots) ? position.lots : []
       const sellable = lots.filter(lot => lot.entry_date && this.shadowReport && String(lot.entry_date) < String(this.shadowReport.as_of || "")).reduce((sum, lot) => sum + Number(lot.quantity || 0), 0)
       return `${lots.length || 1} 批 · 可卖 ${sellable || Number(position && position.available_quantity || 0)} 股`
+    },
+    shadowIndustryWidth(item) {
+      const exposure = Number(item && item.exposure_percent)
+      const limit = Number(item && item.limit_percent)
+      if (!Number.isFinite(exposure) || !Number.isFinite(limit) || limit <= 0) return "0%"
+      return `${Math.max(0, Math.min(100, exposure / limit * 100))}%`
+    },
+    shadowProfileName(id) {
+      const item = this.shadowProfiles.find(profile => profile && profile.id === id)
+      return item ? item.name : id || "影子账户"
+    },
+    shadowProfileMetricClass(value) {
+      return this.metricClass(value)
+    },
+    automationStatusLabel(status) {
+      return ({ success: '已推进', waiting: '等待', paused: '已暂停', warning: '同步保护', error: '异常', running: '推进中', busy: '忙碌' })[status] || status || '等待'
+    },
+    selectShadowProfile(id) {
+      if (!id || id === this.shadowProfileID || this.shadowLoading) return
+      if (!this.shadowProfiles.some(item => item && item.id === id)) return
+      const scrollY = window.scrollY
+      this.shadowProfileID = id
+      // Do not leave the previous account's positions visible while the new
+      // ledger is loading; account identity must always match its details.
+      this.shadowReport = null
+      this.shadowPreserveReason = ""
+      this.loadShadowReport(id).then(() => {
+        window.requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: "auto" }))
+      })
     },
     switchRealtimeSection(section) {
       if (!['candidates', 'shadow', 'validation'].includes(section)) return
@@ -420,11 +524,10 @@ createApp({
       this.strategyCrosshair = null
       if (mode === "strategy") {
         if (!this.strategyHistoryLoaded) this.loadStrategyHistory()
+		if (!this.strategyCandidatesLoaded) this.loadStrategyCandidates(true)
         this.$nextTick(() => this.drawStrategyChart())
       } else if (mode === "realtime") {
-        this.loadRealtimeSnapshot().then(() => {
-          if (this.workspaceMode === "realtime" && this.realtimeScanAllowed && Date.now() - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
-        })
+        this.loadRealtimeSnapshot()
         this.loadRealtimeHistory()
         this.loadRealtimeOutcomes()
         this.loadShadowReport()
@@ -441,6 +544,7 @@ createApp({
         const payload = body ? JSON.parse(body) : {}
         if (!response.ok) throw new Error(payload.error || "回测历史读取失败")
         this.strategyHistory = Array.isArray(payload.items) ? payload.items : []
+        if (Array.isArray(payload.entry_modes) && payload.entry_modes.length) this.strategyEntryModes = payload.entry_modes
         this.strategyHistoryLoaded = true
       } catch (error) {
         this.strategyError = error instanceof Error ? error.message : String(error)
@@ -448,6 +552,114 @@ createApp({
         this.strategyHistoryLoading = false
       }
     },
+	async loadStrategyCandidates(autoRefresh = false) {
+	  if (this.strategyCandidatesLoading) return
+	  this.strategyCandidatesLoading = true
+	  this.strategyCandidateError = ""
+	  try {
+		const response = await fetch("/api/strategy/candidates?limit=20", { cache: "no-store" })
+		const body = await response.text()
+		const payload = body ? JSON.parse(body) : {}
+		if (!response.ok) throw new Error(payload.error || "策略候选读取失败")
+		this.strategyCandidates = Array.isArray(payload.items) ? payload.items : []
+		this.strategyCandidatesLoaded = true
+		if (!this.strategyCandidates.some(item => item.experiment_id === this.strategyCandidateID)) {
+		  this.strategyCandidateID = this.strategyCandidates[0]?.experiment_id || ""
+		}
+		if (autoRefresh && !this.strategyCandidateAutoRefreshing) {
+		  const due = this.strategyCandidates.filter(item => item && item.refresh_due && ["observing", "approval-ready"].includes(item.lifecycle && item.lifecycle.status)).slice(0, 3)
+		  if (due.length) {
+			this.strategyCandidateAutoRefreshing = true
+			for (const item of due) await this.updateStrategyCandidate(item, "refresh-observation", "", true)
+			this.strategyCandidateAutoRefreshing = false
+		  }
+		}
+	  } catch (error) {
+		this.strategyCandidateError = error instanceof Error ? error.message : String(error)
+	  } finally {
+		this.strategyCandidatesLoading = false
+	  }
+	},
+	selectStrategyCandidate(id) {
+	  if (id) this.strategyCandidateID = id
+	},
+	async runStrategyCandidateAction(action) {
+	  const item = this.strategyActiveCandidate
+	  if (!item || this.strategyCandidateActionLoading) return
+	  let note = ""
+	  if (action === "start-observation" && !window.confirm("确认冻结该候选参数，并从下一个交易日开始真实时间观察？")) return
+	  if (action === "approve-baseline") {
+		note = String(window.prompt("请输入批准为下一轮研究基线的依据：", "前向观察门禁全部通过，批准进入下一轮 Champion/Challenger 研究。") || "").trim()
+		if (!note) return
+	  }
+	  if (action === "reject-candidate" || action === "revoke-approval") {
+		const title = action === "revoke-approval" ? "请输入撤销批准的原因：" : "请输入拒绝候选的原因："
+		note = String(window.prompt(title, "") || "").trim()
+		if (!note) return
+	  }
+	  await this.updateStrategyCandidate(item, action, note, false)
+	},
+	async updateStrategyCandidate(item, action, note = "", silent = false) {
+	  if (!item || !item.experiment_id) return
+	  this.strategyCandidateActionLoading = item.experiment_id
+	  if (!silent) this.strategyCandidateError = ""
+	  try {
+		const response = await fetch(`/api/strategy/candidates?id=${encodeURIComponent(item.experiment_id)}`, {
+		  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, note }),
+		})
+		const body = await response.text()
+		const payload = body ? JSON.parse(body) : {}
+		if (!response.ok) throw new Error(payload.error || "候选状态更新失败")
+		const index = this.strategyCandidates.findIndex(candidate => candidate.experiment_id === payload.experiment_id)
+		if (index >= 0) this.strategyCandidates.splice(index, 1, payload)
+		else this.strategyCandidates.unshift(payload)
+		this.strategyCandidateID = payload.experiment_id
+	  } catch (error) {
+		this.strategyCandidateError = error instanceof Error ? error.message : String(error)
+	  } finally {
+		this.strategyCandidateActionLoading = ""
+	  }
+	},
+	candidateStatusLabel(status, researchStage = "") {
+	  if (researchStage !== "shadow-ready") return "研究候选"
+	  if (status === "awaiting-observation") return "待批准观察"
+	  if (status === "observing") return "前向观察中"
+	  if (status === "approval-ready") return "待人工批准"
+	  if (status === "approved") return "已批准研究基线"
+	  if (status === "rejected") return "已拒绝"
+	  if (status === "revoked") return "批准已撤销"
+	  return "模拟观察候选"
+	},
+	candidateStatusClass(status, researchStage = "") {
+	  if (status === "approved") return "approved"
+	  if (status === "approval-ready") return "ready"
+	  if (status === "observing") return "observing"
+	  if (status === "rejected" || status === "revoked" || researchStage !== "shadow-ready") return "blocked"
+	  return "pending"
+	},
+	candidateStepClass(step) {
+	  const candidate = this.strategyActiveCandidate
+	  const status = this.strategyCandidateLifecycle.status
+	  if (!candidate || candidate.research_stage !== "shadow-ready") return step === 0 ? "blocked" : "pending"
+	  const ranks = { "awaiting-observation": 0, observing: 1, "approval-ready": 2, approved: 3 }
+	  const rank = ranks[status]
+	  if (status === "rejected" || status === "revoked") return step === 0 ? "done" : "blocked"
+	  if (rank == null) return step === 0 ? "done" : "pending"
+	  if (step < rank) return "done"
+	  if (step === rank) return status === "approved" ? "done" : "active"
+	  return "pending"
+	},
+	candidateCheckClass(check) { return check && check.passed ? "pass" : "pending" },
+	candidateTickerText(item) {
+	  const tickers = Array.isArray(item && item.tickers) ? item.tickers : []
+	  return tickers.map(symbol => (item.names && item.names[symbol]) || this.displayCode(symbol)).join(" · ") || "--"
+	},
+	candidateParameterText(item) {
+	  const p = item && item.parameters
+	  if (!p) return "没有锁定参数"
+	  return `${this.strategyModeLabel(p.entry_mode)} · MA${p.fast_ma}/${p.slow_ma} · 突破${p.breakout_days}日 · 量比≥${this.number(p.volume_ratio_min, 2)} · 止损${this.number(Number(p.stop_loss) * 100, 0)}% · 止盈${this.number(Number(p.take_profit) * 100, 0)}%`
+	},
+	candidateActionBusy(item) { return Boolean(item && this.strategyCandidateActionLoading === item.experiment_id) },
     async loadStrategyRun(runID) {
       if (!runID || this.strategyLoading) return
       this.strategyLoading = true
@@ -459,6 +671,7 @@ createApp({
         if (!response.ok) throw new Error(payload.error || "回测归档读取失败")
         this.strategyResult = payload.result || null
         this.strategyAssessment = payload.assessment || null
+        if (Array.isArray(payload.entry_modes) && payload.entry_modes.length) this.strategyEntryModes = payload.entry_modes
         this.strategyCrosshair = null
       } catch (error) {
         this.strategyError = error instanceof Error ? error.message : String(error)
@@ -507,6 +720,17 @@ createApp({
       if (state === "triggered") return "realtime-triggered"
       if (state === "watching") return "realtime-watching"
       return "realtime-weak"
+    },
+    hasSignalOverlay(signal) {
+      return Boolean(signal && (Number(signal.risk_multiplier) > 0 || Number(signal.cross_section_total) > 0 || Number(signal.tradable_total) > 0 || signal.market_regime))
+    },
+    signalPortfolioLabel(signal) {
+      if (!this.hasSignalOverlay(signal)) return "历史信号"
+      return signal.portfolio_eligible ? "组合候选" : "风险降级"
+    },
+    signalPortfolioClass(signal) {
+      if (!this.hasSignalOverlay(signal)) return "portfolio-legacy"
+      return signal.portfolio_eligible ? "portfolio-eligible" : "portfolio-degraded"
     },
     outcomeStatusLabel(status) {
       if (status === "ready") return "已成熟"
@@ -624,12 +848,39 @@ createApp({
         this.realtimeSnapshotLoading = false
       }
     },
+    async triggerAutomation() {
+      if (this.automationTriggerLoading) return
+      this.automationTriggerLoading = true
+      this.realtimeError = ""
+      try {
+        const response = await fetch("/api/strategy/automation?action=run", { method: "POST", cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok && response.status !== 202) throw new Error(payload.error || "自动任务触发失败")
+        this.realtimeAutomation = payload
+        // The endpoint is asynchronous. Poll the status a few times so the
+        // button feedback reflects completion even when the scan takes longer
+        // than one browser refresh interval.
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 400 : 1000))
+          await this.loadRealtimeSnapshot()
+          if (!this.realtimeAutomation || !this.realtimeAutomation.running) break
+        }
+      } catch (error) {
+        this.realtimeError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.automationTriggerLoading = false
+      }
+    },
     applyRealtimeSession(payload) {
       if (!payload || typeof payload !== "object") return
       this.realtimeMarketState = payload.market_state || (payload.result && payload.result.market_state) || this.realtimeMarketState
+      if (typeof payload.trading_day === "boolean") this.realtimeTradingDay = payload.trading_day
+      if (typeof payload.calendar_known === "boolean") this.realtimeCalendarKnown = payload.calendar_known
       if (typeof payload.scan_allowed === "boolean") this.realtimeScanAllowed = payload.scan_allowed
       if (typeof payload.frozen === "boolean") this.realtimeFrozen = payload.frozen
       this.realtimeNextScanAt = payload.next_scan_at || ""
+      if (payload.automation && typeof payload.automation === "object") this.realtimeAutomation = payload.automation
     },
     async loadRealtimeHistory() {
       try {
@@ -677,18 +928,23 @@ createApp({
         window.scrollTo({ top: scrollY, behavior: 'auto' })
       }
     },
-    async loadShadowReport() {
+    async loadShadowReport(profileID = this.shadowProfileID) {
       if (this.shadowLoading) return
+	  const requestID = ++this.shadowRequestID
       this.shadowCheckedAt = Date.now()
       this.shadowError = ""
+      this.shadowPreserveReason = ""
       try {
-        const response = await fetch("/api/strategy/shadow", { cache: "no-store" })
+        const response = await fetch(`/api/strategy/shadow?profile=${encodeURIComponent(profileID)}`, { cache: "no-store" })
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
         if (!response.ok) throw new Error(payload.error || "影子执行结果读取失败")
-        this.shadowReport = payload.report && payload.report.generated_at ? payload.report : null
+		if (requestID !== this.shadowRequestID || profileID !== this.shadowProfileID) return
+        if (Array.isArray(payload.profiles)) this.shadowProfiles = payload.profiles
+		this.shadowReport = payload.report || null
+		this.shadowPreserveReason = payload.preserve_reason || ""
       } catch (error) {
-        this.shadowError = error instanceof Error ? error.message : String(error)
+		if (requestID === this.shadowRequestID) this.shadowError = error instanceof Error ? error.message : String(error)
       }
     },
     async refreshShadowReport() {
@@ -696,15 +952,21 @@ createApp({
       const scrollY = window.scrollY
       this.shadowCheckedAt = Date.now()
       this.shadowLoading = true
+	  const requestID = ++this.shadowRequestID
       this.shadowError = ""
+	  this.shadowPreserveReason = ""
       try {
-        const response = await fetch("/api/strategy/shadow?minimum_score=55&holding_days=5", { method: "POST", cache: "no-store" })
+        const response = await fetch(`/api/strategy/shadow?profile=all&selected=${encodeURIComponent(this.shadowProfileID)}`, { method: "POST", cache: "no-store" })
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
         if (!response.ok) throw new Error(payload.error || "影子执行更新失败")
-        this.shadowReport = payload.report || null
+		if (requestID === this.shadowRequestID) {
+		  if (Array.isArray(payload.profiles)) this.shadowProfiles = payload.profiles
+		  this.shadowReport = payload.report || null
+		  this.shadowPreserveReason = payload.preserve_reason || ""
+		}
       } catch (error) {
-        this.shadowError = error instanceof Error ? error.message : String(error)
+		if (requestID === this.shadowRequestID) this.shadowError = error instanceof Error ? error.message : String(error)
       } finally {
         this.shadowLoading = false
         await this.$nextTick()
@@ -735,15 +997,8 @@ createApp({
       if (this.workspaceMode !== "realtime" || this.realtimeLoading) return
       const now = Date.now()
       if (this.realtimeSection === 'shadow' && !this.shadowLoading && now - this.shadowCheckedAt >= 30000) this.loadShadowReport()
-      if (this.realtimeScanAllowed) {
-        if (now - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
-        return
-      }
-      const nextScanAt = Date.parse(this.realtimeNextScanAt)
-      if (!this.realtimeSnapshotLoading && Number.isFinite(nextScanAt) && now >= nextScanAt && now - this.realtimeSessionCheckedAt >= 10000) {
-        this.loadRealtimeSnapshot().then(() => {
-          if (this.workspaceMode === "realtime" && this.realtimeScanAllowed && Date.now() - this.realtimeAutoAt >= 30000) this.runRealtimeScan()
-        })
+      if (!this.realtimeSnapshotLoading && now - this.realtimeSessionCheckedAt >= 10000) {
+        this.loadRealtimeSnapshot()
       }
     },
     selectRealtimeSignal(signal) {
@@ -1461,14 +1716,27 @@ createApp({
       drawLine("price", "#58b9d7", 1.8)
       drawLine("average", "#f0b768", 1.3)
       if (Number.isFinite(previousClose) && previousClose >= minimum && previousClose <= maximum) {
+		const referenceY = y(previousClose)
         context.setLineDash([5, 4])
         context.strokeStyle = "#91a0a7"
         context.lineWidth = 1
         context.beginPath()
-        context.moveTo(left, y(previousClose))
-        context.lineTo(width - right, y(previousClose))
+		context.moveTo(left, referenceY)
+		context.lineTo(width - right, referenceY)
         context.stroke()
         context.setLineDash([])
+		context.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+		context.textAlign = "right"
+		const label = "0%"
+		const labelWidth = context.measureText(label).width + 8
+		const labelX = width - right
+		const labelY = Math.max(top + 7, Math.min(plotBottom - 7, referenceY))
+		context.fillStyle = "#171d21"
+		context.fillRect(labelX - labelWidth, labelY - 7, labelWidth, 14)
+		context.strokeStyle = "#66757d"
+		context.strokeRect(labelX - labelWidth, labelY - 7, labelWidth, 14)
+		context.fillStyle = "#cbd5d9"
+		context.fillText(label, labelX - 4, labelY + 3)
       }
       context.strokeStyle = "#2b363c"
       context.beginPath()

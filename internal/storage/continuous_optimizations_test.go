@@ -59,3 +59,45 @@ func TestContinuousOptimizationStorePersistsRejectedCandidate(t *testing.T) {
 		t.Fatalf("rejected candidate archive incomplete: %#v %v", loaded, err)
 	}
 }
+
+func TestContinuousOptimizationStorePersistsLifecycleWithoutRewritingSummary(t *testing.T) {
+	store := NewContinuousOptimizationStore(t.TempDir())
+	parameters := backtest.DefaultTechnicalParameters()
+	candidate := backtest.ContinuousCandidateResult{Proposal: backtest.StrategyProposal{ID: "P001", Parameters: parameters}}
+	saved, err := store.Save(backtest.ContinuousOptimizationResult{
+		ID: "AUTO-lifecycle", GeneratedAt: time.Now(), Stage: backtest.ContinuousStageShadow,
+		Manifest: backtest.ExperimentManifest{CandidateSetHash: "candidate", ConfigurationHash: "config"},
+		Request:  backtest.ContinuousOptimizationRequest{BaseRequest: backtest.Request{Tickers: []string{"sh600519"}}}, Selected: &candidate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryBefore, err := os.ReadFile(filepath.Join(saved.Directory, "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := backtest.NewCandidateLifecycle(saved, time.Now(), "2026-08-26")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := backtest.Result{
+		Request: backtest.Request{Strategy: "technical-breakout", Tickers: []string{"sh600519"}},
+		Metrics: backtest.Metrics{TotalReturn: 1, FinalEquity: 1_010_000},
+		Equity:  []backtest.EquityPoint{{Date: "2026-08-26", Equity: 1_000_000}, {Date: "2026-08-27", Equity: 1_010_000}},
+	}
+	backtest.UpdateCandidateObservation(&lifecycle, observation, "2026-08-27", time.Now())
+	if err := store.SaveLifecycle(lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadLifecycle(saved.ID)
+	if err != nil || loaded.Observation == nil || loaded.ExperimentID != saved.ID {
+		t.Fatalf("lifecycle archive incomplete: %#v %v", loaded, err)
+	}
+	summaryAfter, err := os.ReadFile(filepath.Join(saved.Directory, "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(summaryBefore) != string(summaryAfter) {
+		t.Fatal("lifecycle mutation rewrote immutable optimization summary")
+	}
+}

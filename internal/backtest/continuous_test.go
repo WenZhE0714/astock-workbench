@@ -334,4 +334,126 @@ func TestEntryModesHaveDistinctTriggers(t *testing.T) {
 	if signal, ok := entrySignal(snapshot, pullback); !ok || !strings.Contains(strings.Join(signal.Reasons, ""), "回踩") {
 		t.Fatalf("MA pullback did not trigger: %#v", signal)
 	}
+	momentum := base
+	momentum.EntryMode = EntryModeMomentum
+	momentumSnapshot := SignalSnapshot{Close: 11, PreviousClose: 10.5, FastMA: 10, PreviousFastMA: 10, SlowMA: 9, Return20: .12, VolumeRatio: 1.5}
+	if signal, ok := entrySignal(momentumSnapshot, momentum); !ok || !strings.Contains(strings.Join(signal.Reasons, ""), "20日动量") {
+		t.Fatalf("momentum continuation did not trigger: %#v", signal)
+	}
+	meanRevert := base
+	meanRevert.EntryMode = EntryModeMeanRevert
+	meanRevertSnapshot := SignalSnapshot{Close: 9.7, Low: 9.2, PreviousClose: 9.5, FastMA: 10, SlowMA: 9, BollingerLower: 9.4, RSI14: 32, VolumeRatio: 1.5}
+	if signal, ok := entrySignal(meanRevertSnapshot, meanRevert); !ok || !strings.Contains(strings.Join(signal.Reasons, ""), "布林下轨") {
+		t.Fatalf("mean reversion did not trigger: %#v", signal)
+	}
+	squeeze := base
+	squeeze.EntryMode = EntryModeVolSqueeze
+	squeezeSnapshot := SignalSnapshot{Close: 10.8, FastMA: 10, SlowMA: 9, PriorShortHigh: 10.5, RangeCompression: .45, VolumeRatio: 1.5}
+	if signal, ok := entrySignal(squeezeSnapshot, squeeze); !ok || !strings.Contains(strings.Join(signal.Reasons, ""), "波动区间") {
+		t.Fatalf("volatility squeeze did not trigger: %#v", signal)
+	}
+	adaptive := base
+	adaptive.EntryMode = EntryModeAdaptive
+	if signal, ok := entrySignal(squeezeSnapshot, adaptive); !ok || signal.EntryMode != EntryModeAdaptive || signal.SelectedEntryMode != EntryModeVolSqueeze || signal.VolumeRequirement != "1.20-4.00倍前20日均量" || !strings.Contains(strings.Join(signal.Reasons, ""), "自适应选择") {
+		t.Fatalf("adaptive ensemble did not select a validated shape: %#v", signal)
+	}
+}
+
+func TestAdaptiveEntryRejectsMissingTrendOrValidShape(t *testing.T) {
+	parameters := DefaultTechnicalParameters()
+	parameters.EntryMode = EntryModeAdaptive
+	tests := []struct {
+		name     string
+		snapshot SignalSnapshot
+	}{
+		{
+			name: "no trend",
+			snapshot: SignalSnapshot{
+				Close: 10.8, Low: 10.1, PreviousClose: 10.4, PreviousFastMA: 10.2,
+				FastMA: 10, SlowMA: 10.5, PriorHigh: 10.6, PriorShortHigh: 10.5,
+				RangeCompression: .45, VolumeRatio: 1.5,
+			},
+		},
+		{
+			name: "climax volume",
+			snapshot: SignalSnapshot{
+				Close: 10.8, FastMA: 10, SlowMA: 9, PriorHigh: 10.6, PriorShortHigh: 10.5,
+				RangeCompression: .45, VolumeRatio: 4.6,
+			},
+		},
+		{
+			name: "no shape",
+			snapshot: SignalSnapshot{
+				Close: 10.2, Low: 10.1, PreviousClose: 10.3, PreviousFastMA: 10.1,
+				FastMA: 10, SlowMA: 9, PriorHigh: 12, PriorShortHigh: 11,
+				RangeCompression: .9, Return20: .02, RSI14: 60, VolumeRatio: 1.5,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if signal, ok := entrySignal(test.snapshot, parameters); ok {
+				t.Fatalf("adaptive entry should be rejected: %#v", signal)
+			}
+		})
+	}
+}
+
+func TestEntryModesUseDifferentVolumeInterpretations(t *testing.T) {
+	base := DefaultTechnicalParameters()
+	base.VolumeRatioMin = 1.2
+	if _, ok := entrySignal(SignalSnapshot{Close: 11, Low: 10.1, PreviousClose: 10.8, FastMA: 10, SlowMA: 9, PriorHigh: 12, VolumeRatio: .75}, base); ok {
+		t.Fatal("breakout must reject below-baseline volume")
+	}
+	pullback := base
+	pullback.EntryMode = EntryModePullback
+	if _, ok := entrySignal(SignalSnapshot{Close: 10.1, Low: 9.8, PreviousClose: 10.2, FastMA: 10, SlowMA: 9, VolumeRatio: .75}, pullback); !ok {
+		t.Fatal("pullback should allow controlled volume")
+	}
+	squeeze := base
+	squeeze.EntryMode = EntryModeVolSqueeze
+	if _, ok := entrySignal(SignalSnapshot{Close: 10.8, FastMA: 10, SlowMA: 9, PriorShortHigh: 10.5, RangeCompression: .45, VolumeRatio: 4.5}, squeeze); ok {
+		t.Fatal("squeeze must reject climax volume")
+	}
+}
+
+func TestEntryModeCatalogIsCompleteAndStable(t *testing.T) {
+	descriptors := EntryModeDescriptors()
+	if len(descriptors) != len(EntryModes()) {
+		t.Fatalf("descriptor/catalog size mismatch: %d/%d", len(descriptors), len(EntryModes()))
+	}
+	seen := make(map[string]bool, len(descriptors))
+	for _, descriptor := range descriptors {
+		if descriptor.ID == "" || descriptor.Label == "" || descriptor.Family == "" || descriptor.Thesis == "" || descriptor.VolumeStyle == "" || seen[descriptor.ID] {
+			t.Fatalf("invalid or duplicate descriptor: %+v", descriptor)
+		}
+		seen[descriptor.ID] = true
+		if EntryModeLabel(descriptor.ID) != descriptor.Label || !ValidEntryMode(descriptor.ID) {
+			t.Fatalf("descriptor lookup failed: %+v", descriptor)
+		}
+	}
+}
+
+func TestModelExitReasonsAreNotAllFastMAExits(t *testing.T) {
+	position := &positionState{entry: Fill{Price: 10}, entrySignal: SignalSnapshot{Low: 9.5, PriorShortHigh: 10.5}}
+	parameters := DefaultTechnicalParameters()
+	parameters.EntryMode = EntryModeMeanRevert
+	snapshot := SignalSnapshot{Close: 10.2, FastMA: 10, SlowMA: 9, RSI14: 55}
+	if signal, reason, ok := exitSignal(snapshot, position, parameters); !ok || !strings.Contains(reason, "均值回归目标") || signal.Action != "卖出" {
+		t.Fatalf("mean-reversion exit was not target-aware: %+v %q %v", signal, reason, ok)
+	}
+}
+
+func TestAdaptiveExitDelegatesToSelectedShape(t *testing.T) {
+	position := &positionState{
+		entry:       Fill{Price: 10},
+		entrySignal: SignalSnapshot{SelectedEntryMode: EntryModeVolSqueeze, PriorShortHigh: 10.5},
+	}
+	parameters := DefaultTechnicalParameters()
+	parameters.EntryMode = EntryModeAdaptive
+	snapshot := SignalSnapshot{Close: 10.1, FastMA: 10.2, SlowMA: 9, RSI14: 55}
+	signal, reason, ok := exitSignal(snapshot, position, parameters)
+	if !ok || signal.SelectedEntryMode != EntryModeVolSqueeze || !strings.Contains(reason, "收缩突破失效") {
+		t.Fatalf("adaptive exit did not use selected shape: %+v %q %v", signal, reason, ok)
+	}
 }

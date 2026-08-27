@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"slices"
@@ -22,6 +23,15 @@ type continuousOptimizationOptions struct {
 	MinimumPositive float64
 	MaximumDrawdown float64
 	UseAI           bool
+}
+
+type continuousOptimizationNotDueError struct {
+	PreviousEnd time.Time
+	NextCutoff  time.Time
+}
+
+func (err *continuousOptimizationNotDueError) Error() string {
+	return fmt.Sprintf("上一轮最终留出截至 %s；为避免重复窥视测试集，下一轮最早数据截止日为 %s", err.PreviousEnd.Format("2006-01-02"), err.NextCutoff.Format("2006-01-02"))
 }
 
 func defaultContinuousOptimizationOptions() continuousOptimizationOptions {
@@ -87,41 +97,95 @@ func (app *App) latestContinuousBaseline(symbols []string, cutoff time.Time, hol
 	if err != nil {
 		return baseline, "", 1, "", "", err
 	}
-	for _, previous := range results {
-		if !sameTickerPool(previous.Request.BaseRequest.Tickers, symbols) {
+	var previous *backtest.ContinuousOptimizationResult
+	for _, candidate := range results {
+		if !sameTickerPool(candidate.Request.BaseRequest.Tickers, symbols) {
 			continue
 		}
-		if previous.Holdout == nil && previous.Manifest.SchemaVersion > 0 {
+		if candidate.Holdout == nil && candidate.Manifest.SchemaVersion > 0 {
 			continue
 		}
-		newHoldoutStart := dateOnly(cutoff).AddDate(0, -holdoutMonths, 1)
-		previousHoldoutEnd := dateOnly(previous.Request.Holdout.End)
-		if previousHoldoutEnd.IsZero() || previous.Request.Holdout.End.IsZero() {
-			// Archives written before the explicit holdout field used DataCutoff
-			// as the inspected end date. Preserve the no-reuse rule for them too.
-			var parseError error
-			previousHoldoutEnd, parseError = time.ParseInLocation("2006-01-02", previous.DataCutoff, shanghaiLocation)
-			if parseError != nil {
-				return baseline, previous.ID, previous.Cycle + 1, "", "", fmt.Errorf("历史实验 %s 缺少可验证的最终留出边界", previous.ID)
-			}
-			previousHoldoutEnd = dateOnly(previousHoldoutEnd)
-		}
-		if !newHoldoutStart.After(previousHoldoutEnd) {
-			nextCutoff := previousHoldoutEnd.AddDate(0, holdoutMonths, 0)
-			return baseline, previous.ID, previous.Cycle + 1, "", previousHoldoutEnd.Format("2006-01-02"), fmt.Errorf(
-				"上一轮最终留出截至 %s；为避免重复窥视测试集，下一轮最早数据截止日为 %s",
-				previousHoldoutEnd.Format("2006-01-02"), nextCutoff.Format("2006-01-02"),
-			)
-		}
-		if previous.Stage == backtest.ContinuousStageShadow && previous.Selected != nil {
-			baseline = previous.Selected.Proposal.Parameters
-		}
-		return baseline, previous.ID, previous.Cycle + 1, continuousLessons(previous), previousHoldoutEnd.Format("2006-01-02"), nil
+		matched := candidate
+		previous = &matched
+		break
 	}
-	return baseline, "", 1, "", "", nil
+	if previous == nil {
+		return baseline, "", 1, "", "", nil
+	}
+	previousHoldoutEnd := dateOnly(previous.Request.Holdout.End)
+	if previousHoldoutEnd.IsZero() || previous.Request.Holdout.End.IsZero() {
+		// Archives written before the explicit holdout field used DataCutoff
+		// as the inspected end date. Preserve the no-reuse rule for them too.
+		var parseError error
+		previousHoldoutEnd, parseError = time.ParseInLocation("2006-01-02", previous.DataCutoff, shanghaiLocation)
+		if parseError != nil {
+			return baseline, previous.ID, previous.Cycle + 1, "", "", fmt.Errorf("历史实验 %s 缺少可验证的最终留出边界", previous.ID)
+		}
+		previousHoldoutEnd = dateOnly(previousHoldoutEnd)
+	}
+	newHoldoutStart := dateOnly(cutoff).AddDate(0, -holdoutMonths, 1)
+	if !newHoldoutStart.After(previousHoldoutEnd) {
+		nextCutoff := previousHoldoutEnd.AddDate(0, holdoutMonths, 0)
+		return baseline, previous.ID, previous.Cycle + 1, "", previousHoldoutEnd.Format("2006-01-02"), &continuousOptimizationNotDueError{PreviousEnd: previousHoldoutEnd, NextCutoff: nextCutoff}
+	}
+	for _, candidate := range results {
+		if candidate.Stage != backtest.ContinuousStageShadow || candidate.Selected == nil || !sameTickerPool(candidate.Request.BaseRequest.Tickers, symbols) {
+			continue
+		}
+		lifecycle, lifecycleError := app.continuousOptimizationStore().LoadLifecycle(candidate.ID)
+		if lifecycleError != nil {
+			return baseline, previous.ID, previous.Cycle + 1, "", previousHoldoutEnd.Format("2006-01-02"), lifecycleError
+		}
+		if lifecycle.Status == backtest.CandidateLifecycleApproved && backtest.CandidateLifecycleMatches(candidate, lifecycle) {
+			baseline = candidate.Selected.Proposal.Parameters
+			break
+		}
+	}
+	return baseline, previous.ID, previous.Cycle + 1, continuousLessons(*previous), previousHoldoutEnd.Format("2006-01-02"), nil
+}
+
+func (app *App) runAutomaticContinuousOptimization(ctx context.Context, symbols []string, end time.Time) (string, string, bool, error) {
+	options := defaultContinuousOptimizationOptions()
+	options.UseAI = false
+	app.continuousMu.Lock()
+	defer app.continuousMu.Unlock()
+	if _, _, _, _, _, err := app.latestContinuousBaseline(symbols, end, options.HoldoutMonths); err != nil {
+		var notDue *continuousOptimizationNotDueError
+		if errors.As(err, &notDue) {
+			return "", notDue.Error(), false, nil
+		}
+		return "", "", false, err
+	}
+	result, err := app.runContinuousOptimizationLocked(ctx, symbols, app.resolveBacktestNames(ctx, symbols), end, options, nil)
+	if err != nil {
+		return "", "", false, err
+	}
+	if result.Stage == backtest.ContinuousStageShadow && result.Selected != nil {
+		lifecycle, lifecycleError := backtest.NewAwaitingCandidateLifecycle(result)
+		if lifecycleError != nil {
+			return result.ID, "研究已归档，但候选生命周期初始化失败", true, lifecycleError
+		}
+		if lifecycleError = app.continuousOptimizationStore().SaveLifecycle(lifecycle); lifecycleError != nil {
+			return result.ID, "研究已归档，但候选生命周期归档失败", true, lifecycleError
+		}
+	}
+	return result.ID, fmt.Sprintf("确定性滚动研究已归档，第%d轮；候选仍需真实时间观察和人工批准", result.Cycle), true, nil
 }
 
 func (app *App) runContinuousOptimization(
+	ctx context.Context,
+	symbols []string,
+	names map[string]string,
+	end time.Time,
+	options continuousOptimizationOptions,
+	progress func(string),
+) (backtest.ContinuousOptimizationResult, error) {
+	app.continuousMu.Lock()
+	defer app.continuousMu.Unlock()
+	return app.runContinuousOptimizationLocked(ctx, symbols, names, end, options, progress)
+}
+
+func (app *App) runContinuousOptimizationLocked(
 	ctx context.Context,
 	symbols []string,
 	names map[string]string,

@@ -24,6 +24,9 @@ type Paths struct {
 	TradingAgentsDir           string
 	PaperFile                  string
 	ShadowReportFile           string
+	ShadowConservativeFile     string
+	ShadowAggressiveFile       string
+	AutomationStateFile        string
 }
 
 func ResolvePaths() (Paths, error) {
@@ -64,5 +67,8 @@ func ResolvePaths() (Paths, error) {
 		TradingAgentsDir:           filepath.Join(dataDir, "tradingagents"),
 		PaperFile:                  filepath.Join(dataDir, "paper", "account.json"),
 		ShadowReportFile:           filepath.Join(dataDir, "paper", "shadow-report.json"),
+		ShadowConservativeFile:     filepath.Join(dataDir, "paper", "shadow-report-conservative.json"),
+		ShadowAggressiveFile:       filepath.Join(dataDir, "paper", "shadow-report-aggressive.json"),
+		AutomationStateFile:        filepath.Join(dataDir, "automation", "state.json"),
 	}, nil
 }

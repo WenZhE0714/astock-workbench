@@ -62,8 +62,9 @@ type strategyResearchAssessment struct {
 }
 
 type strategyBacktestResponse struct {
-	Result     backtest.Result            `json:"result"`
-	Assessment strategyResearchAssessment `json:"assessment"`
+	Result     backtest.Result                `json:"result"`
+	Assessment strategyResearchAssessment     `json:"assessment"`
+	EntryModes []backtest.EntryModeDescriptor `json:"entry_modes,omitempty"`
 }
 
 type strategyRunSummary struct {
@@ -79,7 +80,8 @@ type strategyRunSummary struct {
 }
 
 type strategyRunListResponse struct {
-	Items []strategyRunSummary `json:"items"`
+	Items      []strategyRunSummary           `json:"items"`
+	EntryModes []backtest.EntryModeDescriptor `json:"entry_modes"`
 }
 
 func (s *Server) handleStrategyBacktests(writer http.ResponseWriter, request *http.Request) {
@@ -106,7 +108,7 @@ func (s *Server) writeStrategyBacktests(writer http.ResponseWriter, request *htt
 		}
 		backtest.EnrichRiskMetrics(&result)
 		backtest.EnrichMarketRegimeMetrics(&result)
-		writeJSON(writer, http.StatusOK, strategyBacktestResponse{Result: result, Assessment: assessStrategyResult(result)})
+		writeJSON(writer, http.StatusOK, strategyBacktestResponse{Result: result, Assessment: assessStrategyResult(result), EntryModes: backtest.EntryModeDescriptors()})
 		return
 	}
 	limit := 20
@@ -123,7 +125,7 @@ func (s *Server) writeStrategyBacktests(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 		return
 	}
-	response := strategyRunListResponse{Items: make([]strategyRunSummary, 0, len(items))}
+	response := strategyRunListResponse{Items: make([]strategyRunSummary, 0, len(items)), EntryModes: backtest.EntryModeDescriptors()}
 	for _, item := range items {
 		result, loadError := s.strategyArchive.Load(item.RunID)
 		if loadError != nil {
@@ -182,7 +184,7 @@ func (s *Server) runStrategyBacktest(writer http.ResponseWriter, request *http.R
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "回测归档失败: " + err.Error()})
 		return
 	}
-	writeJSON(writer, http.StatusOK, strategyBacktestResponse{Result: result, Assessment: assessStrategyResult(result)})
+	writeJSON(writer, http.StatusOK, strategyBacktestResponse{Result: result, Assessment: assessStrategyResult(result), EntryModes: backtest.EntryModeDescriptors()})
 }
 
 func (s *Server) strategyRequest(ctx context.Context, input strategyBacktestInput) (backtest.Request, error) {
@@ -315,7 +317,7 @@ func (s *Server) strategyRequest(ctx context.Context, input strategyBacktestInpu
 		liquidate = *input.LiquidateAtEnd
 	}
 	return backtest.Request{
-		Strategy: "technical-breakout", StrategyVersion: "web-v1", Tickers: tickers, Names: names,
+		Strategy: "technical-breakout", StrategyVersion: "web-v2", Tickers: tickers, Names: names,
 		Start: start, End: end, InitialCash: input.InitialCash,
 		CommissionRate: commissionBPS / 10_000, MinimumCommission: minimumCommission,
 		StampDutyRate: stampDutyBPS / 10_000, TransferFeeRate: transferFeeBPS / 10_000,

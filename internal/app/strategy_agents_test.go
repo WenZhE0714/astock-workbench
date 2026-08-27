@@ -72,7 +72,7 @@ func TestStrategyAgentCoordinatorIsolatesFailureAndKeepsDeterministicFallback(t 
 
 func TestStrategyAgentPromptForbidsMetricsAndAccountControls(t *testing.T) {
 	prompt := strategyAgentPrompt(strategyAgentRoles[0], backtest.Request{Technical: backtest.DefaultTechnicalParameters()}, "上一轮留出回撤偏高")
-	for _, expected := range []string{"不能写收益、评分", "不能修改股票池", "不能修改", "最大仓位", "只允许提出", "上一轮留出回撤偏高"} {
+	for _, expected := range []string{"不能写收益、评分", "不能修改股票池", "不能修改", "最大仓位", "只允许提出", "上一轮留出回撤偏高", "mean-reversion", "volatility-squeeze"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("strategy agent prompt missing %q:\n%s", expected, prompt)
 		}
@@ -102,8 +102,10 @@ func TestLatestContinuousBaselineRejectsSameCutoffAndAdvancesOnNewDay(t *testing
 	parameters.FastMA = 30
 	proposal := backtest.StrategyProposal{ID: "P001", Parameters: parameters}
 	candidate := backtest.ContinuousCandidateResult{Proposal: proposal}
-	_, err := app.continuousOptimizationStore().Save(backtest.ContinuousOptimizationResult{
+	store := app.continuousOptimizationStore()
+	saved, err := store.Save(backtest.ContinuousOptimizationResult{
 		ID: "AUTO-old", Cycle: 2, DataCutoff: "2026-08-12", GeneratedAt: time.Now(), Stage: backtest.ContinuousStageShadow,
+		Manifest: backtest.ExperimentManifest{CandidateSetHash: "candidates", ConfigurationHash: "config"},
 		Request: backtest.ContinuousOptimizationRequest{
 			BaseRequest: backtest.Request{Tickers: []string{"sh600519"}},
 			Holdout:     backtest.Period{Start: time.Date(2026, 5, 13, 0, 0, 0, 0, shanghaiLocation), End: time.Date(2026, 8, 12, 0, 0, 0, 0, shanghaiLocation)},
@@ -111,6 +113,12 @@ func TestLatestContinuousBaselineRejectsSameCutoffAndAdvancesOnNewDay(t *testing
 		Selected: &candidate,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLifecycle(backtest.CandidateLifecycle{
+		SchemaVersion: 1, ExperimentID: saved.ID, CandidateID: proposal.ID,
+		CandidateSetHash: "candidates", ConfigurationHash: "config", Status: backtest.CandidateLifecycleApproved,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, _, _, err := app.latestContinuousBaseline([]string{"sh600519"}, time.Date(2026, 11, 11, 0, 0, 0, 0, shanghaiLocation), 3); err == nil {
@@ -143,8 +151,10 @@ func TestLatestContinuousBaselineScansBeyondTwentyArchives(t *testing.T) {
 	parameters := backtest.DefaultTechnicalParameters()
 	parameters.FastMA = 30
 	candidate := backtest.ContinuousCandidateResult{Proposal: backtest.StrategyProposal{ID: "P001", Parameters: parameters}}
-	_, err := app.continuousOptimizationStore().Save(backtest.ContinuousOptimizationResult{
+	store := app.continuousOptimizationStore()
+	saved, err := store.Save(backtest.ContinuousOptimizationResult{
 		ID: "AUTO-target", Cycle: 4, DataCutoff: "2026-08-12", GeneratedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Stage: backtest.ContinuousStageShadow,
+		Manifest: backtest.ExperimentManifest{CandidateSetHash: "target-candidates", ConfigurationHash: "target-config"},
 		Request: backtest.ContinuousOptimizationRequest{BaseRequest: backtest.Request{Tickers: []string{"sh600519"}}, Holdout: backtest.Period{
 			Start: time.Date(2026, 5, 13, 0, 0, 0, 0, shanghaiLocation), End: time.Date(2026, 8, 12, 0, 0, 0, 0, shanghaiLocation),
 		}}, Selected: &candidate,
@@ -152,8 +162,14 @@ func TestLatestContinuousBaselineScansBeyondTwentyArchives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveLifecycle(backtest.CandidateLifecycle{
+		SchemaVersion: 1, ExperimentID: saved.ID, CandidateID: candidate.Proposal.ID,
+		CandidateSetHash: "target-candidates", ConfigurationHash: "target-config", Status: backtest.CandidateLifecycleApproved,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for index := 0; index < 25; index++ {
-		_, err = app.continuousOptimizationStore().Save(backtest.ContinuousOptimizationResult{
+		_, err = store.Save(backtest.ContinuousOptimizationResult{
 			ID: fmt.Sprintf("AUTO-other-%02d", index), GeneratedAt: time.Date(2026, 2, 1, 0, index, 0, 0, time.UTC),
 			Manifest: backtest.ExperimentManifest{SchemaVersion: 1},
 			Request:  backtest.ContinuousOptimizationRequest{BaseRequest: backtest.Request{Tickers: []string{fmt.Sprintf("sh60%04d", index)}}},
@@ -165,6 +181,27 @@ func TestLatestContinuousBaselineScansBeyondTwentyArchives(t *testing.T) {
 	baseline, parent, cycle, _, _, err := app.latestContinuousBaseline([]string{"sh600519"}, time.Date(2026, 11, 12, 0, 0, 0, 0, shanghaiLocation), 3)
 	if err != nil || baseline.FastMA != 30 || parent != "AUTO-target" || cycle != 5 {
 		t.Fatalf("full lineage scan missed target archive: %#v %s %d %v", baseline, parent, cycle, err)
+	}
+}
+
+func TestLatestContinuousBaselineDoesNotInheritUnapprovedShadowCandidate(t *testing.T) {
+	root := t.TempDir()
+	app := &App{paths: storage.Paths{BacktestsDir: root, ContinuousOptimizationsDir: root + "/continuous"}}
+	parameters := backtest.DefaultTechnicalParameters()
+	parameters.FastMA = 30
+	candidate := backtest.ContinuousCandidateResult{Proposal: backtest.StrategyProposal{ID: "P001", Parameters: parameters}}
+	_, err := app.continuousOptimizationStore().Save(backtest.ContinuousOptimizationResult{
+		ID: "AUTO-unapproved", Cycle: 1, DataCutoff: "2026-08-12", GeneratedAt: time.Now(), Stage: backtest.ContinuousStageShadow,
+		Request: backtest.ContinuousOptimizationRequest{BaseRequest: backtest.Request{Tickers: []string{"sh600519"}}, Holdout: backtest.Period{
+			Start: time.Date(2026, 5, 13, 0, 0, 0, 0, shanghaiLocation), End: time.Date(2026, 8, 12, 0, 0, 0, 0, shanghaiLocation),
+		}}, Selected: &candidate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, _, _, _, _, err := app.latestContinuousBaseline([]string{"sh600519"}, time.Date(2026, 11, 12, 0, 0, 0, 0, shanghaiLocation), 3)
+	if err != nil || baseline.FastMA != backtest.DefaultTechnicalParameters().FastMA {
+		t.Fatalf("unapproved candidate became research baseline: %#v %v", baseline, err)
 	}
 }
 

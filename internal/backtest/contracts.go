@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/strategy"
 )
 
 type PriceAdjustment string
@@ -30,10 +31,47 @@ type TechnicalParameters struct {
 }
 
 const (
-	EntryModeBreakout = "breakout"
-	EntryModeReclaim  = "trend-reclaim"
-	EntryModePullback = "ma-pullback"
+	EntryModeBreakout   = strategy.EntryModeBreakout
+	EntryModeReclaim    = strategy.EntryModeReclaim
+	EntryModePullback   = strategy.EntryModePullback
+	EntryModeMomentum   = strategy.EntryModeMomentum
+	EntryModeMeanRevert = strategy.EntryModeMeanRevert
+	EntryModeVolSqueeze = strategy.EntryModeVolSqueeze
+	EntryModeAdaptive   = strategy.EntryModeAdaptive
 )
+
+type EntryModeDescriptor = strategy.EntryModeDescriptor
+
+func EntryModeDescriptors() []EntryModeDescriptor {
+	return strategy.EntryModeDescriptors()
+}
+
+// EntryModeLabels returns display labels in catalog order. Callers should use
+// the catalog instead of maintaining a second list of strategy names.
+func EntryModeLabels() []string {
+	return strategy.EntryModeLabels()
+}
+
+// EntryModeCatalogText is intended for concise CLI and prompt summaries.
+func EntryModeCatalogText() string {
+	return strategy.EntryModeCatalogText()
+}
+
+func EntryModes() []string {
+	return strategy.EntryModes()
+}
+
+func ValidEntryMode(mode string) bool {
+	return strategy.ValidEntryMode(mode)
+}
+
+func EntryModeLabel(mode string) string {
+	return strategy.EntryModeLabel(mode)
+}
+
+func EntryModeFamily(mode string) string {
+	return strategy.EntryModeFamily(mode)
+}
 
 func (parameters TechnicalParameters) EffectiveEntryMode() string {
 	if parameters.EntryMode == "" {
@@ -71,17 +109,29 @@ type Request struct {
 }
 
 type SignalSnapshot struct {
-	Date           string   `json:"date"`
-	Action         string   `json:"action"`
-	Reasons        []string `json:"reasons"`
-	Close          float64  `json:"close"`
-	Low            float64  `json:"low,omitempty"`
-	PreviousClose  float64  `json:"previous_close,omitempty"`
-	FastMA         float64  `json:"fast_ma"`
-	PreviousFastMA float64  `json:"previous_fast_ma,omitempty"`
-	SlowMA         float64  `json:"slow_ma"`
-	PriorHigh      float64  `json:"prior_high"`
-	VolumeRatio    float64  `json:"volume_ratio"`
+	Date      string `json:"date"`
+	Action    string `json:"action"`
+	EntryMode string `json:"entry_mode,omitempty"`
+	// SelectedEntryMode records the concrete setup selected by the adaptive
+	// ensemble. EntryMode remains the configured mode so reports can distinguish
+	// an adaptive request from the shape that actually supplied the evidence.
+	SelectedEntryMode string   `json:"selected_entry_mode,omitempty"`
+	Reasons           []string `json:"reasons"`
+	Close             float64  `json:"close"`
+	Low               float64  `json:"low,omitempty"`
+	PreviousClose     float64  `json:"previous_close,omitempty"`
+	FastMA            float64  `json:"fast_ma"`
+	PreviousFastMA    float64  `json:"previous_fast_ma,omitempty"`
+	SlowMA            float64  `json:"slow_ma"`
+	PriorHigh         float64  `json:"prior_high"`
+	PriorLow          float64  `json:"prior_low,omitempty"`
+	PriorShortHigh    float64  `json:"prior_short_high,omitempty"`
+	BollingerLower    float64  `json:"bollinger_lower,omitempty"`
+	RSI14             float64  `json:"rsi14,omitempty"`
+	Return20          float64  `json:"return_20,omitempty"`
+	RangeCompression  float64  `json:"range_compression,omitempty"`
+	VolumeRatio       float64  `json:"volume_ratio"`
+	VolumeRequirement string   `json:"volume_requirement,omitempty"`
 }
 
 type Fill struct {
@@ -382,4 +432,68 @@ type ContinuousOptimizationResult struct {
 	Warnings         []string                      `json:"warnings,omitempty"`
 	Directory        string                        `json:"-"`
 	ReportPath       string                        `json:"-"`
+}
+
+const (
+	CandidateLifecycleAwaitingObservation = "awaiting-observation"
+	CandidateLifecycleObserving           = "observing"
+	CandidateLifecycleApprovalReady       = "approval-ready"
+	CandidateLifecycleApproved            = "approved"
+	CandidateLifecycleRejected            = "rejected"
+	CandidateLifecycleRevoked             = "revoked"
+)
+
+type CandidateObservationPolicy struct {
+	MinimumTradingDays   int     `json:"minimum_trading_days"`
+	MinimumTrades        int     `json:"minimum_trades"`
+	MinimumTotalReturn   float64 `json:"minimum_total_return_percent"`
+	MinimumExcessReturn  float64 `json:"minimum_excess_return_percent"`
+	MaximumDrawdown      float64 `json:"maximum_drawdown_percent"`
+	MinimumCoverageRatio float64 `json:"minimum_coverage_ratio"`
+}
+
+type CandidateObservationCheck struct {
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
+}
+
+type CandidateObservationAssessment struct {
+	Passed  bool                        `json:"passed"`
+	Verdict string                      `json:"verdict"`
+	Checks  []CandidateObservationCheck `json:"checks"`
+}
+
+type CandidateLifecycleEvent struct {
+	At     time.Time `json:"at"`
+	Action string    `json:"action"`
+	Actor  string    `json:"actor"`
+	Note   string    `json:"note,omitempty"`
+}
+
+// CandidateLifecycle is mutable post-research state kept outside the immutable
+// optimization summary. Approval only authorizes reuse as a future research
+// baseline; it never changes realtime scoring or submits an order.
+type CandidateLifecycle struct {
+	SchemaVersion      int                            `json:"schema_version"`
+	ExperimentID       string                         `json:"experiment_id"`
+	CandidateID        string                         `json:"candidate_id"`
+	CandidateSetHash   string                         `json:"candidate_set_hash"`
+	ConfigurationHash  string                         `json:"configuration_hash"`
+	Status             string                         `json:"status"`
+	Policy             CandidateObservationPolicy     `json:"policy"`
+	ObservationStarted time.Time                      `json:"observation_started_at,omitempty"`
+	ObservationStart   string                         `json:"observation_start_date,omitempty"`
+	EvaluationEnd      string                         `json:"evaluation_end_date,omitempty"`
+	ObservedThrough    string                         `json:"observed_through,omitempty"`
+	TradingDays        int                            `json:"trading_days"`
+	Assessment         CandidateObservationAssessment `json:"assessment"`
+	ApprovedAt         time.Time                      `json:"approved_at,omitempty"`
+	RejectedAt         time.Time                      `json:"rejected_at,omitempty"`
+	RevokedAt          time.Time                      `json:"revoked_at,omitempty"`
+	DecisionNote       string                         `json:"decision_note,omitempty"`
+	Events             []CandidateLifecycleEvent      `json:"events,omitempty"`
+	Observation        *Result                        `json:"-"`
+	Directory          string                         `json:"-"`
 }
