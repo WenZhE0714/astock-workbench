@@ -192,6 +192,98 @@ func TestRealtimeShadowHonorsTPlusOneForSameDayPosition(t *testing.T) {
 	}
 }
 
+func TestRealtimeIntradayTRoundTripUsesSellableLotAndPreservesTPlusOne(t *testing.T) {
+	symbol := "sh600000"
+	date := "2026-08-26"
+	cfg := DefaultConfig()
+	cfg.TCooldownMinutes = 15
+	entryFee := transactionFee(10000, "buy", cfg)
+	position := ShadowOpenPosition{
+		SignalID: "base", Symbol: symbol, Name: "做T测试", EntryDate: "2026-08-25",
+		EntryTime: "2026-08-25 10:00:00", Quantity: 1000, EntryPrice: 10,
+		EntryAmount: 10000, EntryFee: entryFee,
+		Lots: []ShadowPositionLot{{
+			OrderID: "base-buy", EntryDate: "2026-08-25", EntryTime: "2026-08-25 10:00:00",
+			Quantity: 1000, EntryPrice: 10, EntryAmount: 10000, EntryFee: entryFee, SignalID: "base",
+		}},
+	}
+	report := Report{Config: cfg, InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash, Positions: []ShadowOpenPosition{position}}
+	signal := realtimeShadowSignal("t-signal", symbol, date+" 10:30", 80)
+	sellQuote := PositionQuote{Symbol: symbol, Price: 11, AveragePrice: 10.5, QuoteTime: date + " 10:30:00", Source: "test"}
+	if !realtimeTReduceEligible(position, sellQuote, cfg, report, date) {
+		t.Fatal("fee-positive sellable base lot should be eligible for T high-sell")
+	}
+	if got := realtimeTReduceQuantity(position, date, cfg); got != 200 {
+		t.Fatalf("unexpected T tranche quantity: %d", got)
+	}
+	if filled := executeRealtimePartialSell(&report, &position, 200, signal, sellQuote, "rt-t-reduce", nil, date); filled != 200 {
+		t.Fatalf("T high-sell did not fill 200 shares: %d", filled)
+	}
+	if position.Quantity != 800 {
+		t.Fatalf("high-sell should leave the core/base quantity before rebuy: %d", position.Quantity)
+	}
+	if _, pending := realtimePendingT(report, symbol, date); pending != 200 {
+		t.Fatalf("pending T quantity was not tracked: %d", pending)
+	}
+	if realtimeTCooldownElapsed(report, symbol, date, date+" 10:40:00", cfg.TCooldownMinutes) {
+		t.Fatal("T cooldown was ignored")
+	}
+	rebuyQuote := PositionQuote{Symbol: symbol, Price: 10.2, AveragePrice: 10.5, QuoteTime: date + " 10:50:00", Source: "test"}
+	sale, pending := realtimePendingT(report, symbol, date)
+	if !realtimeTRebuyEligible(sale, pending, rebuyQuote, cfg) {
+		t.Fatal("price gap below VWAP should allow a fee-positive T rebuy")
+	}
+	if !executeRealtimeTRebuy(&report, &position, signal, rebuyQuote, sale, pending, "rt-t-rebuy", nil, date) {
+		t.Fatal("T rebuy did not fill")
+	}
+	if position.Quantity != 1000 || position.AvailableQuantity != 800 {
+		t.Fatalf("rebuy should restore quantity while keeping the new batch T+1 locked: quantity=%d available=%d", position.Quantity, position.AvailableQuantity)
+	}
+	if len(position.Lots) != 2 || position.Lots[1].EntryDate != date {
+		t.Fatalf("rebuy lot was not appended as a new T+1 batch: %+v", position.Lots)
+	}
+	review := buildShadowDailyReview(Report{AsOf: date, Config: cfg, Orders: report.Orders, Trades: report.Trades, Positions: []ShadowOpenPosition{position}})
+	if review.PendingTQuantity != 0 || review.TReduceCount != 0 || review.TRebuyCount != 0 {
+		// Direct execution helpers append orders/trades but decisions are owned by
+		// the realtime orchestrator; this assertion is only for pending state.
+		t.Fatalf("completed T round left pending quantity: %+v", review)
+	}
+}
+
+func TestRealtimeSignalCooldownDebouncesOnlyOrdinaryRebalances(t *testing.T) {
+	report := Report{Orders: []ShadowOrder{
+		{Symbol: "sh600000", AttemptDate: "2026-08-26", Status: OrderFilled, PositionAction: "add", ExecutionTime: "2026-08-26 10:00:00"},
+		{Symbol: "sh600000", AttemptDate: "2026-08-26", Status: OrderFilled, PositionAction: "t_reduce", ExecutionTime: "2026-08-26 10:05:00"},
+	}}
+	if realtimeSignalCooldownElapsed(report, "sh600000", "2026-08-26", "2026-08-26 10:15:00", 20) {
+		t.Fatal("ordinary add should still be inside the cooldown window")
+	}
+	if !realtimeSignalCooldownElapsed(report, "sh600000", "2026-08-26", "2026-08-26 10:21:00", 20) {
+		t.Fatal("ordinary add cooldown should expire based on the latest ordinary order")
+	}
+	if !realtimeSignalCooldownElapsed(Report{Orders: []ShadowOrder{{Symbol: "sh600000", AttemptDate: "2026-08-26", Status: OrderFilled, PositionAction: "t_reduce", ExecutionTime: "2026-08-26 10:10:00"}}}, "sh600000", "2026-08-26", "2026-08-26 10:15:00", 20) {
+		t.Fatal("T-only orders must not block ordinary signal rebalancing")
+	}
+}
+
+func TestShadowDailyReviewGroupsBlockersAndCountsPendingT(t *testing.T) {
+	cfg := DefaultConfig()
+	date := "2026-08-26"
+	report := Report{
+		AsOf: date, Config: cfg,
+		Positions: []ShadowOpenPosition{{Symbol: "sh600000", Quantity: 800}},
+		Orders:    []ShadowOrder{{Symbol: "sh600000", AttemptDate: date, Status: OrderFilled, PositionAction: "t_reduce", Quantity: 200, Price: 11, Amount: 2200, ExecutionTime: date + " 10:30:00"}},
+		Decisions: []ShadowDecision{{Date: date, Action: "hold", Reason: "盘中信号尚未显著增强，维持现有仓位"}},
+	}
+	review := buildShadowDailyReview(report)
+	if review == nil || review.PendingTQuantity != 200 {
+		t.Fatalf("pending T quantity missing from review: %+v", review)
+	}
+	if len(review.TopBlockers) != 1 || review.TopBlockers[0].Reason != "信号未显著增强" {
+		t.Fatalf("blocker reason was not normalized: %+v", review.TopBlockers)
+	}
+}
+
 func TestTargetPositionPercentAppliesMarketRiskOverlay(t *testing.T) {
 	cfg := DefaultConfig()
 	base := shadowSignal("base", "sh600000", "2026-08-20", 80)

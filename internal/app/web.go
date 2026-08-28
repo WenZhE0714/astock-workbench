@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
@@ -55,7 +54,38 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		}
 		*defaultSymbol = initialSymbol
 	}
-	strategyEngine := backtest.NewDailyEngine(backtest.NewCachingDailyBarProvider(market.EastmoneyClient{}))
+	strategyEngine := app.newBacktestEngine()
+	realtimeScanner := realtime.NewScanner(
+		app.marketScan,
+		app.quotes,
+		app.scanHistory,
+		app.minutes,
+		storage.NewRealtimeSignalStore(app.paths.RealtimeSignalsDir),
+	)
+	realtimeOutcomes := realtime.NewOutcomeEvaluator(
+		app.scanHistory,
+		app.scanHistory,
+		storage.NewRealtimeOutcomeStore(app.paths.RealtimeSignalsDir),
+	)
+	realtimeCalibration := storage.NewRealtimeCalibrationStore(app.paths.RealtimeCalibrationFile)
+	// Restore the last fully gated challenger before the first scan after a
+	// process restart. This keeps the adaptive shadow account continuous while
+	// leaving the champion score and archived signals immutable.
+	calibrationState, calibrationStateErr := realtimeCalibration.Load()
+	if calibrationStateErr == nil && calibrationState.Active.ID != "" && calibrationState.Status != "challenger-rolled-back" {
+		realtimeScanner.SetCalibration(calibrationState.Active)
+	} else if calibrationStateErr == nil && calibrationState.Status == "challenger-rolled-back" {
+		// A rejected Challenger stays in the audit history but must not be
+		// resurrected on restart until a genuinely newer calibration is produced.
+		realtimeScanner.SetCalibration(realtime.ScoreCalibration{})
+	} else if report, reportErr := realtimeOutcomes.Report(0, time.Now()); reportErr == nil {
+		if calibration, ready := realtime.CalibrationFromOutcome(report); ready {
+			realtimeScanner.SetCalibration(calibration)
+			_ = realtimeCalibration.Save(storage.RealtimeCalibrationState{
+				Active: calibration, AppliedAt: time.Now(), Source: "启动时恢复历史验证结果", Status: "challenger-active",
+			})
+		}
+	}
 	serverOptions := []web.ServerOption{
 		web.WithWatchlist(app.paths.WatchlistFile),
 		web.WithNameCache(app.paths.NameCacheFile),
@@ -67,18 +97,18 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		),
 		web.WithStrategyCandidateLifecycle(strategyEngine, app.continuousOptimizationStore()),
 		web.WithRealtimeStrategy(
-			realtime.NewScanner(app.marketScan, app.quotes, app.scanHistory, app.minutes, storage.NewRealtimeSignalStore(app.paths.RealtimeSignalsDir)),
+			realtimeScanner,
 			storage.NewRealtimeSignalStore(app.paths.RealtimeSignalsDir),
 		),
-		web.WithRealtimeOutcomes(
-			realtime.NewOutcomeEvaluator(app.scanHistory, app.scanHistory, storage.NewRealtimeOutcomeStore(app.paths.RealtimeSignalsDir)),
-		),
+		web.WithRealtimeOutcomes(realtimeOutcomes),
+		web.WithRealtimeCalibrationStore(realtimeCalibration),
 		web.WithShadowExecutionProfiles(
 			paper.NewEvaluator(app.history),
 			storage.NewShadowStore(app.paths.ShadowReportFile),
 			storage.NewShadowStore(app.paths.ShadowConservativeFile),
 			storage.NewShadowStore(app.paths.ShadowAggressiveFile),
 		),
+		web.WithAdaptiveShadowExecution(storage.NewShadowStore(app.paths.ShadowAdaptiveFile)),
 		web.WithAutomaticStrategyResearch(func(ctx context.Context, symbols []string, end time.Time) (web.AutomaticResearchResult, error) {
 			id, message, ran, err := app.runAutomaticContinuousOptimization(ctx, symbols, end)
 			return web.AutomaticResearchResult{Ran: ran, ExperimentID: id, Message: message}, err

@@ -91,6 +91,10 @@ type realtimeScanner interface {
 	Scan(context.Context, []string, bool) (realtime.ScanResult, error)
 }
 
+type realtimeCalibratableScanner interface {
+	SetCalibration(realtime.ScoreCalibration)
+}
+
 type realtimeSectorEnricher interface {
 	EnrichSectors(context.Context, realtime.ScanResult) (realtime.ScanResult, error)
 }
@@ -142,6 +146,11 @@ type automaticResearchRunner func(context.Context, []string, time.Time) (Automat
 type automationStateStore interface {
 	Load() (storage.AutomationState, error)
 	Save(storage.AutomationState) error
+}
+
+type realtimeCalibrationStateStore interface {
+	Load() (storage.RealtimeCalibrationState, error)
+	Save(storage.RealtimeCalibrationState) error
 }
 
 type Server struct {
@@ -200,6 +209,8 @@ type Server struct {
 	automationResearch        automaticResearchRunner
 	tradingCalendarProvider   realtime.TradingCalendarProvider
 	automationStateStore      automationStateStore
+	realtimeCalibrationStore  realtimeCalibrationStateStore
+	calibrationMu             sync.Mutex
 	automationResearchRunning bool
 	automationResearchAttempt time.Time
 	automationResearchSuccess time.Time
@@ -236,6 +247,11 @@ const (
 	automationTaskShadow    = "shadow"
 	automationTaskResearch  = "research"
 	automationCycleInterval = 30 * time.Second
+	outcomePrimaryHour      = 15
+	outcomePrimaryMinute    = 30
+	outcomeRetryHour        = 16
+	outcomeRetryMinute      = 5
+	automaticResearchRetry  = 10 * time.Minute
 )
 
 const shadowCalendarCacheTTL = 2 * time.Minute
@@ -250,9 +266,16 @@ type automationTaskDefinition struct {
 // shadow -> research sequence on every refresh.
 var automationTaskDefinitions = []automationTaskDefinition{
 	{Key: automationTaskScan, Label: "扫描"},
-	{Key: automationTaskOutcomes, Label: "前测"},
+	{Key: automationTaskOutcomes, Label: "验证"},
 	{Key: automationTaskShadow, Label: "影子"},
 	{Key: automationTaskResearch, Label: "研究"},
+}
+
+type automaticOutcomePlan struct {
+	Run          bool
+	RetryAttempt bool
+	NextRunAt    time.Time
+	Detail       string
 }
 
 type quoteCacheEntry struct {
@@ -524,6 +547,21 @@ func WithShadowExecutionProfiles(evaluator shadowAnalyzer, balanced, conservativ
 	}
 }
 
+// WithAdaptiveShadowExecution adds an isolated Challenger ledger. It is
+// optional so embedders and existing tests can keep the original three
+// accounts while the full web application enables gated calibration.
+func WithAdaptiveShadowExecution(archive shadowArchive) ServerOption {
+	return func(server *Server) {
+		if archive == nil {
+			return
+		}
+		if server.shadowProfiles == nil {
+			server.shadowProfiles = make(map[string]shadowExecutionProfile)
+		}
+		server.shadowProfiles[shadowProfileAdaptive] = adaptiveShadowExecutionProfile(archive)
+	}
+}
+
 func WithAutomaticStrategyResearch(runner func(context.Context, []string, time.Time) (AutomaticResearchResult, error)) ServerOption {
 	return func(server *Server) {
 		server.automationResearch = runner
@@ -533,6 +571,15 @@ func WithAutomaticStrategyResearch(runner func(context.Context, []string, time.T
 func WithAutomationState(store automationStateStore) ServerOption {
 	return func(server *Server) {
 		server.automationStateStore = store
+	}
+}
+
+// WithRealtimeCalibrationStore persists the currently applied gated
+// Challenger and its short audit history. It is optional for embedders that
+// only need the scanner surface.
+func WithRealtimeCalibrationStore(store realtimeCalibrationStateStore) ServerOption {
+	return func(server *Server) {
+		server.realtimeCalibrationStore = store
 	}
 }
 
@@ -571,10 +618,26 @@ func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistory
 			option(server)
 		}
 	}
+	server.restoreRealtimeCalibration()
 	server.restoreAutomationState()
 	server.initializeAutomationTaskStates()
 	server.handler = server.routes()
 	return server
+}
+
+func (s *Server) restoreRealtimeCalibration() {
+	if s == nil || s.realtimeCalibrationStore == nil || s.realtimeScanner == nil {
+		return
+	}
+	calibratable, ok := s.realtimeScanner.(realtimeCalibratableScanner)
+	if !ok {
+		return
+	}
+	state, err := s.realtimeCalibrationStore.Load()
+	if err != nil || state.Active.ID == "" || state.Status == "challenger-rolled-back" {
+		return
+	}
+	calibratable.SetCalibration(state.Active)
 }
 
 func (s *Server) restoreAutomationState() {
@@ -653,7 +716,7 @@ func (s *Server) initializeAutomationTaskStates() {
 	}
 	defaults := map[string]storage.AutomationTaskState{
 		automationTaskScan:     {Status: "waiting", Detail: "等待服务端调度"},
-		automationTaskOutcomes: {Status: "waiting", Detail: "等待当前交易日快照"},
+		automationTaskOutcomes: {Status: "waiting", Detail: "等待收盘后信号验证"},
 		automationTaskShadow:   {Status: "waiting", Detail: "等待当前交易日快照"},
 		automationTaskResearch: {Status: "waiting", Detail: "等待收盘后的非重叠窗口"},
 	}
@@ -661,7 +724,7 @@ func (s *Server) initializeAutomationTaskStates() {
 		defaults[automationTaskScan] = storage.AutomationTaskState{Status: "paused", Detail: "实时扫描服务未配置"}
 	}
 	if s.realtimeOutcomes == nil {
-		defaults[automationTaskOutcomes] = storage.AutomationTaskState{Status: "paused", Detail: "信号前测服务未配置"}
+		defaults[automationTaskOutcomes] = storage.AutomationTaskState{Status: "paused", Detail: "信号验证服务未配置"}
 	}
 	if s.shadowEvaluator == nil || len(s.shadowProfiles) == 0 {
 		defaults[automationTaskShadow] = storage.AutomationTaskState{Status: "paused", Detail: "影子账户服务未配置"}
@@ -789,7 +852,7 @@ func (s *Server) automationStatus() AutomationStatus {
 		Running: s.automationRunning, LastRunAt: s.automationLastRun,
 		LastSuccessAt: s.automationLastSuccess, LastError: s.automationLastError,
 		NextRunAt: s.automationNextRun, LastOutcomeAt: s.automationLastOutcome, LastShadowAt: s.automationLastShadow,
-		Tasks:           []string{"交易时段实时扫描", "信号结果前测", "三个影子账户推进", "非重叠窗口滚动研究"},
+		Tasks:           []string{"交易时段实时扫描", "收盘后信号验证", "四个影子账户推进", "非重叠窗口滚动研究"},
 		TaskOrder:       []string{automationTaskScan, automationTaskOutcomes, automationTaskShadow, automationTaskResearch},
 		ResearchRunning: s.automationResearchRunning, ResearchAttemptAt: s.automationResearchAttempt,
 		ResearchSuccessAt: s.automationResearchSuccess, ResearchExperimentID: s.automationResearchID,
@@ -884,6 +947,56 @@ func (s *Server) runAutomationCycle(ctx context.Context) {
 	s.runAutomationCycleStarted(ctx)
 }
 
+func automaticOutcomeValidationPlan(now time.Time, session realtime.MarketSession, lastSuccess time.Time, task storage.AutomationTaskState) automaticOutcomePlan {
+	localNow := now.In(realtimeWebLocation)
+	day := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, realtimeWebLocation)
+	primary := day.Add(outcomePrimaryHour*time.Hour + outcomePrimaryMinute*time.Minute)
+	retry := day.Add(outcomeRetryHour*time.Hour + outcomeRetryMinute*time.Minute)
+	nextPrimary := nextAutomaticOutcomeValidation(session, localNow)
+	if !session.TradingDay {
+		return automaticOutcomePlan{NextRunAt: nextPrimary, Detail: "等待下个交易日收盘验证"}
+	}
+	if !lastSuccess.IsZero() && !lastSuccess.In(realtimeWebLocation).Before(primary) {
+		return automaticOutcomePlan{NextRunAt: nextPrimary, Detail: "本交易日信号验证已完成"}
+	}
+	if localNow.Before(primary) {
+		return automaticOutcomePlan{NextRunAt: primary, Detail: "等待收盘后 15:30 验证"}
+	}
+	lastAttempt := task.LastAttemptAt.In(realtimeWebLocation)
+	if localNow.Before(retry) {
+		if task.LastAttemptAt.IsZero() || lastAttempt.Before(primary) {
+			return automaticOutcomePlan{Run: true, NextRunAt: retry}
+		}
+		return automaticOutcomePlan{NextRunAt: retry, Detail: "等待 16:05 日K就绪重试"}
+	}
+	if task.LastAttemptAt.IsZero() || lastAttempt.Before(retry) {
+		return automaticOutcomePlan{Run: true, RetryAttempt: true, NextRunAt: nextPrimary}
+	}
+	return automaticOutcomePlan{NextRunAt: nextPrimary, Detail: "今日验证窗口已结束，等待下个交易日"}
+}
+
+func nextAutomaticOutcomeValidation(session realtime.MarketSession, now time.Time) time.Time {
+	if session.TradingDay {
+		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, realtimeWebLocation)
+		primary := day.Add(outcomePrimaryHour*time.Hour + outcomePrimaryMinute*time.Minute)
+		if now.Before(primary) {
+			return primary
+		}
+	}
+	next := session.NextScanAt.In(realtimeWebLocation)
+	if next.IsZero() {
+		next = now.AddDate(0, 0, 1)
+		for next.Weekday() == time.Saturday || next.Weekday() == time.Sunday {
+			next = next.AddDate(0, 0, 1)
+		}
+	}
+	return time.Date(next.Year(), next.Month(), next.Day(), outcomePrimaryHour, outcomePrimaryMinute, 0, 0, realtimeWebLocation)
+}
+
+func outcomeReportCoversTradingDate(report realtime.OutcomeReport, tradingDate string) bool {
+	return len(tradingDate) == len("2006-01-02") && report.DataThrough >= tradingDate
+}
+
 func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 	defer func() {
 		s.automationMu.Lock()
@@ -954,37 +1067,61 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 	}
 	if scanBusy {
 		// A manual scan owns the scanner lock, but it should not block the
-		// independent outcome and shadow jobs. Continue with the latest cached
-		// snapshot; those jobs already require a same-session snapshot before
-		// doing any work. The task remains visibly busy so the operator knows
-		// the fresh scan result is still pending.
-		s.setAutomationTask(automationTaskScan, "busy", "已有手动扫描正在运行，使用最近快照继续前测与影子同步", now, nil)
+		// independent validation and shadow jobs. Signal validation follows its
+		// own after-close schedule, while shadow advancement can continue from a
+		// current cached snapshot. Keep the scanner visibly busy so operators know
+		// the fresh result is still pending.
+		s.setAutomationTask(automationTaskScan, "busy", "已有手动扫描正在运行，使用最近快照继续影子同步", now, nil)
 	}
 
 	s.automationMu.Lock()
 	lastOutcome := s.automationLastOutcome
+	outcomeTask := s.automationTasks[automationTaskOutcomes]
 	s.automationMu.Unlock()
-	shouldUpdateOutcomes := lastOutcome.IsZero() || now.Sub(lastOutcome) >= 30*time.Minute
-	if !shouldUpdateOutcomes {
-		s.setAutomationTaskNextRun(automationTaskOutcomes, lastOutcome.Add(30*time.Minute))
-		s.setAutomationTask(automationTaskOutcomes, "waiting", "距上次前测未满30分钟", now, nil)
-	} else if s.realtimeOutcomes != nil && s.hasCurrentSessionSnapshot(latestSnapshot, session) {
-		if signals, err := s.realtimeArchive.List(2000); err != nil {
-			appendCycleError("读取信号前测失败", err)
-			s.setAutomationTask(automationTaskOutcomes, "error", "读取信号前测失败", now, err)
-		} else if _, err := s.realtimeOutcomes.Evaluate(cycleCtx, signals, realtime.OutcomeOptions{SignalLimit: 2000}); err != nil {
-			appendCycleError("更新信号前测失败", err)
-			s.setAutomationTask(automationTaskOutcomes, "error", "更新信号前测失败", now, err)
-		} else {
+	outcomePlan := automaticOutcomeValidationPlan(now, session, lastOutcome, outcomeTask)
+	s.setAutomationTaskNextRun(automationTaskOutcomes, outcomePlan.NextRunAt)
+	if s.realtimeOutcomes == nil {
+		s.setAutomationTask(automationTaskOutcomes, "paused", "信号验证服务未配置", now, nil)
+	} else if !outcomePlan.Run {
+		s.setAutomationTask(automationTaskOutcomes, "waiting", outcomePlan.Detail, now, nil)
+	} else {
+		s.setAutomationTask(automationTaskOutcomes, "running", "正在更新信号验证结果", now, nil)
+		// Read the complete append-only signal archive. Passing a negative limit
+		// explicitly requests full-archive mode; truncating this to the newest
+		// 2000 rows leaves older 5/10-day horizons pending forever when the
+		// scanner emits a large universe every 30 seconds.
+		if signals, err := s.realtimeArchive.List(-1); err != nil {
+			appendCycleError("读取信号验证失败", err)
+			s.setAutomationTask(automationTaskOutcomes, "error", "读取信号验证失败", now, err)
+		} else if len(signals) == 0 {
 			s.automationMu.Lock()
 			s.automationLastOutcome = now
 			s.automationMu.Unlock()
-			s.setAutomationTaskNextRun(automationTaskOutcomes, now.Add(30*time.Minute))
-			s.setAutomationTask(automationTaskOutcomes, "success", fmt.Sprintf("已评估%d个信号", len(signals)), now, nil)
+			next := nextAutomaticOutcomeValidation(session, now.In(realtimeWebLocation))
+			s.setAutomationTaskNextRun(automationTaskOutcomes, next)
+			s.setAutomationTask(automationTaskOutcomes, "success", "当前没有待验证信号", now, nil)
+		} else if report, err := s.realtimeOutcomes.Evaluate(cycleCtx, signals, realtime.OutcomeOptions{SignalLimit: -1}); err != nil {
+			appendCycleError("更新信号验证失败", err)
+			s.setAutomationTask(automationTaskOutcomes, "error", "更新信号验证失败", now, err)
+		} else if outcomeReportCoversTradingDate(report, session.TradingDate) {
+			s.applyRealtimeCalibration(report)
+			s.automationMu.Lock()
+			s.automationLastOutcome = now
+			s.automationMu.Unlock()
+			next := nextAutomaticOutcomeValidation(session, now.In(realtimeWebLocation))
+			s.setAutomationTaskNextRun(automationTaskOutcomes, next)
+			s.setAutomationTask(automationTaskOutcomes, "success", fmt.Sprintf("已验证%d个信号，数据截至%s", len(signals), report.DataThrough), now, nil)
+		} else {
+			dataThrough := report.DataThrough
+			if dataThrough == "" {
+				dataThrough = "尚未返回有效交易日"
+			}
+			if outcomePlan.RetryAttempt {
+				s.setAutomationTask(automationTaskOutcomes, "waiting", fmt.Sprintf("日K仅更新至%s，本日验证窗口已结束", dataThrough), now, nil)
+			} else {
+				s.setAutomationTask(automationTaskOutcomes, "waiting", fmt.Sprintf("日K仅更新至%s，16:05重试", dataThrough), now, nil)
+			}
 		}
-	} else {
-		s.setAutomationTaskNextRun(automationTaskOutcomes, now.Add(30*time.Minute))
-		s.setAutomationTask(automationTaskOutcomes, "paused", "当前快照不是本交易日有效快照", now, nil)
 	}
 
 	currentShadowSnapshot := s.hasCurrentSessionSnapshot(latestSnapshot, session)
@@ -1046,7 +1183,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			} else if allCached {
 				s.setAutomationTask(automationTaskShadow, "waiting", "已检查最新快照，暂无新增报价水位", now, nil)
 			} else {
-				s.setAutomationTask(automationTaskShadow, "success", "三个影子账户已按最新快照推进", now, nil)
+				s.setAutomationTask(automationTaskShadow, "success", "四个影子账户已按最新快照推进", now, nil)
 			}
 		}
 	} else {
@@ -1067,7 +1204,8 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 	}
 	s.automationMu.Unlock()
 	s.persistAutomationState()
-	// A cached snapshot is sufficient for outcome/shadow work, but automatic
+	// A cached snapshot is sufficient for shadow work, while signal validation
+	// follows its own after-close schedule. Automatic
 	// research requires a clean scan cycle so a transient quote failure cannot
 	// accidentally open a new research window.
 	if len(cycleErrors) == 0 && !scanFailed && !scanBusy {
@@ -1110,9 +1248,18 @@ func (s *Server) maybeStartAutomaticResearch(ctx context.Context, now time.Time,
 		return
 	}
 	s.automationMu.Lock()
-	if s.automationResearchRunning || (!s.automationResearchAttempt.IsZero() && s.automationResearchAttempt.In(realtimeWebLocation).Format("2006-01-02") == localNow.Format("2006-01-02")) {
+	sameDayAttempt := !s.automationResearchAttempt.IsZero() && s.automationResearchAttempt.In(realtimeWebLocation).Format("2006-01-02") == localNow.Format("2006-01-02")
+	retryAfterFailure := sameDayAttempt && strings.TrimSpace(s.automationResearchError) != ""
+	if s.automationResearchRunning || (sameDayAttempt && !retryAfterFailure) {
 		s.automationMu.Unlock()
 		s.setAutomationTask(automationTaskResearch, "waiting", "本交易日已尝试或已有研究任务运行", now, nil)
+		return
+	}
+	if retryAfterFailure && localNow.Sub(s.automationResearchAttempt.In(realtimeWebLocation)) < automaticResearchRetry {
+		next := s.automationResearchAttempt.Add(automaticResearchRetry)
+		s.automationMu.Unlock()
+		s.setAutomationTaskNextRun(automationTaskResearch, next)
+		s.setAutomationTask(automationTaskResearch, "waiting", "上一轮研究失败，等待 10 分钟后自动重试", now, nil)
 		return
 	}
 	s.automationResearchRunning = true
@@ -1123,7 +1270,7 @@ func (s *Server) maybeStartAutomaticResearch(ctx context.Context, now time.Time,
 
 	groups, _, err := storage.LoadWatchlistGroups(s.watchlistFile)
 	if err != nil {
-		s.finishAutomaticResearch(AutomaticResearchResult{}, err)
+		s.finishAutomaticResearch(AutomaticResearchResult{}, err, now)
 		return
 	}
 	all := storage.WatchlistSymbols(groups, storage.AllWatchlistGroup)
@@ -1138,15 +1285,20 @@ func (s *Server) maybeStartAutomaticResearch(ctx context.Context, now time.Time,
 		}
 	}
 	if len(symbols) == 0 {
-		s.finishAutomaticResearch(AutomaticResearchResult{}, fmt.Errorf("自动滚动研究股票池为空"))
+		s.finishAutomaticResearch(AutomaticResearchResult{}, fmt.Errorf("自动滚动研究股票池为空"), now)
 		return
 	}
 	end := automaticResearchCutoff(latestSnapshot, now)
+	// Keep the launch timestamp as the completion metadata for the asynchronous
+	// callback. Besides making the audit record deterministic, this avoids
+	// reading an embedding application's mutable clock function from a worker
+	// goroutine after the request that started the work has returned.
+	attemptedAt := now
 	go func() {
 		researchCtx, cancel := context.WithTimeout(ctx, 45*time.Minute)
 		defer cancel()
 		result, runErr := s.automationResearch(researchCtx, symbols, end)
-		s.finishAutomaticResearch(result, runErr)
+		s.finishAutomaticResearch(result, runErr, attemptedAt)
 	}()
 }
 
@@ -1176,27 +1328,31 @@ func automaticResearchCutoff(snapshot realtime.ScanResult, now time.Time) time.T
 	return day
 }
 
-func (s *Server) finishAutomaticResearch(result AutomaticResearchResult, err error) {
+func (s *Server) finishAutomaticResearch(result AutomaticResearchResult, err error, completedAt time.Time) {
+	if completedAt.IsZero() {
+		completedAt = time.Now()
+	}
 	s.automationMu.Lock()
 	s.automationResearchRunning = false
 	if err != nil {
 		s.automationResearchError = err.Error()
 		s.automationMu.Unlock()
-		s.setAutomationTask(automationTaskResearch, "error", "自动滚动研究失败", s.currentTime(), err)
+		s.setAutomationTask(automationTaskResearch, "error", "自动滚动研究失败", completedAt, err)
+		s.setAutomationTaskNextRun(automationTaskResearch, completedAt.Add(automaticResearchRetry))
 		s.persistAutomationState()
 		return
 	}
 	s.automationResearchError = ""
 	s.automationResearchMessage = result.Message
 	if result.Ran {
-		s.automationResearchSuccess = s.currentTime()
+		s.automationResearchSuccess = completedAt
 		s.automationResearchID = result.ExperimentID
 	}
 	s.automationMu.Unlock()
 	if result.Ran {
-		s.setAutomationTask(automationTaskResearch, "success", result.Message, s.currentTime(), nil)
+		s.setAutomationTask(automationTaskResearch, "success", result.Message, completedAt, nil)
 	} else {
-		s.setAutomationTask(automationTaskResearch, "waiting", result.Message, s.currentTime(), nil)
+		s.setAutomationTask(automationTaskResearch, "waiting", result.Message, completedAt, nil)
 	}
 	s.persistAutomationState()
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,9 +17,17 @@ import (
 const (
 	backtestHistoryLimit        = 5000
 	tencentBacktestHistoryLimit = 1000
+	// Tencent returns at most 1000 daily bars and some deployments ignore a
+	// range that is too wide. 900 calendar days stays comfortably below that
+	// cap while still keeping the number of requests bounded for multi-year
+	// walk-forward studies.
+	tencentBacktestChunkCalendarDays = 900
 )
 
 func backtestHistoryAddress(base, securityID string, start, end time.Time) string {
+	if strings.Contains(base, "{secid}") {
+		base = strings.Replace(base, "{secid}", url.QueryEscape(securityID), 1)
+	}
 	values := url.Values{
 		"secid":   {securityID},
 		"klt":     {"101"},
@@ -37,6 +46,9 @@ func backtestHistoryAddress(base, securityID string, start, end time.Time) strin
 }
 
 func tencentBacktestHistoryAddress(base, symbol string, start, end time.Time) string {
+	if strings.Contains(base, "{symbol}") {
+		base = strings.Replace(base, "{symbol}", url.QueryEscape(symbol), 1)
+	}
 	values := url.Values{
 		"param": {strings.Join([]string{
 			symbol, "day", start.Format("2006-01-02"), end.Format("2006-01-02"),
@@ -50,8 +62,14 @@ func tencentBacktestHistoryAddress(base, symbol string, start, end time.Time) st
 	return base + separator + values.Encode()
 }
 
-func fetchTencentDailyBarsRange(ctx context.Context, symbol string, start, end time.Time) ([]domain.DailyBar, error) {
+func fetchTencentDailyBarsRangeOnce(ctx context.Context, symbol string, start, end time.Time) ([]domain.DailyBar, error) {
 	base := os.Getenv("ASTOCK_BACKTEST_HISTORY_TENCENT_API_URL")
+	if base == "" {
+		// Keep the backtest path aligned with the endpoint override used by
+		// ordinary daily-history consumers. Deployments commonly configure one
+		// proxy for both paths.
+		base = os.Getenv("ASTOCK_DAILY_HISTORY_TENCENT_API_URL")
+	}
 	if base == "" {
 		base = tencentDailyHistoryAPIURL
 	}
@@ -78,6 +96,52 @@ func fetchTencentDailyBarsRange(ctx context.Context, symbol string, start, end t
 		lastError = fmt.Errorf("%s 腾讯回测日K暂不可用", symbol)
 	}
 	return nil, lastError
+}
+
+// fetchTencentDailyBarsRange deliberately splits long requests. The endpoint's
+// `lmt=1000` limit is easy to hit during a four-year training window; treating
+// that response as a hard failure made one old/active ticker abort every
+// candidate in a continuous optimization run. Each chunk is independently
+// checked for truncation, then merged by trading date so the engine receives a
+// single deterministic series.
+func fetchTencentDailyBarsRange(ctx context.Context, symbol string, start, end time.Time) ([]domain.DailyBar, error) {
+	if start.IsZero() || end.IsZero() || start.After(end) {
+		return nil, fmt.Errorf("%s 腾讯回测日期区间无效", symbol)
+	}
+	merged := make(map[string]domain.DailyBar)
+	chunkStart := start
+	for !chunkStart.After(end) {
+		chunkEnd := chunkStart.AddDate(0, 0, tencentBacktestChunkCalendarDays-1)
+		if chunkEnd.After(end) {
+			chunkEnd = end
+		}
+		bars, err := fetchTencentDailyBarsRangeOnce(ctx, symbol, chunkStart, chunkEnd)
+		if err != nil {
+			return nil, fmt.Errorf("%s 腾讯回测日K分段 %s~%s: %w", symbol,
+				chunkStart.Format("2006-01-02"), chunkEnd.Format("2006-01-02"), err)
+		}
+		if tencentBacktestRangeTruncated(bars, chunkStart) {
+			return nil, fmt.Errorf("%s 腾讯回测日K分段 %s~%s 仍超过%d根上限", symbol,
+				chunkStart.Format("2006-01-02"), chunkEnd.Format("2006-01-02"), tencentBacktestHistoryLimit)
+		}
+		for _, bar := range bars {
+			if bar.Date < start.Format("2006-01-02") || bar.Date > end.Format("2006-01-02") {
+				continue
+			}
+			bar.Source = "腾讯不复权"
+			merged[bar.Date] = bar
+		}
+		chunkStart = chunkEnd.AddDate(0, 0, 1)
+	}
+	if len(merged) == 0 {
+		return nil, fmt.Errorf("%s 腾讯回测日K分段合并后为空", symbol)
+	}
+	result := make([]domain.DailyBar, 0, len(merged))
+	for _, bar := range merged {
+		result = append(result, bar)
+	}
+	sort.SliceStable(result, func(left, right int) bool { return result[left].Date < result[right].Date })
+	return result, nil
 }
 
 func tencentBacktestRangeTruncated(bars []domain.DailyBar, start time.Time) bool {
@@ -108,14 +172,14 @@ func (EastmoneyClient) FetchDailyBarsRange(
 	// Eastmoney remains a fallback with amount and turnover context.
 	tencentBars, tencentError := fetchTencentDailyBarsRange(ctx, symbol, start, end)
 	if tencentError == nil {
-		if tencentBacktestRangeTruncated(tencentBars, start) {
-			tencentError = fmt.Errorf("%s 腾讯回测日K达到%d根上限且未覆盖预热起点 %s", symbol, tencentBacktestHistoryLimit, start.Format("2006-01-02"))
-		} else {
-			return tencentBars, nil
-		}
+		return tencentBars, nil
 	}
 	bases := []string{klineHistoryAPIURL, klineAPIURL, klineFallbackAPIURL}
 	if configured := os.Getenv("ASTOCK_BACKTEST_HISTORY_API_URL"); configured != "" {
+		bases = []string{configured}
+	} else if configured := os.Getenv("ASTOCK_DAILY_HISTORY_API_URL"); configured != "" {
+		// A single configured Eastmoney-compatible proxy should be honored by
+		// both the normal snapshot path and long-range research.
 		bases = []string{configured}
 	}
 	var lastError error

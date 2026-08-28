@@ -57,16 +57,18 @@ type industryFlowClient interface {
 }
 
 type Scanner struct {
-	market     MarketClient
-	quotes     QuoteClient
-	history    HistoryClient
-	minutes    MinuteClient
-	store      Store
-	strategies []Strategy
-	now        func() time.Time
-	calendar   TradingCalendarProvider
-	historyMu  sync.Mutex
-	histories  map[string]historyCacheEntry
+	market        MarketClient
+	quotes        QuoteClient
+	history       HistoryClient
+	minutes       MinuteClient
+	store         Store
+	strategies    []Strategy
+	now           func() time.Time
+	calendar      TradingCalendarProvider
+	historyMu     sync.Mutex
+	histories     map[string]historyCacheEntry
+	calibrationMu sync.RWMutex
+	calibration   ScoreCalibration
 }
 
 // SetTradingCalendarProvider injects the same exchange calendar used by the
@@ -84,6 +86,66 @@ func NewScanner(market MarketClient, quotes QuoteClient, history HistoryClient, 
 		market: market, quotes: quotes, history: history, minutes: minutes, store: store,
 		strategies: DefaultStrategies(), now: time.Now, histories: make(map[string]historyCacheEntry),
 	}
+}
+
+// SetCalibration installs a gated challenger configuration. An empty or
+// invalid value clears the challenger and leaves the champion score untouched.
+func (scanner *Scanner) SetCalibration(calibration ScoreCalibration) {
+	if scanner == nil {
+		return
+	}
+	calibration = normalizedScoreCalibration(calibration)
+	scanner.calibrationMu.Lock()
+	scanner.calibration = calibration
+	scanner.calibrationMu.Unlock()
+}
+
+func (scanner *Scanner) calibrationSnapshot() ScoreCalibration {
+	if scanner == nil {
+		return ScoreCalibration{}
+	}
+	scanner.calibrationMu.RLock()
+	defer scanner.calibrationMu.RUnlock()
+	result := scanner.calibration
+	result.ComponentWeights = cloneFloatMap(result.ComponentWeights)
+	return result
+}
+
+func normalizedScoreCalibration(input ScoreCalibration) ScoreCalibration {
+	input.ID = strings.TrimSpace(input.ID)
+	if input.ID == "" || !finite(input.MinimumScore) || input.MinimumScore <= 0 {
+		return ScoreCalibration{}
+	}
+	input.MinimumScore = clamp(input.MinimumScore, 45, 80)
+	weights := make(map[string]float64)
+	total := 0.0
+	for key, weight := range input.ComponentWeights {
+		key = strings.TrimSpace(key)
+		if key == "" || !finite(weight) || weight <= 0 {
+			continue
+		}
+		weights[key] = weight
+		total += weight
+	}
+	if len(weights) < 2 || total <= 0 {
+		return ScoreCalibration{}
+	}
+	for key := range weights {
+		weights[key] /= total
+	}
+	input.ComponentWeights = weights
+	return input
+}
+
+func cloneFloatMap(input map[string]float64) map[string]float64 {
+	if len(input) == 0 {
+		return nil
+	}
+	result := make(map[string]float64, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
 }
 
 func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLeaders bool) (ScanResult, error) {
@@ -216,6 +278,7 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 		signals = append(signals, scanner.evaluate(input))
 	}
 	signals = applyCrossSectionOverlay(signals)
+	signals = applyCalibratedOverlay(signals)
 	stale, current := quoteDateCoverage(signals, session.TradingDate)
 	if stale > 0 && current == 0 {
 		return ScanResult{}, fmt.Errorf("行情日期未推进到%s，暂停实时扫描（%d个信号仍为旧交易日）", session.TradingDate, stale)
@@ -304,6 +367,26 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 	if !riskAvailable {
 		state = StateInvalid
 	}
+	calibration := scanner.calibrationSnapshot()
+	calibratedScore, calibratedRiskAdjustedScore := 0.0, 0.0
+	calibratedState := SignalState("")
+	if calibration.ID != "" {
+		if value, calibratedCoverage, _ := compositeScoreWithWeights(components, calibration.ComponentWeights); calibratedCoverage >= minimumFactorCoverage {
+			calibratedScore = math.Round(value*10) / 10
+			calibratedRiskAdjustedScore = math.Round(value*riskMultiplier*10) / 10
+			calibratedState = StateWeak
+			if calibratedRiskAdjustedScore >= 72 {
+				calibratedState = StateTriggered
+			} else if calibratedRiskAdjustedScore >= calibration.MinimumScore {
+				calibratedState = StateWatching
+			}
+			if !riskAvailable {
+				calibratedState = StateInvalid
+			}
+		} else {
+			calibratedState = StateInvalid
+		}
+	}
 	price := input.Stock.Price
 	triggerPrice, invalidationPrice, dataDate, source := 0.0, 0.0, "", ""
 	entryShape, entryShapeLabel, entryShapeScore := "", "", 0.0
@@ -334,6 +417,9 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 		Symbol: input.Stock.Symbol, Name: input.Stock.Name, Industry: input.Stock.Industry,
 		State: state, Score: math.Round(score*10) / 10,
 		RiskAdjustedScore: riskAdjustedScore, RiskMultiplier: riskMultiplier, MarketRegime: string(regime), RiskOverlayReason: riskOverlayReason,
+		CalibrationID: calibration.ID, CalibrationReadySamples: calibration.ReadySamples,
+		CalibrationMinimumScore: calibration.MinimumScore, CalibratedScore: calibratedScore,
+		CalibratedRiskAdjustedScore: calibratedRiskAdjustedScore, CalibratedState: calibratedState,
 		Price: price, Percent: input.Stock.Percent, Speed: input.Stock.Speed,
 		TriggerPrice: triggerPrice, InvalidationPrice: invalidationPrice,
 		EntryShape: entryShape, EntryShapeLabel: entryShapeLabel, EntryShapeScore: entryShapeScore, EntryShapeEvidence: entryShapeEvidence,
@@ -632,6 +718,69 @@ func applyCrossSectionOverlay(signals []Signal) []Signal {
 	return result
 }
 
+func applyCalibratedOverlay(signals []Signal) []Signal {
+	result := append([]Signal(nil), signals...)
+	indexes := make([]int, 0, len(result))
+	for index := range result {
+		signal := &result[index]
+		if signal.CalibrationID == "" || signal.CalibratedState == StateInvalid ||
+			(signal.CalibratedState != StateTriggered && signal.CalibratedState != StateWatching) ||
+			!finite(signal.CalibratedRiskAdjustedScore) || signal.CalibratedRiskAdjustedScore < signal.CalibrationMinimumScore {
+			continue
+		}
+		indexes = append(indexes, index)
+	}
+	sort.SliceStable(indexes, func(left, right int) bool {
+		leftSignal, rightSignal := result[indexes[left]], result[indexes[right]]
+		if leftSignal.CalibratedRiskAdjustedScore != rightSignal.CalibratedRiskAdjustedScore {
+			return leftSignal.CalibratedRiskAdjustedScore > rightSignal.CalibratedRiskAdjustedScore
+		}
+		if leftSignal.CalibratedScore != rightSignal.CalibratedScore {
+			return leftSignal.CalibratedScore > rightSignal.CalibratedScore
+		}
+		return leftSignal.Symbol < rightSignal.Symbol
+	})
+	total := len(indexes)
+	industryCounts := make(map[string]int)
+	for _, index := range indexes {
+		industry := normalizedIndustry(result[index].Industry)
+		if industry != "" {
+			industryCounts[industry]++
+		}
+	}
+	industryCap := 0
+	if total > 0 {
+		industryCap = int(math.Ceil(float64(total) * portfolioIndustryFraction))
+		if industryCap < 1 {
+			industryCap = 1
+		}
+	}
+	acceptedIndustry := make(map[string]int)
+	for rank, index := range indexes {
+		signal := &result[index]
+		signal.CalibratedRank = rank + 1
+		signal.CalibratedTotal = total
+		if total >= minimumRankingPool {
+			maximumRank := int(math.Ceil(float64(total) * portfolioTopFraction))
+			if signal.CalibratedRank > maximumRank {
+				signal.CalibratedPortfolioReason = fmt.Sprintf("校准池排名 %d/%d，未进入前%.0f%%", signal.CalibratedRank, total, portfolioTopFraction*100)
+				continue
+			}
+		}
+		industry := normalizedIndustry(signal.Industry)
+		if industry != "" && industryCounts[industry] > industryCap && acceptedIndustry[industry] >= industryCap {
+			signal.CalibratedPortfolioReason = fmt.Sprintf("校准行业集中度保护：%s已有%d个更高排名候选", industry, industryCap)
+			continue
+		}
+		if industry != "" {
+			acceptedIndustry[industry]++
+		}
+		signal.CalibratedPortfolioEligible = true
+		signal.CalibratedPortfolioReason = fmt.Sprintf("校准分 %.1f、风险调整分 %.1f，校准池排名 %d/%d", signal.CalibratedScore, signal.CalibratedRiskAdjustedScore, signal.CalibratedRank, total)
+	}
+	return result
+}
+
 func portfolioEligibility(signal Signal) (bool, string) {
 	return basePortfolioEligibility(signal)
 }
@@ -921,6 +1070,37 @@ func compositeScore(components []Component) (float64, float64, map[string]float6
 		return 0, 0, contributions
 	}
 	return score / weightAvailable, weightAvailable, contributions
+}
+
+func compositeScoreWithWeights(components []Component, weights map[string]float64) (float64, float64, map[string]float64) {
+	byKey := make(map[string]Component, len(components))
+	for _, item := range components {
+		byKey[item.Key] = item
+	}
+	totalWeight, availableWeight, score := 0.0, 0.0, 0.0
+	contributions := make(map[string]float64, len(weights))
+	for key, weight := range weights {
+		if weight <= 0 || !finite(weight) {
+			continue
+		}
+		totalWeight += weight
+		item, found := byKey[key]
+		if !found || item.State == "数据不足" || !finite(item.Score) {
+			continue
+		}
+		maximum := item.Maximum
+		if maximum <= 0 || !finite(maximum) {
+			maximum = 20
+		}
+		availableWeight += weight
+		contribution := weight * clamp(item.Score/maximum, 0, 1) * 100
+		score += contribution
+		contributions[key] = contribution
+	}
+	if totalWeight <= 0 || availableWeight <= 0 {
+		return 0, 0, contributions
+	}
+	return score / availableWeight, availableWeight / totalWeight, contributions
 }
 
 func topReasons(components []Component, contributions map[string]float64, limit int) []string {

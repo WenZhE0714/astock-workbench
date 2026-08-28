@@ -45,7 +45,7 @@ export ASTOCK_TRADINGAGENTS_PYTHON="$HOME/tradingagents-astock/.venv/bin/python"
 
 ## 让 Web 自动运行（macOS）
 
-如果需要关闭终端后继续执行交易时段扫描、信号前测和影子账户实时事件推进，可在目标机器上执行：
+如果需要关闭终端后继续执行交易时段扫描、收盘后信号验证和影子账户实时事件推进，可在目标机器上执行：
 
 ```bash
 ./astock-darwin-arm64 service install --listen 127.0.0.1:8765

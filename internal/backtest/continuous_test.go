@@ -3,6 +3,7 @@ package backtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -20,6 +21,22 @@ func (candidateFailureEngine) Run(_ context.Context, request Request) (Result, e
 		return Result{}, errors.New("candidate data unavailable")
 	}
 	return Result{Request: request, Metrics: Metrics{TotalReturn: 2, AnnualizedReturn: 2, MaxDrawdown: -2, Sharpe: 1, Trades: 10, FinalEquity: request.InitialCash}}, nil
+}
+
+type tickerFailureEngine struct {
+	badTicker string
+}
+
+func (engine tickerFailureEngine) Run(_ context.Context, request Request) (Result, error) {
+	for _, ticker := range request.Tickers {
+		if ticker == engine.badTicker {
+			return Result{}, fmt.Errorf("%s: 历史日K不可用", ticker)
+		}
+	}
+	return Result{Request: request, Metrics: Metrics{
+		TotalReturn: 2, AnnualizedReturn: 2, MaxDrawdown: -2, Sharpe: 1, Trades: 10,
+		FinalEquity: request.InitialCash * 1.02,
+	}}, nil
 }
 
 func TestContinuousOptimizerIsolatesCandidateEvaluationFailure(t *testing.T) {
@@ -44,6 +61,43 @@ func TestContinuousOptimizerIsolatesCandidateEvaluationFailure(t *testing.T) {
 	if !foundFailure {
 		t.Fatalf("candidate failure evidence missing: %#v", result.Candidates)
 	}
+}
+
+func TestContinuousOptimizerDropsOnlyUnavailableTicker(t *testing.T) {
+	request := continuousTestRequest()
+	request.BaseRequest.Tickers = []string{"sh600519", "sz000001", "sz300750"}
+	request.BaseRequest.Names = map[string]string{"sh600519": "贵州茅台", "sz000001": "平安银行", "sz300750": "宁德时代"}
+	result, err := NewContinuousOptimizer(tickerFailureEngine{badTicker: "sz000001"}).Optimize(context.Background(), request, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Request.BaseRequest.Tickers) != 2 || containsString(result.Request.BaseRequest.Tickers, "sz000001") {
+		t.Fatalf("only the unavailable ticker should be excluded: %+v", result.Request.BaseRequest.Tickers)
+	}
+	if !containsString(result.Warnings, "sz000001") {
+		t.Fatalf("exclusion reason was not retained: %+v", result.Warnings)
+	}
+	if result.Request.BaseRequest.Names["sz000001"] != "" {
+		t.Fatalf("excluded ticker name leaked into effective request: %+v", result.Request.BaseRequest.Names)
+	}
+}
+
+func TestContinuousOptimizerFailsClearlyWhenAllTickersUnavailable(t *testing.T) {
+	request := continuousTestRequest()
+	request.BaseRequest.Tickers = []string{"sh600519"}
+	_, err := NewContinuousOptimizer(tickerFailureEngine{badTicker: "sh600519"}).Optimize(context.Background(), request, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "最后一只可用股票") {
+		t.Fatalf("all-unavailable pool should fail with an explicit reason: %v", err)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if strings.Contains(value, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func (mock *continuousEngineMock) Run(_ context.Context, request Request) (Result, error) {

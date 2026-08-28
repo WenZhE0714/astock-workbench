@@ -51,11 +51,24 @@ type Signal struct {
 	TradablePercentile float64 `json:"tradable_percentile,omitempty"`
 	PortfolioEligible  bool    `json:"portfolio_eligible"`
 	PortfolioReason    string  `json:"portfolio_reason,omitempty"`
-	Price              float64 `json:"price"`
-	Percent            float64 `json:"percent"`
-	Speed              float64 `json:"speed_percent"`
-	TriggerPrice       float64 `json:"trigger_price,omitempty"`
-	InvalidationPrice  float64 `json:"invalidation_price,omitempty"`
+	// Calibrated* fields carry a gated challenger score beside the immutable
+	// baseline score. They are consumed only by the adaptive shadow account;
+	// the champion signal and its audit trail remain unchanged.
+	CalibrationID               string      `json:"calibration_id,omitempty"`
+	CalibrationReadySamples     int         `json:"calibration_ready_samples,omitempty"`
+	CalibrationMinimumScore     float64     `json:"calibration_minimum_score,omitempty"`
+	CalibratedScore             float64     `json:"calibrated_score,omitempty"`
+	CalibratedRiskAdjustedScore float64     `json:"calibrated_risk_adjusted_score,omitempty"`
+	CalibratedState             SignalState `json:"calibrated_state,omitempty"`
+	CalibratedRank              int         `json:"calibrated_rank,omitempty"`
+	CalibratedTotal             int         `json:"calibrated_total,omitempty"`
+	CalibratedPortfolioEligible bool        `json:"calibrated_portfolio_eligible,omitempty"`
+	CalibratedPortfolioReason   string      `json:"calibrated_portfolio_reason,omitempty"`
+	Price                       float64     `json:"price"`
+	Percent                     float64     `json:"percent"`
+	Speed                       float64     `json:"speed_percent"`
+	TriggerPrice                float64     `json:"trigger_price,omitempty"`
+	InvalidationPrice           float64     `json:"invalidation_price,omitempty"`
 	// EntryShape is an explanatory setup classification. It is independent of
 	// the nine-factor composite score and is never an execution instruction.
 	EntryShape                  string      `json:"entry_shape,omitempty"`
@@ -85,36 +98,43 @@ const (
 // Values are calculated only from bars strictly after SignalDate, so the
 // evaluator cannot accidentally use the bar that produced the signal.
 type SignalOutcome struct {
-	Key                string             `json:"key"`
-	SignalID           string             `json:"signal_id"`
-	Symbol             string             `json:"symbol"`
-	Name               string             `json:"name,omitempty"`
-	Industry           string             `json:"industry,omitempty"`
-	SignalDate         string             `json:"signal_date"`
-	SignalAsOf         time.Time          `json:"signal_as_of"`
-	Score              float64            `json:"score"`
-	State              SignalState        `json:"state"`
-	MarketRegime       string             `json:"market_regime,omitempty"`
-	Horizon            int                `json:"horizon"`
-	Status             string             `json:"status"`
-	TargetDate         string             `json:"target_date,omitempty"`
-	EntryPrice         float64            `json:"entry_price,omitempty"`
-	ExitPrice          float64            `json:"exit_price,omitempty"`
-	ReturnPercent      float64            `json:"return_percent,omitempty"`
-	BenchmarkAvailable bool               `json:"benchmark_available"`
-	BenchmarkReturn    float64            `json:"benchmark_return_percent,omitempty"`
-	ExcessReturn       float64            `json:"excess_return_percent,omitempty"`
-	MaxFavorable       float64            `json:"max_favorable_percent,omitempty"`
-	MaxAdverse         float64            `json:"max_adverse_percent,omitempty"`
-	HitTrigger         bool               `json:"hit_trigger"`
-	HitTarget          bool               `json:"hit_target"`
-	HitInvalidation    bool               `json:"hit_invalidation"`
-	EvaluatedAt        time.Time          `json:"evaluated_at"`
-	DataSource         string             `json:"data_source,omitempty"`
-	Warning            string             `json:"warning,omitempty"`
-	StrategyScores     map[string]float64 `json:"strategy_scores,omitempty"`
-	StrategyStates     map[string]string  `json:"strategy_states,omitempty"`
-	StrategyNames      map[string]string  `json:"strategy_names,omitempty"`
+	Key                         string             `json:"key"`
+	SignalID                    string             `json:"signal_id"`
+	Symbol                      string             `json:"symbol"`
+	Name                        string             `json:"name,omitempty"`
+	Industry                    string             `json:"industry,omitempty"`
+	SignalDate                  string             `json:"signal_date"`
+	SignalAsOf                  time.Time          `json:"signal_as_of"`
+	Score                       float64            `json:"score"`
+	RiskAdjustedScore           float64            `json:"risk_adjusted_score,omitempty"`
+	RiskMultiplier              float64            `json:"risk_multiplier,omitempty"`
+	State                       SignalState        `json:"state"`
+	MarketRegime                string             `json:"market_regime,omitempty"`
+	Horizon                     int                `json:"horizon"`
+	Status                      string             `json:"status"`
+	TargetDate                  string             `json:"target_date,omitempty"`
+	EntryPrice                  float64            `json:"entry_price,omitempty"`
+	ExitPrice                   float64            `json:"exit_price,omitempty"`
+	ReturnPercent               float64            `json:"return_percent,omitempty"`
+	BenchmarkAvailable          bool               `json:"benchmark_available"`
+	BenchmarkReturn             float64            `json:"benchmark_return_percent,omitempty"`
+	ExcessReturn                float64            `json:"excess_return_percent,omitempty"`
+	MaxFavorable                float64            `json:"max_favorable_percent,omitempty"`
+	MaxAdverse                  float64            `json:"max_adverse_percent,omitempty"`
+	HitTrigger                  bool               `json:"hit_trigger"`
+	HitTarget                   bool               `json:"hit_target"`
+	HitInvalidation             bool               `json:"hit_invalidation"`
+	EvaluatedAt                 time.Time          `json:"evaluated_at"`
+	DataSource                  string             `json:"data_source,omitempty"`
+	Warning                     string             `json:"warning,omitempty"`
+	CalibrationID               string             `json:"calibration_id,omitempty"`
+	CalibratedScore             float64            `json:"calibrated_score,omitempty"`
+	CalibratedRiskAdjustedScore float64            `json:"calibrated_risk_adjusted_score,omitempty"`
+	CalibratedMinimumScore      float64            `json:"calibrated_minimum_score,omitempty"`
+	CalibratedState             SignalState        `json:"calibrated_state,omitempty"`
+	StrategyScores              map[string]float64 `json:"strategy_scores,omitempty"`
+	StrategyStates              map[string]string  `json:"strategy_states,omitempty"`
+	StrategyNames               map[string]string  `json:"strategy_names,omitempty"`
 }
 
 const (
@@ -306,6 +326,7 @@ type PortfolioConstraintAnalysis struct {
 type OutcomeReport struct {
 	GeneratedAt       time.Time                    `json:"generated_at"`
 	AsOf              string                       `json:"as_of"`
+	DataThrough       string                       `json:"data_through,omitempty"`
 	Horizons          []int                        `json:"horizons"`
 	Summaries         []OutcomeSummary             `json:"summaries"`
 	Strategies        []OutcomeBreakdown           `json:"strategies"`
@@ -316,8 +337,65 @@ type OutcomeReport struct {
 	WalkForward       ComponentWalkForwardAnalysis `json:"component_walk_forward"`
 	Portfolio         PortfolioConstraintAnalysis  `json:"portfolio_analysis"`
 	Assessment        OutcomeAssessment            `json:"assessment"`
+	Calibration       CalibrationAnalysis          `json:"calibration"`
+	Tuning            TuningAnalysis               `json:"tuning"`
 	Recent            []SignalOutcome              `json:"recent,omitempty"`
 	Warnings          []string                     `json:"warnings,omitempty"`
+}
+
+// TuningRecommendation is a deterministic, evidence-linked next action. It
+// is deliberately a recommendation rather than a parameter mutation: the
+// calibration/lifecycle gates decide whether a Challenger can be observed or
+// promoted.
+type TuningRecommendation struct {
+	Key      string `json:"key"`
+	Priority string `json:"priority"`
+	Action   string `json:"action"`
+	Evidence string `json:"evidence"`
+}
+
+// TuningAnalysis is the daily strategy feedback surface. It summarizes the
+// latest mature forward evidence and explains why the next calibration step is
+// waiting, observing, or ready for human review.
+type TuningAnalysis struct {
+	Horizon         int                    `json:"horizon"`
+	DataThrough     string                 `json:"data_through,omitempty"`
+	MatureSamples   int                    `json:"mature_samples"`
+	MatureDates     int                    `json:"mature_dates"`
+	AverageExcess   float64                `json:"average_excess_percent"`
+	HitRate         float64                `json:"hit_rate_percent"`
+	Status          string                 `json:"status"`
+	Summary         string                 `json:"summary"`
+	Recommendations []TuningRecommendation `json:"recommendations,omitempty"`
+}
+
+// CalibrationMetric is one side of the Champion/Challenger comparison. Both
+// sides use the same mature, benchmark-covered outcomes so an apparent uplift
+// cannot come from different samples.
+type CalibrationMetric struct {
+	Samples       int     `json:"samples"`
+	Positive      int     `json:"positive"`
+	HitRate       float64 `json:"hit_rate_percent"`
+	AverageReturn float64 `json:"average_return_percent"`
+	AverageExcess float64 `json:"average_excess_percent"`
+	RankIC        float64 `json:"rank_information_coefficient"`
+}
+
+// CalibrationAnalysis describes the live forward comparison for the latest
+// Challenger. It is diagnostic evidence only; promotion to Champion remains a
+// separately gated lifecycle decision.
+type CalibrationAnalysis struct {
+	ID                string            `json:"id,omitempty"`
+	Horizon           int               `json:"horizon"`
+	ReadySamples      int               `json:"ready_samples"`
+	ComparisonSamples int               `json:"comparison_samples"`
+	Champion          CalibrationMetric `json:"champion"`
+	Challenger        CalibrationMetric `json:"challenger"`
+	ExcessUplift      float64           `json:"excess_uplift_percent"`
+	HitRateUplift     float64           `json:"hit_rate_uplift_percent"`
+	RankICUplift      float64           `json:"rank_ic_uplift"`
+	Status            string            `json:"status"`
+	Recommendation    string            `json:"recommendation"`
 }
 
 type OutcomeCheck struct {
@@ -373,6 +451,18 @@ type OutcomeAssessment struct {
 	StrategyWeights []StrategyWeightProposal `json:"strategy_weights,omitempty"`
 	NextStage       string                   `json:"next_stage"`
 	Notes           []string                 `json:"notes,omitempty"`
+}
+
+// ScoreCalibration is a walk-forward-gated challenger configuration. The
+// realtime scanner exposes its score in parallel with the champion score so
+// shadow accounts can collect forward evidence without silently promoting it.
+type ScoreCalibration struct {
+	ID               string             `json:"id"`
+	DataThrough      string             `json:"data_through"`
+	Horizon          int                `json:"horizon"`
+	ReadySamples     int                `json:"ready_samples"`
+	MinimumScore     float64            `json:"minimum_score"`
+	ComponentWeights map[string]float64 `json:"component_weights"`
 }
 
 type ScanResult struct {

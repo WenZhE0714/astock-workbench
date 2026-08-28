@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,9 @@ func TestOutcomeEvaluatorUsesOnlyTradingBarsAfterSignal(t *testing.T) {
 	if len(store.items) != 2 || len(report.Summaries) != 2 {
 		t.Fatalf("unexpected outcomes: %+v", store.items)
 	}
+	if report.DataThrough != "2026-08-25" {
+		t.Fatalf("unexpected outcome data watermark: %q", report.DataThrough)
+	}
 	one := store.items[0]
 	if one.SignalDate != "2026-08-20" || one.TargetDate != "2026-08-21" || one.EntryPrice != 110 {
 		t.Fatalf("signal-day bar leaked into forward window: %+v", one)
@@ -107,6 +111,18 @@ func TestOutcomeEvaluatorDeduplicatesSameSymbolAndSignalDay(t *testing.T) {
 	selected := representativeSignals([]Signal{first, second}, 10)
 	if len(selected) != 1 || selected[0].ID != "afternoon" {
 		t.Fatalf("unexpected representative signals: %+v", selected)
+	}
+}
+
+func TestRepresentativeSignalsZeroLimitKeepsFullArchive(t *testing.T) {
+	items := []Signal{
+		{ID: "one", Symbol: "sh600001", AsOf: time.Date(2026, 8, 20, 10, 0, 0, 0, time.Local)},
+		{ID: "two", Symbol: "sh600002", AsOf: time.Date(2026, 8, 20, 10, 1, 0, 0, time.Local)},
+		{ID: "three", Symbol: "sh600003", AsOf: time.Date(2026, 8, 20, 10, 2, 0, 0, time.Local)},
+	}
+	selected := representativeSignals(items, 0)
+	if len(selected) != len(items) {
+		t.Fatalf("zero limit should request the full representative archive: got %d", len(selected))
 	}
 }
 
@@ -180,7 +196,7 @@ func TestMergeOutcomeRevisionsDoesNotRegressReadyLabel(t *testing.T) {
 	}
 }
 
-func TestBuildOutcomeReportGeneratesWalkForwardResearchProposal(t *testing.T) {
+func TestBuildOutcomeReportRequiresSufficientCrossFoldWeightEvidence(t *testing.T) {
 	items := make([]SignalOutcome, 0, 40)
 	start := time.Date(2026, 1, 5, 15, 0, 0, 0, time.Local)
 	for index := 0; index < 40; index++ {
@@ -215,8 +231,8 @@ func TestBuildOutcomeReportGeneratesWalkForwardResearchProposal(t *testing.T) {
 	if assessment.Threshold.ValidationAverageExcess <= 0 || assessment.Threshold.ValidationHitRate <= 50 {
 		t.Fatalf("unexpected validation metrics: %+v", assessment.Threshold)
 	}
-	if len(assessment.StrategyWeights) != 2 {
-		t.Fatalf("unexpected strategy proposals: %+v", assessment.StrategyWeights)
+	if len(assessment.StrategyWeights) != 0 {
+		t.Fatalf("components without two sufficient validation folds must not produce proposals: %+v", assessment.StrategyWeights)
 	}
 	if len(report.Strategies) != 2 || report.Strategies[0].Signals != 20 || report.Strategies[1].Signals != 20 {
 		t.Fatalf("strategy attribution did not isolate active votes: %+v", report.Strategies)
@@ -227,16 +243,6 @@ func TestBuildOutcomeReportGeneratesWalkForwardResearchProposal(t *testing.T) {
 	}
 	if strategyByKey["trend-breakout"].Summaries[0].RankInformationCoefficient < 0.99 || strategyByKey["ma-pullback"].Summaries[0].RankInformationCoefficient > -0.99 {
 		t.Fatalf("strategy IC did not use component scores: %+v", report.Strategies)
-	}
-	weightTotal := 0.0
-	for _, proposal := range assessment.StrategyWeights {
-		weightTotal += proposal.Weight
-	}
-	if math.Abs(weightTotal-1) > 1e-9 {
-		t.Fatalf("strategy weights are not normalized: %.12f", weightTotal)
-	}
-	if assessment.StrategyWeights[0].Key != "trend-breakout" || assessment.StrategyWeights[0].Weight <= assessment.StrategyWeights[1].Weight {
-		t.Fatalf("candidate weights ignored active-signal excess: %+v", assessment.StrategyWeights)
 	}
 }
 
@@ -397,6 +403,126 @@ func TestComponentWalkForwardUsesDateSeparatedFolds(t *testing.T) {
 	}
 }
 
+func TestOutcomeWalkForwardNeverSplitsOneTradingDay(t *testing.T) {
+	items := make([]SignalOutcome, 0, 50)
+	start := time.Date(2026, 1, 5, 15, 0, 0, 0, time.Local)
+	for day := 0; day < 5; day++ {
+		date := start.AddDate(0, 0, day).Format("2006-01-02")
+		for stock := 0; stock < 10; stock++ {
+			items = append(items, SignalOutcome{
+				Key: fmt.Sprintf("sh%04d:%s:5", stock, date), SignalID: fmt.Sprintf("date-fold-%d-%d", day, stock),
+				Symbol: fmt.Sprintf("sh%04d", stock), SignalDate: date,
+				SignalAsOf: start.AddDate(0, 0, day).Add(time.Duration(stock) * time.Minute),
+				Score:      60, State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady,
+				BenchmarkAvailable: true, ExcessReturn: 1,
+			})
+		}
+	}
+	folds := buildWalkForwardFolds(items)
+	if len(folds) < 2 {
+		t.Fatalf("expected date-separated folds, got %+v", folds)
+	}
+	for index, fold := range folds {
+		if fold.TrainEnd >= fold.ValidationStart || fold.ValidationStart > fold.ValidationEnd {
+			t.Fatalf("fold %d crosses or reverses a trading-date boundary: %+v", index, fold)
+		}
+	}
+}
+
+func TestOutcomeTuningRequiresIndependentTradingDates(t *testing.T) {
+	items := make([]SignalOutcome, 0, minimumResearchSamples)
+	for index := 0; index < minimumResearchSamples; index++ {
+		day := "2026-08-20"
+		asOfDay := 20
+		if index >= minimumResearchSamples/2 {
+			day = "2026-08-21"
+			asOfDay = 21
+		}
+		items = append(items, SignalOutcome{
+			Key: fmt.Sprintf("sh%04d:%s:5", index, day), SignalID: fmt.Sprintf("date-gate-%d", index),
+			Symbol: fmt.Sprintf("sh%04d", index), SignalDate: day,
+			SignalAsOf: time.Date(2026, 8, asOfDay, 10, index%60, 0, 0, time.Local),
+			Score: 70, State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady,
+			BenchmarkAvailable: true, ReturnPercent: 1, ExcessReturn: .5,
+		})
+	}
+	report := BuildOutcomeReport(items, time.Date(2026, 8, 28, 16, 0, 0, 0, time.Local), nil)
+	if len(buildWalkForwardFolds(items)) != 0 {
+		t.Fatal("two trading dates must not produce time-separated folds")
+	}
+	if report.Assessment.Threshold != nil || report.Assessment.Verdict != "样本收集中" {
+		t.Fatalf("date gate should prevent a threshold proposal: %+v", report.Assessment)
+	}
+	if report.Tuning.Status != "时间样本不足" || report.Tuning.MatureSamples != minimumResearchSamples || report.Tuning.MatureDates != 2 {
+		t.Fatalf("tuning status did not explain the date gate: %+v", report.Tuning)
+	}
+	if _, ok := CalibrationFromOutcome(report); ok {
+		t.Fatal("insufficient independent dates must not create a challenger")
+	}
+}
+
+func TestChooseThresholdNeverFallsBackToZero(t *testing.T) {
+	items := make([]SignalOutcome, 0, 8)
+	for index := 0; index < 8; index++ {
+		items = append(items, SignalOutcome{Score: float64(50 + index), ExcessReturn: 1})
+	}
+	proposal := chooseThreshold(items)
+	if proposal.MinimumScore < minimumPortfolioScore {
+		t.Fatalf("live threshold proposal must stay on the portfolio score scale: %+v", proposal)
+	}
+}
+
+func TestWalkForwardWeightProposalsUseRobustCrossFoldAggregate(t *testing.T) {
+	makeFolds := func(values []float64) []ComponentValidationFold {
+		folds := make([]ComponentValidationFold, 0, len(values))
+		for index, value := range values {
+			folds = append(folds, ComponentValidationFold{
+				Index: index + 1, ValidationSamples: 12, ValidationActiveSamples: 10,
+				ValidationAverageExcess: 1, ValidationHitRate: 60,
+				CandidateWeight: value, WeightAvailable: true, SampleSufficient: true,
+			})
+		}
+		return folds
+	}
+	analysis := ComponentWalkForwardAnalysis{Metrics: []ComponentValidationMetric{
+		{ComponentKey: "trend-breakout", ComponentName: "趋势突破", Horizon: OutcomeHorizon5D, Folds: makeFolds([]float64{.80, .80, .01})},
+		{ComponentKey: "price-volume", ComponentName: "量价确认", Horizon: OutcomeHorizon5D, Folds: makeFolds([]float64{.20, .20, .99})},
+	}}
+	proposals := walkForwardWeightProposals(analysis, OutcomeHorizon5D)
+	if len(proposals) != 2 {
+		t.Fatalf("unexpected proposal count: %+v", proposals)
+	}
+	weights := make(map[string]float64, len(proposals))
+	total := 0.0
+	for _, proposal := range proposals {
+		weights[proposal.Key] = proposal.Weight
+		total += proposal.Weight
+	}
+	if math.Abs(total-1) > 1e-9 {
+		t.Fatalf("cross-fold weights are not normalized: %.12f", total)
+	}
+	if weights["trend-breakout"] <= weights["price-volume"] {
+		t.Fatalf("latest extreme fold incorrectly dominated aggregate: %+v", weights)
+	}
+	if proposals[0].Samples != 30 || proposals[1].Samples != 30 {
+		t.Fatalf("sample counts should include valid folds: %+v", proposals)
+	}
+}
+
+func TestAggregateThresholdProposalUsesCrossFoldMedian(t *testing.T) {
+	proposal := aggregateThresholdProposal([]OutcomeValidationFold{
+		{MinimumScore: 50, ValidationSamples: 10, TrainSamples: 20},
+		{MinimumScore: 50, ValidationSamples: 10, TrainSamples: 20},
+		{MinimumScore: 80, ValidationSamples: 10, TrainSamples: 20},
+	})
+	if proposal.MinimumScore != 50 {
+		t.Fatalf("latest extreme threshold should not win: %+v", proposal)
+	}
+	if proposal.ValidationSamples != 30 || proposal.TrainSamples != 60 {
+		t.Fatalf("fold sample totals were not preserved: %+v", proposal)
+	}
+}
+
 func TestPortfolioConstraintAnalysisFlagsIndustryAndComponentConcentration(t *testing.T) {
 	items := make([]SignalOutcome, 0, 5)
 	for index := 0; index < 5; index++ {
@@ -455,6 +581,103 @@ func TestPortfolioConstraintAnalysisPassesDiversifiedCandidateDays(t *testing.T)
 	check := outcomeCheckByKey(t, report.Assessment.Checks, "portfolio-constraints")
 	if !check.Required || !check.Passed {
 		t.Fatalf("portfolio gate did not pass after sufficient diversified days: %+v", check)
+	}
+}
+
+func TestCalibrationFromOutcomeRequiresGatedWalkForward(t *testing.T) {
+	report := OutcomeReport{
+		AsOf: "2026-08-28", DataThrough: "2026-08-27",
+		Assessment: OutcomeAssessment{
+			Verdict: "可作为下一轮候选", Horizon: OutcomeHorizon5D, ReadySamples: 48,
+			Threshold: &ThresholdProposal{MinimumScore: 61},
+			StrategyWeights: []StrategyWeightProposal{
+				{Key: "relative-momentum", Weight: 2},
+				{Key: "price-volume", Weight: 1},
+			},
+			Checks: []OutcomeCheck{
+				{Key: "sample", Required: true, Passed: true},
+				{Key: "walk-forward", Required: true, Passed: true},
+			},
+		},
+	}
+	calibration, ok := CalibrationFromOutcome(report)
+	if !ok {
+		t.Fatal("fully gated outcome should produce a challenger calibration")
+	}
+	if calibration.ID == "" || !strings.Contains(calibration.ID, "-") || calibration.MinimumScore != 61 || calibration.ReadySamples != 48 {
+		t.Fatalf("unexpected calibration metadata: %+v", calibration)
+	}
+	if math.Abs(calibration.ComponentWeights["relative-momentum"]-2.0/3.0) > 1e-9 || math.Abs(calibration.ComponentWeights["price-volume"]-1.0/3.0) > 1e-9 {
+		t.Fatalf("weights were not normalized: %+v", calibration.ComponentWeights)
+	}
+	report.Assessment.Checks[1].Passed = false
+	if _, ok := CalibrationFromOutcome(report); ok {
+		t.Fatal("failed required gate must not produce a challenger")
+	}
+}
+
+func TestCalibrationAnalysisComparesChampionAndChallengerOnSameSamples(t *testing.T) {
+	items := make([]SignalOutcome, 0, 24)
+	for index := 0; index < 24; index++ {
+		// The challenger ranks the positive outcomes above the negative ones,
+		// while the champion score is deliberately reversed.
+		positive := index >= 12
+		excess := -1.0
+		if positive {
+			excess = 2.0
+		}
+		items = append(items, SignalOutcome{
+			Key: fmt.Sprintf("sh600%03d:2026-07-%02d:5", index, index+1), SignalID: fmt.Sprintf("cal-%d", index),
+			Symbol: fmt.Sprintf("sh600%03d", index), SignalDate: fmt.Sprintf("2026-07-%02d", index+1),
+			SignalAsOf: time.Date(2026, 7, index+1, 10, 0, 0, 0, time.Local), Score: float64(80 - index),
+			State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true,
+			ReturnPercent: excess, ExcessReturn: excess, CalibrationID: "CAL-TEST",
+			CalibratedRiskAdjustedScore: 50 + float64(index*2), CalibratedMinimumScore: 55, CalibratedState: StateWatching,
+		})
+	}
+	report := BuildOutcomeReport(items, time.Date(2026, 8, 28, 16, 0, 0, 0, time.Local), nil)
+	if report.Calibration.ID != "CAL-TEST" || report.Calibration.ComparisonSamples != 24 {
+		t.Fatalf("unexpected calibration comparison: %+v", report.Calibration)
+	}
+	if report.Calibration.Status != "候选领先" || report.Calibration.ExcessUplift <= 0 {
+		t.Fatalf("challenger should lead on the same samples: %+v", report.Calibration)
+	}
+	if report.Calibration.Champion.Samples < 20 || report.Calibration.Challenger.Samples < 20 {
+		t.Fatalf("selected model samples should satisfy the comparison gate: %+v", report.Calibration)
+	}
+}
+
+func TestCalibrationAnalysisWaitsForForwardSamples(t *testing.T) {
+	items := make([]SignalOutcome, 0, 5)
+	for index := 0; index < 5; index++ {
+		items = append(items, SignalOutcome{
+			Key: fmt.Sprintf("sh601%03d:2026-08-%02d:5", index, index+1), SignalID: fmt.Sprintf("pending-cal-%d", index),
+			Symbol: fmt.Sprintf("sh601%03d", index), SignalDate: fmt.Sprintf("2026-08-%02d", index+1),
+			SignalAsOf: time.Date(2026, 8, index+1, 10, 0, 0, 0, time.Local), Score: 60,
+			State: StateWatching, Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true,
+			ReturnPercent: 1, ExcessReturn: 1, CalibrationID: "CAL-PENDING", CalibratedScore: 70,
+		})
+	}
+	report := BuildOutcomeReport(items, time.Date(2026, 8, 28, 16, 0, 0, 0, time.Local), nil)
+	if report.Calibration.Status != "观察中" || report.Calibration.ComparisonSamples != 5 {
+		t.Fatalf("insufficient challenger samples should remain observational: %+v", report.Calibration)
+	}
+}
+
+func TestTuningAnalysisExplainsInsufficientEvidence(t *testing.T) {
+	items := make([]SignalOutcome, 0, 4)
+	for index := 0; index < 4; index++ {
+		items = append(items, SignalOutcome{
+			Key: fmt.Sprintf("sh601%03d:2026-08-%02d:5", index, index+1), SignalID: fmt.Sprintf("tune-%d", index),
+			Symbol: fmt.Sprintf("sh601%03d", index), SignalDate: fmt.Sprintf("2026-08-%02d", index+1),
+			SignalAsOf: time.Date(2026, 8, index+1, 10, 0, 0, 0, time.Local), Score: 70,
+			State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true,
+			ReturnPercent: 1, ExcessReturn: .8,
+		})
+	}
+	report := BuildOutcomeReport(items, time.Date(2026, 8, 28, 16, 0, 0, 0, time.Local), nil)
+	if report.Tuning.Status != "样本收集中" || report.Tuning.MatureSamples != 4 || len(report.Tuning.Recommendations) == 0 {
+		t.Fatalf("tuning review should explain insufficient evidence: %+v", report.Tuning)
 	}
 }
 

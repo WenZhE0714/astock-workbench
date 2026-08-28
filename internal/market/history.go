@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
 
@@ -189,6 +190,20 @@ func fetchTencentDailyBars(ctx context.Context, symbol string) ([]domain.DailyBa
 // source for latency-sensitive market scans without waiting on other fallbacks.
 func (TencentClient) FetchDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
 	return fetchTencentDailyBars(ctx, symbol)
+}
+
+// FetchDailyBarsRange exposes Tencent's explicit unadjusted range endpoint to
+// the shared fallback chain used by historical research.
+func (TencentClient) FetchDailyBarsRange(
+	ctx context.Context,
+	symbol string,
+	start, end time.Time,
+	adjustment backtest.PriceAdjustment,
+) ([]domain.DailyBar, error) {
+	if adjustment != backtest.AdjustmentNone {
+		return nil, fmt.Errorf("当前回测仅支持固定的不复权口径")
+	}
+	return fetchTencentDailyBarsRange(ctx, symbol, start, end)
 }
 
 func (EastmoneyClient) FetchDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {

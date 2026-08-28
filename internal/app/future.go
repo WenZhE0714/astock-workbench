@@ -178,7 +178,7 @@ func (app *App) runBacktestRun(ctx context.Context, arguments []string) error {
 		NoFutureData: true, PointInTimePool: false, LiquidateAtEnd: *boolFlags["liquidate"], Technical: parameters,
 	}
 	fmt.Fprintln(app.errOut, "回测: 正在获取历史日K并执行模拟...")
-	engine := backtest.NewDailyEngine(market.EastmoneyClient{})
+	engine := app.newBacktestEngine()
 	result, err := engine.Run(ctx, request)
 	if err != nil {
 		return err

@@ -15,6 +15,11 @@ const realtimeScanTimeout = 90 * time.Second
 const realtimeOutcomeTimeout = 90 * time.Second
 const realtimeSectorEnrichTimeout = 25 * time.Second
 
+const (
+	realtimeCalibrationActiveStatus   = "challenger-active"
+	realtimeCalibrationRollbackStatus = "challenger-rolled-back"
+)
+
 var realtimeWebLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type realtimeStrategyResponse struct {
@@ -61,19 +66,32 @@ func (s *Server) writeRealtimeOutcomes(writer http.ResponseWriter, request *http
 		return
 	}
 	limit := 500
+	fullArchive := outcomeFullArchiveRequested(request)
 	if raw := strings.TrimSpace(request.URL.Query().Get("limit")); raw != "" {
 		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 5000 {
+		if err != nil || (value < 1 && value != -1) || value > 5000 {
 			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "评估信号数量必须在 1 到 5000 之间"})
 			return
 		}
 		limit = value
+	}
+	if fullArchive {
+		// A negative limit is the explicit full-archive sentinel understood by
+		// both the signal and outcome stores. It prevents older 5/10-day rows
+		// from being crowded out as the intraday archive grows.
+		limit = -1
 	}
 	if request.Method == http.MethodGet {
 		report, err := s.realtimeOutcomes.Report(limit, s.currentTime())
 		if err != nil {
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取实时评估结果失败: " + err.Error()})
 			return
+		}
+		// A bounded/read-only report is useful for the UI, but it is not a valid
+		// calibration dataset. Only an explicit full-archive read may install a
+		// Challenger; otherwise a truncated recent slice could bias the gate.
+		if fullArchive {
+			s.applyRealtimeCalibration(report)
 		}
 		writeJSON(writer, http.StatusOK, realtimeStrategyResponse{Report: &report, Cached: true})
 		return
@@ -94,7 +112,155 @@ func (s *Server) writeRealtimeOutcomes(writer http.ResponseWriter, request *http
 		writeJSON(writer, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
+	if fullArchive {
+		s.applyRealtimeCalibration(report)
+	}
 	writeJSON(writer, http.StatusOK, realtimeStrategyResponse{Report: &report})
+}
+
+func (s *Server) applyRealtimeCalibration(report realtime.OutcomeReport) {
+	if s == nil || s.realtimeScanner == nil {
+		return
+	}
+	calibratable, ok := s.realtimeScanner.(realtimeCalibratableScanner)
+	if !ok {
+		return
+	}
+	calibration, ready := realtime.CalibrationFromOutcome(report)
+	s.calibrationMu.Lock()
+	defer s.calibrationMu.Unlock()
+	state := storage.RealtimeCalibrationState{}
+	if s.realtimeCalibrationStore != nil {
+		loaded, err := s.realtimeCalibrationStore.Load()
+		if err == nil {
+			state = loaded
+		}
+	}
+	activeID := strings.TrimSpace(state.Active.ID)
+	reportID := strings.TrimSpace(report.Calibration.ID)
+	// A challenger is observed in parallel with the immutable Champion. Once
+	// the same-sample forward comparison says it is materially worse, clear it
+	// immediately and remember the rejected version so a later GET cannot load
+	// it back from the same archived outcomes.
+	if activeID != "" && reportID == activeID && report.Calibration.Status == "候选落后" {
+		calibratable.SetCalibration(realtime.ScoreCalibration{})
+		if s.realtimeCalibrationStore != nil {
+			state.RejectedIDs = appendUniqueCalibrationID(state.RejectedIDs, activeID)
+			state.Status = realtimeCalibrationRollbackStatus
+			state.LastDecisionAt = s.currentTime()
+			state.History = append(state.History, storage.RealtimeCalibrationRevision{
+				ID: activeID, AppliedAt: state.LastDecisionAt, Action: "rollback",
+				ReadySamples: report.Calibration.ReadySamples,
+				Note:         report.Calibration.Recommendation,
+			})
+			_ = s.realtimeCalibrationStore.Save(state)
+		}
+		return
+	}
+	if reportID != "" && calibrationIDRejected(state.RejectedIDs, reportID) {
+		calibratable.SetCalibration(realtime.ScoreCalibration{})
+		return
+	}
+	if !ready {
+		// Keep a currently active Challenger alive while more forward samples are
+		// collected. A report limited to a partial window must never silently
+		// downgrade it to the Champion.
+		if activeID != "" && state.Status != realtimeCalibrationRollbackStatus {
+			calibratable.SetCalibration(state.Active)
+		} else {
+			calibratable.SetCalibration(realtime.ScoreCalibration{})
+		}
+		return
+	}
+	if report.Calibration.Status == "候选落后" {
+		// This can happen when a fresh process sees a rejected candidate before its
+		// durable state has been restored. Treat it as a rejection rather than
+		// activating a known-bad version.
+		calibratable.SetCalibration(realtime.ScoreCalibration{})
+		if s.realtimeCalibrationStore != nil && reportID != "" {
+			state.RejectedIDs = appendUniqueCalibrationID(state.RejectedIDs, reportID)
+			state.Status = realtimeCalibrationRollbackStatus
+			state.LastDecisionAt = s.currentTime()
+			_ = s.realtimeCalibrationStore.Save(state)
+		}
+		return
+	}
+	if activeID != "" && !newerRealtimeCalibration(calibration, state.Active) {
+		// A stale report must never roll the scanner back to an older Challenger.
+		if state.Status == realtimeCalibrationRollbackStatus {
+			calibratable.SetCalibration(realtime.ScoreCalibration{})
+		} else {
+			calibratable.SetCalibration(state.Active)
+		}
+		return
+	}
+	calibratable.SetCalibration(calibration)
+	if s.realtimeCalibrationStore == nil {
+		return
+	}
+	now := s.currentTime()
+	state.Active = calibration
+	state.AppliedAt = now
+	state.Source = "收盘后滚动验证"
+	state.Status = realtimeCalibrationActiveStatus
+	state.LastDecisionAt = now
+	state.History = append(state.History, storage.RealtimeCalibrationRevision{
+		ID: calibration.ID, AppliedAt: now, Action: "apply",
+		ReadySamples: calibration.ReadySamples, MinimumScore: calibration.MinimumScore,
+		ComponentWeights: cloneCalibrationWeights(calibration.ComponentWeights),
+		Note:             "通过时间顺序留出、覆盖、相关性和组合门禁",
+	})
+	_ = s.realtimeCalibrationStore.Save(state)
+}
+
+func appendUniqueCalibrationID(input []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return input
+	}
+	for _, item := range input {
+		if strings.TrimSpace(item) == value {
+			return input
+		}
+	}
+	return append(input, value)
+}
+
+func calibrationIDRejected(ids []string, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, item := range ids {
+		if strings.TrimSpace(item) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func newerRealtimeCalibration(next, current realtime.ScoreCalibration) bool {
+	if strings.TrimSpace(current.ID) == "" {
+		return true
+	}
+	if strings.TrimSpace(next.ID) == strings.TrimSpace(current.ID) {
+		return false
+	}
+	if strings.TrimSpace(next.DataThrough) != strings.TrimSpace(current.DataThrough) {
+		return strings.TrimSpace(next.DataThrough) > strings.TrimSpace(current.DataThrough)
+	}
+	return next.ReadySamples > current.ReadySamples
+}
+
+func cloneCalibrationWeights(input map[string]float64) map[string]float64 {
+	if len(input) == 0 {
+		return nil
+	}
+	result := make(map[string]float64, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
 }
 
 func realtimeOutcomeOptions(request *http.Request) realtime.OutcomeOptions {
@@ -116,7 +282,18 @@ func realtimeOutcomeOptions(request *http.Request) realtime.OutcomeOptions {
 			options.SignalLimit = value
 		}
 	}
+	if outcomeFullArchiveRequested(request) {
+		options.SignalLimit = -1
+	}
 	return options
+}
+
+func outcomeFullArchiveRequested(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	raw := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("full")))
+	return raw == "1" || raw == "true" || raw == "yes" || raw == "all"
 }
 
 func (s *Server) writeRealtimeStrategy(writer http.ResponseWriter, request *http.Request) {

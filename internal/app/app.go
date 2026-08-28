@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/wenzhe/astock-workbench/internal/analysis"
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
@@ -35,6 +36,7 @@ type App struct {
 	amounts         market.MarketAmountClient
 	globalMarkets   market.GlobalIndexClient
 	history         market.DailyHistoryClient
+	backtestHistory backtest.DailyBarProvider
 	httpHistory     market.DailyHistoryClient
 	minutes         market.MinuteClient
 	httpMinutes     market.MinuteClient
@@ -83,6 +85,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		amounts:         market.SinaAmountClient{},
 		globalMarkets:   market.SinaGlobalIndexClient{},
 		history:         historyClient,
+		backtestHistory: historyClient,
 		httpHistory:     historyClient,
 		minutes:         market.TencentClient{},
 		httpMinutes:     market.TencentClient{},

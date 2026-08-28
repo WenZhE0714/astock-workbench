@@ -23,33 +23,43 @@ type HistoryClient interface {
 }
 
 type Config struct {
-	InitialCash                float64 `json:"initial_cash"`
-	MinimumScore               float64 `json:"minimum_score"`
-	MaxPositionPercent         float64 `json:"max_position_percent"`
-	MaxIndustryPercent         float64 `json:"max_industry_percent"`
-	MaxPortfolioPercent        float64 `json:"max_portfolio_percent"`
-	CashReservePercent         float64 `json:"cash_reserve_percent"`
-	MaxDailyDeploymentPercent  float64 `json:"max_daily_deployment_percent"`
-	InitialEntryPercent        float64 `json:"initial_entry_percent"`
-	MaxEntryTranches           int     `json:"max_entry_tranches"`
-	AdditionScoreStep          float64 `json:"addition_score_step"`
-	MaxOpenPositions           int     `json:"max_open_positions"`
-	MaxDailyRotations          int     `json:"max_daily_rotations"`
-	RotationScoreGap           float64 `json:"rotation_score_gap"`
-	RotationMinimumHoldDays    int     `json:"rotation_minimum_hold_days"`
-	MaxPortfolioRiskPercent    float64 `json:"max_portfolio_risk_percent"`
-	MaxPositionRiskPercent     float64 `json:"max_position_risk_percent"`
-	MaxLossPercent             float64 `json:"max_loss_percent"`
-	MinimumRiskDistancePercent float64 `json:"minimum_risk_distance_percent"`
-	RiskCooldownDays           int     `json:"risk_cooldown_days"`
-	MaxParticipationPercent    float64 `json:"max_participation_percent"`
-	SlippageBPS                float64 `json:"slippage_bps"`
-	CommissionRate             float64 `json:"commission_rate"`
-	MinimumCommission          float64 `json:"minimum_commission"`
-	StampDutyRate              float64 `json:"stamp_duty_rate"`
-	TransferFeeRate            float64 `json:"transfer_fee_rate"`
-	HoldingDays                int     `json:"holding_days"`
-	LotSize                    int     `json:"lot_size"`
+	InitialCash                    float64 `json:"initial_cash"`
+	MinimumScore                   float64 `json:"minimum_score"`
+	MaxPositionPercent             float64 `json:"max_position_percent"`
+	MaxIndustryPercent             float64 `json:"max_industry_percent"`
+	MaxPortfolioPercent            float64 `json:"max_portfolio_percent"`
+	CashReservePercent             float64 `json:"cash_reserve_percent"`
+	MaxDailyDeploymentPercent      float64 `json:"max_daily_deployment_percent"`
+	InitialEntryPercent            float64 `json:"initial_entry_percent"`
+	MaxEntryTranches               int     `json:"max_entry_tranches"`
+	AdditionScoreStep              float64 `json:"addition_score_step"`
+	MaxOpenPositions               int     `json:"max_open_positions"`
+	MaxDailyRotations              int     `json:"max_daily_rotations"`
+	RotationScoreGap               float64 `json:"rotation_score_gap"`
+	RotationMinimumHoldDays        int     `json:"rotation_minimum_hold_days"`
+	UseCalibratedScore             bool    `json:"use_calibrated_score,omitempty"`
+	EnableIntradayT                bool    `json:"enable_intraday_t"`
+	TCorePositionPercent           float64 `json:"t_core_position_percent"`
+	TTranchePercent                float64 `json:"t_tranche_percent"`
+	TMaxDailyRounds                int     `json:"t_max_daily_rounds"`
+	TVWAPDeviationPercent          float64 `json:"t_vwap_deviation_percent"`
+	TMinimumPriceGapPercent        float64 `json:"t_minimum_price_gap_percent"`
+	TMinimumNetProfitPercent       float64 `json:"t_minimum_net_profit_percent"`
+	TCooldownMinutes               int     `json:"t_cooldown_minutes"`
+	SignalRebalanceCooldownMinutes int     `json:"signal_rebalance_cooldown_minutes"`
+	MaxPortfolioRiskPercent        float64 `json:"max_portfolio_risk_percent"`
+	MaxPositionRiskPercent         float64 `json:"max_position_risk_percent"`
+	MaxLossPercent                 float64 `json:"max_loss_percent"`
+	MinimumRiskDistancePercent     float64 `json:"minimum_risk_distance_percent"`
+	RiskCooldownDays               int     `json:"risk_cooldown_days"`
+	MaxParticipationPercent        float64 `json:"max_participation_percent"`
+	SlippageBPS                    float64 `json:"slippage_bps"`
+	CommissionRate                 float64 `json:"commission_rate"`
+	MinimumCommission              float64 `json:"minimum_commission"`
+	StampDutyRate                  float64 `json:"stamp_duty_rate"`
+	TransferFeeRate                float64 `json:"transfer_fee_rate"`
+	HoldingDays                    int     `json:"holding_days"`
+	LotSize                        int     `json:"lot_size"`
 }
 
 func DefaultConfig() Config {
@@ -59,6 +69,9 @@ func DefaultConfig() Config {
 		MaxPortfolioPercent: 80, CashReservePercent: 20, MaxDailyDeploymentPercent: 35,
 		InitialEntryPercent: 50, MaxEntryTranches: 3, AdditionScoreStep: 4,
 		MaxOpenPositions: 8, MaxDailyRotations: 2, RotationScoreGap: 8, RotationMinimumHoldDays: 2,
+		EnableIntradayT: true, TCorePositionPercent: 60, TTranchePercent: 20,
+		TMaxDailyRounds: 2, TVWAPDeviationPercent: .8, TMinimumPriceGapPercent: .8,
+		TMinimumNetProfitPercent: .2, TCooldownMinutes: 15, SignalRebalanceCooldownMinutes: 20,
 		MaxPortfolioRiskPercent: 6, MaxPositionRiskPercent: 1.5, MaxLossPercent: 10,
 		MinimumRiskDistancePercent: 3, RiskCooldownDays: 3,
 		MaxParticipationPercent: 10, SlippageBPS: 5, CommissionRate: .0003,
@@ -212,6 +225,10 @@ type PositionQuote struct {
 	Price         float64
 	PreviousClose float64
 	Open          float64
+	High          float64
+	Low           float64
+	AveragePrice  float64
+	Volume        float64
 	LimitUp       float64
 	LimitDown     float64
 	Amount        float64
@@ -258,6 +275,40 @@ type Report struct {
 	Warnings                 []string                 `json:"warnings,omitempty"`
 	Decisions                []ShadowDecision         `json:"decisions,omitempty"`
 	IndustryExposures        []ShadowIndustryExposure `json:"industry_exposures,omitempty"`
+	DailyReview              *ShadowDailyReview       `json:"daily_review,omitempty"`
+	CalibrationID            string                   `json:"calibration_id,omitempty"`
+	CalibrationReadySamples  int                      `json:"calibration_ready_samples,omitempty"`
+	CalibrationMinimumScore  float64                  `json:"calibration_minimum_score,omitempty"`
+}
+
+type ShadowReasonCount struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
+}
+
+type ShadowDailyReview struct {
+	Date               string              `json:"date"`
+	MonitoringEvents   int                 `json:"monitoring_events"`
+	DecisionCount      int                 `json:"decision_count"`
+	OrderCount         int                 `json:"order_count"`
+	OpenCount          int                 `json:"open_count"`
+	AddCount           int                 `json:"add_count"`
+	ReduceCount        int                 `json:"reduce_count"`
+	TReduceCount       int                 `json:"t_reduce_count"`
+	TRebuyCount        int                 `json:"t_rebuy_count"`
+	RiskExitCount      int                 `json:"risk_exit_count"`
+	ExitCount          int                 `json:"exit_count"`
+	HoldCount          int                 `json:"hold_count"`
+	WaitCount          int                 `json:"wait_count"`
+	RejectedCount      int                 `json:"rejected_count"`
+	PendingTQuantity   int                 `json:"pending_t_quantity"`
+	Turnover           float64             `json:"turnover"`
+	Fees               float64             `json:"fees"`
+	RealizedProfit     float64             `json:"realized_profit"`
+	TNetCashBenefit    float64             `json:"t_net_cash_benefit"`
+	TopBlockers        []ShadowReasonCount `json:"top_blockers,omitempty"`
+	CalibrationStatus  string              `json:"calibration_status"`
+	CalibrationSummary string              `json:"calibration_summary"`
 }
 
 type ShadowIndustryExposure struct {
@@ -287,7 +338,7 @@ type ShadowDecision struct {
 }
 
 const (
-	ShadowEngineVersion = "tplus1-v10"
+	ShadowEngineVersion = "tplus1-v11"
 	CheckpointOpen      = "open"
 	CheckpointClose     = "close"
 	ExecutionModeDaily  = "daily-checkpoint"
@@ -1401,6 +1452,27 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			if len(signal.Reasons) == 0 {
 				signal.Reasons = append([]string(nil), enriched.Reasons...)
 			}
+			// Preserve the challenger metadata when an adaptive account carries
+			// an existing position into the next daily checkpoint. Without this,
+			// the position would silently fall back to the champion score after
+			// the first restart or close-to-open transition.
+			if enriched.CalibrationID != "" {
+				signal.CalibrationID = enriched.CalibrationID
+				signal.CalibrationReadySamples = enriched.CalibrationReadySamples
+				signal.CalibrationMinimumScore = enriched.CalibrationMinimumScore
+				signal.CalibratedScore = enriched.CalibratedScore
+				signal.CalibratedRiskAdjustedScore = enriched.CalibratedRiskAdjustedScore
+				signal.CalibratedState = enriched.CalibratedState
+				signal.CalibratedRank = enriched.CalibratedRank
+				signal.CalibratedTotal = enriched.CalibratedTotal
+				signal.CalibratedPortfolioEligible = enriched.CalibratedPortfolioEligible
+				signal.CalibratedPortfolioReason = enriched.CalibratedPortfolioReason
+			}
+			if enriched.RiskMultiplier > 0 {
+				signal.RiskMultiplier = enriched.RiskMultiplier
+				signal.RiskAdjustedScore = enriched.RiskAdjustedScore
+				signal.MarketRegime = enriched.MarketRegime
+			}
 		}
 		if signal.ID == "" {
 			signal.ID = position.Symbol + "-" + position.EntryDate
@@ -1530,6 +1602,7 @@ func (e *Evaluator) AdvanceRealtime(ctx context.Context, previous Report, signal
 	if report.SignalCount == 0 {
 		report.SignalCount = len(signals)
 	}
+	applyReportCalibrationMetadata(&report, signals)
 	if calendarError != nil || len(calendarDates) == 0 {
 		report.Warnings = appendUniqueWarning(report.Warnings, "沪深300交易日历不可用，停牌识别将退化为个股交易日")
 	}
@@ -1541,7 +1614,7 @@ func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, c
 	bySymbol := make(map[string][]realtime.Signal)
 	for _, signal := range selected {
 		date := signalDate(signal)
-		if date < after || date >= checkpoint.Date || !shadowSignalActionable(signal) {
+		if date < after || date >= checkpoint.Date || !shadowSignalActionableForConfig(signal, cfg) {
 			continue
 		}
 		if !shadowSignalEntryEligible(signal, cfg) {
@@ -1559,7 +1632,7 @@ func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, c
 		}
 		bars = normalizedBars(bars)
 		for _, signal := range items {
-			if !shadowSignalActionable(signal) {
+			if !shadowSignalActionableForConfig(signal, cfg) {
 				continue
 			}
 			plan, reason, pending := makePlan(signal, bars, calendarDates, cfg.HoldingDays)
@@ -1581,7 +1654,7 @@ func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, c
 	}
 	sort.SliceStable(plans, func(i, j int) bool {
 		if plans[i].entryDate == plans[j].entryDate {
-			return plans[i].signal.Score > plans[j].signal.Score
+			return shadowSignalScoreForConfig(plans[i].signal, cfg) > shadowSignalScoreForConfig(plans[j].signal, cfg)
 		}
 		return plans[i].entryDate < plans[j].entryDate
 	})
@@ -1884,7 +1957,8 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 				handledOpening[index] = true
 				continue
 			}
-			if plan.signal.Score > position.lastSignalScore-cfg.AdditionScoreStep {
+			planScore := shadowSignalScoreForConfig(plan.signal, cfg)
+			if planScore > position.lastSignalScore-cfg.AdditionScoreStep {
 				continue
 			}
 			handledOpening[index] = true
@@ -1914,7 +1988,7 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 			position.lots = append(position.lots[:lotIndex], position.lots[lotIndex+1:]...)
 			position.plan = plan
 			position.lastSignalDate = signalDate(plan.signal)
-			position.lastSignalScore = plan.signal.Score
+			position.lastSignalScore = planScore
 			appendShadowDecision(&report, plan.signal, date, "reduce", "信号分显著回落，次日开盘减去一个可卖批次", positionQuantity(position), cfg.MaxPositionPercent)
 			if len(position.lots) == 0 {
 				delete(active, plan.signal.Symbol)
@@ -1951,7 +2025,8 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 				appendShadowDecision(&report, plan.signal, date, "wait", position.riskExitReason+"；风险退出完成前不再加仓", positionQuantity(position), 0)
 				continue
 			}
-			if exists && (len(position.lots) >= cfg.MaxEntryTranches || plan.signal.Score < position.lastSignalScore+cfg.AdditionScoreStep) {
+			planScore := shadowSignalScoreForConfig(plan.signal, cfg)
+			if exists && (len(position.lots) >= cfg.MaxEntryTranches || planScore < position.lastSignalScore+cfg.AdditionScoreStep) {
 				reason := "信号未显著增强，维持现有仓位"
 				if len(position.lots) >= cfg.MaxEntryTranches {
 					reason = "已达到最大分批建仓次数，维持现有仓位"
@@ -2050,7 +2125,7 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 				delete(active, rotation.symbol)
 				rotatedOutToday[rotation.symbol] = true
 				dailyRotations[date]++
-				appendShadowDecision(&report, rotation.position.plan.signal, date, "rotate_out", fmt.Sprintf("组合持仓已满；新候选 %s %.1f 分领先 %.1f 分，轮出最弱持仓", shadowSignalDisplayName(plan.signal), plan.signal.Score, rotation.score), 0, 0)
+				appendShadowDecision(&report, rotation.position.plan.signal, date, "rotate_out", fmt.Sprintf("组合持仓已满；新候选 %s %.1f 分领先 %.1f 分，轮出最弱持仓", shadowSignalDisplayName(plan.signal), planScore, rotation.score), 0, 0)
 			}
 			buy.Status = OrderFilled
 			if exists {
@@ -2060,7 +2135,7 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 				buy.PositionAction = "open"
 				if rotation.symbol != "" {
 					buy.PositionAction = "rotate_in"
-					buy.Reason = fmt.Sprintf("新候选 %.1f 分领先轮出持仓 %s %.1f 分，执行有限换仓", plan.signal.Score, rotationDisplayName(rotation), rotation.score)
+					buy.Reason = fmt.Sprintf("新候选 %.1f 分领先轮出持仓 %s %.1f 分，执行有限换仓", planScore, rotationDisplayName(rotation), rotation.score)
 				}
 				buy.PositionSequence = 1
 			}
@@ -2078,17 +2153,17 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 				position.lots = append(position.lots, lot)
 				position.plan = plan
 				position.lastSignalDate = signalDate(plan.signal)
-				position.lastSignalScore = plan.signal.Score
+				position.lastSignalScore = planScore
 				position.targetPercent = targetPercent
 				active[plan.signal.Symbol] = position
 				appendShadowDecision(&report, plan.signal, date, "add", "信号显著增强，按质量、波动与风险距离动态加仓", positionQuantity(position), targetPercent)
 			} else {
-				active[plan.signal.Symbol] = shadowPosition{plan: plan, lots: []shadowLot{lot}, lastSignalDate: signalDate(plan.signal), lastSignalScore: plan.signal.Score, targetPercent: targetPercent}
+				active[plan.signal.Symbol] = shadowPosition{plan: plan, lots: []shadowLot{lot}, lastSignalDate: signalDate(plan.signal), lastSignalScore: planScore, targetPercent: targetPercent}
 				action := "open"
 				reason := "首次建仓按信号质量、波动风险与失效距离定仓，并仅使用目标仓位的一部分"
 				if rotation.symbol != "" {
 					action = "rotate_in"
-					reason = fmt.Sprintf("组合满员时仅换入显著更强候选；领先 %s %.1f 分", rotationDisplayName(rotation), plan.signal.Score-rotation.score)
+					reason = fmt.Sprintf("组合满员时仅换入显著更强候选；领先 %s %.1f 分", rotationDisplayName(rotation), planScore-rotation.score)
 				}
 				appendShadowDecision(&report, plan.signal, date, action, reason, buy.Quantity, targetPercent)
 			}
@@ -2256,7 +2331,7 @@ func selectShadowRotationCandidate(active map[string]shadowPosition, incoming re
 		}
 		score := position.lastSignalScore
 		if !finite(score) || score <= 0 {
-			score = position.plan.signal.Score
+			score = shadowSignalScoreForConfig(position.plan.signal, cfg)
 		}
 		if score < bestScore || (score == bestScore && (bestEntryDate == "" || entryDate < bestEntryDate)) {
 			best = shadowRotationCandidate{symbol: symbol, position: position, bar: bar, barIndex: currentBarIndex, score: score}
@@ -2267,8 +2342,9 @@ func selectShadowRotationCandidate(active map[string]shadowPosition, incoming re
 	if best.symbol == "" {
 		return shadowRotationCandidate{}, fmt.Sprintf("组合持仓已满，但没有同时满足 T+1、至少 %d 个交易日持有期和开盘可交易条件的轮出持仓", cfg.RotationMinimumHoldDays)
 	}
-	if incoming.Score < bestScore+cfg.RotationScoreGap {
-		return shadowRotationCandidate{}, fmt.Sprintf("组合持仓已满；新候选 %.1f 分未领先最弱可轮出持仓 %s %.1f 分达到 %.1f 分", incoming.Score, rotationDisplayName(best), bestScore, cfg.RotationScoreGap)
+	incomingScore := shadowSignalScoreForConfig(incoming, cfg)
+	if incomingScore < bestScore+cfg.RotationScoreGap {
+		return shadowRotationCandidate{}, fmt.Sprintf("组合持仓已满；新候选 %.1f 分未领先最弱可轮出持仓 %s %.1f 分达到 %.1f 分", incomingScore, rotationDisplayName(best), bestScore, cfg.RotationScoreGap)
 	}
 	return best, ""
 }
@@ -2298,7 +2374,7 @@ func executeShadowRotationOut(rotation shadowRotationCandidate, incoming realtim
 		sell.ExecutionTime = simulatedOpeningExecutionTime(date)
 		sell.PositionAction = "rotate_out"
 		sell.PositionSequence = index + 1
-		sell.Reason = fmt.Sprintf("组合换仓：%s %.1f 分显著强于当前持仓 %.1f 分", shadowSignalDisplayName(incoming), incoming.Score, rotation.score)
+		sell.Reason = fmt.Sprintf("组合换仓：%s %.1f 分显著强于当前持仓 %.1f 分", shadowSignalDisplayName(incoming), shadowSignalScoreForConfig(incoming, cfg), rotation.score)
 		fee := transactionFee(sell.Amount, "sell", cfg)
 		orders = append(orders, sell)
 		trades = append(trades, tradeForLot(lot, sell, rotation.bar.Open, date, rotation.barIndex, fee, tradeSequence+index))
@@ -2365,8 +2441,12 @@ func investedCost(active map[string]shadowPosition) float64 {
 }
 
 func targetPositionPercent(signal realtime.Signal, cfg Config) float64 {
-	qualityRange := math.Max(1, 75-cfg.MinimumScore)
-	quality := clamp((shadowSignalScore(signal)-cfg.MinimumScore)/qualityRange, 0, 1)
+	minimumScore := cfg.MinimumScore
+	if cfg.UseCalibratedScore && signal.CalibrationID != "" && signal.CalibrationMinimumScore > 0 {
+		minimumScore = signal.CalibrationMinimumScore
+	}
+	qualityRange := math.Max(1, 75-minimumScore)
+	quality := clamp((shadowSignalScoreForConfig(signal, cfg)-minimumScore)/qualityRange, 0, 1)
 	qualityMultiplier := .6 + .4*quality
 	riskMultiplier := .8
 	if score, ok := signalComponentRatio(signal, "volatility-risk"); ok {
@@ -2573,7 +2653,7 @@ func appendShadowDecision(report *Report, signal realtime.Signal, date, action, 
 			return
 		}
 	}
-	report.Decisions = append(report.Decisions, ShadowDecision{ID: id, Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Date: date, Action: action, Reason: reason, SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...), CurrentQuantity: quantity, TargetPositionPercent: targetPercent})
+	report.Decisions = append(report.Decisions, ShadowDecision{ID: id, Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Date: date, Action: action, Reason: reason, SignalScore: shadowSignalScoreForConfig(signal, report.Config), SignalReasons: append([]string(nil), signal.Reasons...), CurrentQuantity: quantity, TargetPositionPercent: targetPercent})
 }
 
 func aggregateShadowPosition(position shadowPosition, cfg Config, asOf string) ShadowOpenPosition {
@@ -2657,6 +2737,9 @@ func recomputeTradeStats(report *Report) {
 }
 
 func recomputeAccountMetrics(report *Report) {
+	if report == nil {
+		return
+	}
 	report.Config = canonicalConfig(report.Config)
 	initialCash := report.InitialCash
 	if initialCash <= 0 || !finite(initialCash) {
@@ -2684,6 +2767,168 @@ func recomputeAccountMetrics(report *Report) {
 		report.TotalReturnPercent = report.TotalProfit / initialCash * 100
 	}
 	recomputeIndustryExposures(report)
+	report.DailyReview = buildShadowDailyReview(*report)
+}
+
+func buildShadowDailyReview(report Report) *ShadowDailyReview {
+	date := strings.TrimSpace(report.AsOf)
+	if date == "" {
+		return nil
+	}
+	review := &ShadowDailyReview{Date: date, CalibrationStatus: "基线 Champion 运行中"}
+	if report.Config.UseCalibratedScore {
+		if report.CalibrationID != "" {
+			review.CalibrationStatus = "校准 Challenger 运行中"
+		} else {
+			review.CalibrationStatus = "等待成熟校准候选"
+		}
+	}
+	blockers := make(map[string]int)
+	events := make(map[string]struct{})
+	for _, decision := range report.Decisions {
+		if decision.Date != date {
+			continue
+		}
+		review.DecisionCount++
+		if decision.EventSource == "realtime" && decision.EventID != "" {
+			events[decision.EventID] = struct{}{}
+		}
+		switch decision.Action {
+		case "open", "rotate_in":
+			review.OpenCount++
+		case "add":
+			review.AddCount++
+		case "reduce":
+			review.ReduceCount++
+		case "t_reduce":
+			review.TReduceCount++
+		case "t_rebuy":
+			review.TRebuyCount++
+		case "risk_exit":
+			review.RiskExitCount++
+		case "exit":
+			review.ExitCount++
+		case "hold":
+			review.HoldCount++
+			if strings.TrimSpace(decision.Reason) != "" {
+				blockers[shadowReviewBlocker(decision.Reason)]++
+			}
+		case "wait":
+			review.WaitCount++
+			if strings.TrimSpace(decision.Reason) != "" {
+				blockers[shadowReviewBlocker(decision.Reason)]++
+			}
+		}
+	}
+	for _, order := range report.Orders {
+		if order.AttemptDate != date || order.Status != OrderFilled {
+			continue
+		}
+		if order.EventID != "" && (strings.HasPrefix(order.EventID, "rt-") || strings.HasPrefix(order.EventSource, "realtime")) {
+			events[order.EventID] = struct{}{}
+		}
+		review.OrderCount++
+		review.Turnover += order.Amount
+		review.Fees += transactionFee(order.Amount, order.Side, report.Config)
+		if order.PositionAction == "t_reduce" {
+			review.TNetCashBenefit += order.Amount - transactionFee(order.Amount, "sell", report.Config)
+		} else if order.PositionAction == "t_rebuy" {
+			review.TNetCashBenefit -= order.Amount + transactionFee(order.Amount, "buy", report.Config)
+		}
+	}
+	for _, rejection := range report.Rejections {
+		if rejection.AttemptDate != date {
+			continue
+		}
+		if rejection.EventID != "" && (strings.HasPrefix(rejection.EventID, "rt-") || strings.HasPrefix(rejection.EventSource, "realtime")) {
+			events[rejection.EventID] = struct{}{}
+		}
+		review.RejectedCount++
+		if strings.TrimSpace(rejection.Reason) != "" {
+			blockers[shadowReviewBlocker(rejection.Reason)]++
+		}
+	}
+	// A T high-sell remains pending until its same-day rebuy is filled. Keep
+	// that quantity visible in the daily review so an incomplete round is not
+	// mistaken for a normal reduction.
+	pendingSymbols := make(map[string]struct{})
+	for _, position := range report.Positions {
+		if position.Symbol != "" {
+			pendingSymbols[position.Symbol] = struct{}{}
+		}
+	}
+	for _, order := range report.Orders {
+		if order.AttemptDate == date && order.PositionAction == "t_reduce" && order.Status == OrderFilled && order.Symbol != "" {
+			pendingSymbols[order.Symbol] = struct{}{}
+		}
+	}
+	for symbol := range pendingSymbols {
+		if _, quantity := realtimePendingT(report, symbol, date); quantity > 0 {
+			review.PendingTQuantity += quantity
+		}
+	}
+	for _, trade := range report.Trades {
+		if trade.ExitDate == date {
+			review.RealizedProfit += trade.NetProfit
+		}
+	}
+	review.MonitoringEvents = len(events)
+	items := make([]ShadowReasonCount, 0, len(blockers))
+	for reason, count := range blockers {
+		items = append(items, ShadowReasonCount{Reason: reason, Count: count})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Count == items[j].Count {
+			return items[i].Reason < items[j].Reason
+		}
+		return items[i].Count > items[j].Count
+	})
+	if len(items) > 5 {
+		items = items[:5]
+	}
+	review.TopBlockers = items
+	if report.CalibrationID != "" {
+		review.CalibrationSummary = fmt.Sprintf("%s · %d 个成熟样本 · 最低分 %.1f", report.CalibrationID, report.CalibrationReadySamples, report.CalibrationMinimumScore)
+	} else {
+		review.CalibrationSummary = "当前使用固定基线；候选需通过时间留出和前向观察后才会进入 Challenger"
+	}
+	return review
+}
+
+// shadowReviewBlocker keeps the daily summary useful without throwing away
+// the full explanation stored on each decision. Similar reasons differ by
+// score, price or symbol and would otherwise each occupy a separate row.
+func shadowReviewBlocker(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "未说明"
+	}
+	for _, item := range []struct {
+		contains string
+		label    string
+	}{
+		{"信号尚未显著增强", "信号未显著增强"},
+		{"信号未显著增强", "信号未显著增强"},
+		{"现金缓冲不足", "现金缓冲不足"},
+		{"达到盘中持仓上限", "持仓数量达到上限"},
+		{"达到最大分批建仓次数", "分批建仓次数达到上限"},
+		{"没有满足T+1", "T+1 暂无可卖批次"},
+		{"当日新买批次受 T+1 锁定", "T+1 暂无可卖批次"},
+		{"已有做T卖出批次", "等待做T回补"},
+		{"等待价格回落至覆盖费用", "等待做T回补"},
+		{"调仓冷却", "普通调仓冷却"},
+		{"行业集中度", "行业集中度保护"},
+		{"风险退出后冷却期", "风险退出冷却"},
+		{"历史成交额不可用", "历史成交额不可用"},
+		{"成交额容量不足", "成交额容量不足"},
+		{"触及涨停", "涨停或不可交易"},
+		{"触及跌停", "跌停或不可交易"},
+	} {
+		if strings.Contains(reason, item.contains) {
+			return item.label
+		}
+	}
+	return reason
 }
 
 func recomputeIndustryExposures(report *Report) {
@@ -2740,6 +2985,22 @@ func cloneReport(report Report) Report {
 	report.Warnings = append([]string(nil), report.Warnings...)
 	report.Decisions = append([]ShadowDecision(nil), report.Decisions...)
 	report.IndustryExposures = append([]ShadowIndustryExposure(nil), report.IndustryExposures...)
+	for index := range report.Positions {
+		report.Positions[index].Lots = append([]ShadowPositionLot(nil), report.Positions[index].Lots...)
+		report.Positions[index].SignalReasons = append([]string(nil), report.Positions[index].SignalReasons...)
+		for lotIndex := range report.Positions[index].Lots {
+			report.Positions[index].Lots[lotIndex].SignalReasons = append([]string(nil), report.Positions[index].Lots[lotIndex].SignalReasons...)
+		}
+	}
+	for index := range report.Orders {
+		report.Orders[index].SignalReasons = append([]string(nil), report.Orders[index].SignalReasons...)
+	}
+	for index := range report.Rejections {
+		report.Rejections[index].SignalReasons = append([]string(nil), report.Rejections[index].SignalReasons...)
+	}
+	for index := range report.Decisions {
+		report.Decisions[index].SignalReasons = append([]string(nil), report.Decisions[index].SignalReasons...)
+	}
 	for index := range report.IndustryExposures {
 		report.IndustryExposures[index].Symbols = append([]string(nil), report.IndustryExposures[index].Symbols...)
 	}
@@ -2770,6 +3031,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 	}
 	checkpoint := TradingCheckpointAt(currentNow, calendarDates)
 	report := Report{EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, options.Limit), SignalLimit: options.Limit, CheckpointPhase: checkpoint.Phase, ExecutionMode: ExecutionModeDaily, GeneratedAt: currentNow, AsOf: checkpoint.Date, Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
+	applyReportCalibrationMetadata(&report, signals)
 	if len(selected) == 0 {
 		return report, nil
 	}
@@ -2794,7 +3056,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 			continue
 		}
 		for _, signal := range items {
-			if !shadowSignalActionable(signal) {
+			if !shadowSignalActionableForConfig(signal, cfg) {
 				continue
 			}
 			entryEligible := shadowSignalEntryEligible(signal, cfg)
@@ -2834,7 +3096,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 	}
 	sort.SliceStable(plans, func(i, j int) bool {
 		if plans[i].entryDate == plans[j].entryDate {
-			return plans[i].signal.Score > plans[j].signal.Score
+			return shadowSignalScoreForConfig(plans[i].signal, cfg) > shadowSignalScoreForConfig(plans[j].signal, cfg)
 		}
 		return plans[i].entryDate < plans[j].entryDate
 	})
@@ -2892,6 +3154,36 @@ func canonicalConfig(cfg Config) Config {
 	}
 	if cfg.RotationMinimumHoldDays <= 0 || cfg.RotationMinimumHoldDays > 60 {
 		cfg.RotationMinimumHoldDays = defaults.RotationMinimumHoldDays
+	}
+	if !cfg.EnableIntradayT {
+		cfg.EnableIntradayT = defaults.EnableIntradayT
+	}
+	if cfg.TCorePositionPercent <= 0 || cfg.TCorePositionPercent >= 100 || !finite(cfg.TCorePositionPercent) {
+		cfg.TCorePositionPercent = defaults.TCorePositionPercent
+	}
+	if cfg.TTranchePercent <= 0 || cfg.TTranchePercent >= 100 || !finite(cfg.TTranchePercent) {
+		cfg.TTranchePercent = defaults.TTranchePercent
+	}
+	if cfg.TCorePositionPercent+cfg.TTranchePercent > 100 {
+		cfg.TTranchePercent = 100 - cfg.TCorePositionPercent
+	}
+	if cfg.TMaxDailyRounds <= 0 || cfg.TMaxDailyRounds > 10 {
+		cfg.TMaxDailyRounds = defaults.TMaxDailyRounds
+	}
+	if cfg.TVWAPDeviationPercent <= 0 || cfg.TVWAPDeviationPercent > 20 || !finite(cfg.TVWAPDeviationPercent) {
+		cfg.TVWAPDeviationPercent = defaults.TVWAPDeviationPercent
+	}
+	if cfg.TMinimumPriceGapPercent <= 0 || cfg.TMinimumPriceGapPercent > 20 || !finite(cfg.TMinimumPriceGapPercent) {
+		cfg.TMinimumPriceGapPercent = defaults.TMinimumPriceGapPercent
+	}
+	if cfg.TMinimumNetProfitPercent < 0 || cfg.TMinimumNetProfitPercent > 20 || !finite(cfg.TMinimumNetProfitPercent) {
+		cfg.TMinimumNetProfitPercent = defaults.TMinimumNetProfitPercent
+	}
+	if cfg.TCooldownMinutes <= 0 || cfg.TCooldownMinutes > 240 {
+		cfg.TCooldownMinutes = defaults.TCooldownMinutes
+	}
+	if cfg.SignalRebalanceCooldownMinutes <= 0 || cfg.SignalRebalanceCooldownMinutes > 240 {
+		cfg.SignalRebalanceCooldownMinutes = defaults.SignalRebalanceCooldownMinutes
 	}
 	if cfg.MaxPortfolioRiskPercent <= 0 || cfg.MaxPortfolioRiskPercent > 100 || !finite(cfg.MaxPortfolioRiskPercent) {
 		cfg.MaxPortfolioRiskPercent = defaults.MaxPortfolioRiskPercent
@@ -2964,7 +3256,12 @@ func representativeSignals(signals []realtime.Signal, limit int) []realtime.Sign
 }
 
 func shadowSignalActionable(signal realtime.Signal) bool {
-	switch signal.State {
+	return shadowSignalActionableForConfig(signal, Config{})
+}
+
+func shadowSignalActionableForConfig(signal realtime.Signal, cfg Config) bool {
+	state := shadowSignalStateForConfig(signal, cfg)
+	switch state {
 	case realtime.StateTriggered, realtime.StateWatching, realtime.StateWeak, realtime.StateInvalid:
 		return true
 	default:
@@ -2972,11 +3269,26 @@ func shadowSignalActionable(signal realtime.Signal) bool {
 	}
 }
 
-func shadowSignalEntryEligible(signal realtime.Signal, cfg Config) bool {
-	if signal.RiskMultiplier > 0 || signal.CrossSectionTotal > 0 || signal.MarketRegime != "" {
-		return signal.PortfolioEligible && shadowSignalScore(signal) >= cfg.MinimumScore
+func shadowSignalStateForConfig(signal realtime.Signal, cfg Config) realtime.SignalState {
+	if cfg.UseCalibratedScore && signal.CalibrationID != "" && signal.CalibratedState != "" {
+		return signal.CalibratedState
 	}
-	return (signal.State == realtime.StateTriggered || signal.State == realtime.StateWatching) && shadowSignalScore(signal) >= cfg.MinimumScore
+	return signal.State
+}
+
+func shadowSignalEntryEligible(signal realtime.Signal, cfg Config) bool {
+	minimumScore := cfg.MinimumScore
+	if cfg.UseCalibratedScore && signal.CalibrationID != "" && signal.CalibrationMinimumScore > 0 {
+		minimumScore = signal.CalibrationMinimumScore
+	}
+	score := shadowSignalScoreForConfig(signal, cfg)
+	if cfg.UseCalibratedScore && signal.CalibrationID != "" {
+		return signal.CalibratedPortfolioEligible && score >= minimumScore
+	}
+	if signal.RiskMultiplier > 0 || signal.CrossSectionTotal > 0 || signal.MarketRegime != "" {
+		return signal.PortfolioEligible && score >= minimumScore
+	}
+	return (signal.State == realtime.StateTriggered || signal.State == realtime.StateWatching) && score >= minimumScore
 }
 
 func shadowSignalScore(signal realtime.Signal) float64 {
@@ -2984,6 +3296,40 @@ func shadowSignalScore(signal realtime.Signal) float64 {
 		return signal.RiskAdjustedScore
 	}
 	return signal.Score
+}
+
+func shadowSignalScoreForConfig(signal realtime.Signal, cfg Config) float64 {
+	if cfg.UseCalibratedScore && signal.CalibrationID != "" {
+		if signal.CalibratedRiskAdjustedScore > 0 && finite(signal.CalibratedRiskAdjustedScore) {
+			return signal.CalibratedRiskAdjustedScore
+		}
+		if signal.CalibratedScore > 0 && finite(signal.CalibratedScore) {
+			return signal.CalibratedScore
+		}
+	}
+	return shadowSignalScore(signal)
+}
+
+func applyReportCalibrationMetadata(report *Report, signals []realtime.Signal) {
+	if report == nil || !report.Config.UseCalibratedScore {
+		return
+	}
+	// The report-level fields describe the score model used by the current
+	// signal batch, not the model that created an older position. Clear the
+	// watermark before inspecting the batch so a Challenger rollback is visible
+	// instead of leaving a stale "active" label on the adaptive account.
+	report.CalibrationID = ""
+	report.CalibrationReadySamples = 0
+	report.CalibrationMinimumScore = 0
+	for _, signal := range signals {
+		if strings.TrimSpace(signal.CalibrationID) == "" {
+			continue
+		}
+		report.CalibrationID = signal.CalibrationID
+		report.CalibrationReadySamples = signal.CalibrationReadySamples
+		report.CalibrationMinimumScore = signal.CalibrationMinimumScore
+		return
+	}
 }
 
 func makePlan(signal realtime.Signal, bars []domain.DailyBar, calendarDates []string, holdingDays int) (shadowPlan, string, bool) {
@@ -3066,7 +3412,7 @@ func makeOrder(signal realtime.Signal, side, date string, rawPrice float64, quan
 		direction = -1
 	}
 	price := rawPrice * (1 + direction*cfg.SlippageBPS/10000)
-	return ShadowOrder{ID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Side: side, SignalDate: signalDate(signal), AttemptDate: date, Quantity: quantity, RawPrice: rawPrice, Price: price, Amount: price * float64(quantity), CapacityAmount: capacity, Status: "pending", ExecutionTime: simulatedExecutionTime(side, date), SignalScore: signal.Score, TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...)}
+	return ShadowOrder{ID: orderID(signal, side), Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Side: side, SignalDate: signalDate(signal), AttemptDate: date, Quantity: quantity, RawPrice: rawPrice, Price: price, Amount: price * float64(quantity), CapacityAmount: capacity, Status: "pending", ExecutionTime: simulatedExecutionTime(side, date), SignalScore: shadowSignalScoreForConfig(signal, cfg), TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...)}
 }
 
 func simulatedExecutionTime(side, date string) string {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/backtest"
-	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
@@ -126,8 +125,7 @@ func (app *App) runBacktestOptimize(ctx context.Context, arguments []string) err
 	request.UseAI = !*noAI
 
 	fmt.Fprintf(app.errOut, "策略优化: 正在运行 %d 个训练/验证候选，锁定后仅执行一次样本外检验...\n", request.MaxCandidates)
-	provider := backtest.NewCachingDailyBarProvider(market.EastmoneyClient{})
-	optimizer := backtest.NewOptimizer(backtest.NewDailyEngine(provider))
+	optimizer := backtest.NewOptimizer(app.newBacktestEngine())
 	result, err := optimizer.Optimize(ctx, request)
 	if err != nil {
 		return err

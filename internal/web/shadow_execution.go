@@ -19,9 +19,10 @@ const (
 	shadowProfileBalanced     = "balanced"
 	shadowProfileConservative = "conservative"
 	shadowProfileAggressive   = "aggressive"
+	shadowProfileAdaptive     = "adaptive"
 )
 
-var shadowProfileOrder = []string{shadowProfileBalanced, shadowProfileConservative, shadowProfileAggressive}
+var shadowProfileOrder = []string{shadowProfileBalanced, shadowProfileConservative, shadowProfileAggressive, shadowProfileAdaptive}
 
 type shadowProfileSummary struct {
 	ID                 string       `json:"id"`
@@ -185,6 +186,8 @@ func (s *Server) shadowRealtimeQuotes(ctx context.Context, snapshot realtime.Sca
 		result = append(result, paper.PositionQuote{
 			Symbol: symbol, Price: price, PreviousClose: parseQuoteFloat(quote.PreviousClose),
 			Open: parseQuoteFloat(quote.Open), LimitUp: parseQuoteFloat(quote.LimitUp),
+			High: parseQuoteFloat(quote.High), Low: parseQuoteFloat(quote.Low),
+			AveragePrice: parseQuoteFloat(quote.AveragePrice), Volume: quote.Volume,
 			LimitDown: parseQuoteFloat(quote.LimitDown), Amount: quote.Amount,
 			QuoteTime: strings.TrimSpace(quote.QuoteTime), Source: strings.TrimSpace(quote.Source),
 		})
@@ -226,6 +229,7 @@ func (s *Server) extendShadowRealtimeQuotes(ctx context.Context, quotes []paper.
 		}
 		quotes = append(quotes, paper.PositionQuote{
 			Symbol: symbol, Price: price, PreviousClose: parseQuoteFloat(quote.PreviousClose), Open: parseQuoteFloat(quote.Open),
+			High: parseQuoteFloat(quote.High), Low: parseQuoteFloat(quote.Low), AveragePrice: parseQuoteFloat(quote.AveragePrice), Volume: quote.Volume,
 			LimitUp: parseQuoteFloat(quote.LimitUp), LimitDown: parseQuoteFloat(quote.LimitDown), Amount: quote.Amount,
 			QuoteTime: strings.TrimSpace(quote.QuoteTime), Source: strings.TrimSpace(quote.Source),
 		})
@@ -267,6 +271,11 @@ func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArc
 	conservativeConfig.RiskCooldownDays = 5
 	conservativeConfig.MaxParticipationPercent = 5
 	conservativeConfig.HoldingDays = 7
+	conservativeConfig.TMaxDailyRounds = 1
+	conservativeConfig.TVWAPDeviationPercent = 1.0
+	conservativeConfig.TMinimumPriceGapPercent = 1.0
+	conservativeConfig.TMinimumNetProfitPercent = 0.3
+	conservativeConfig.TCooldownMinutes = 25
 	if conservative != nil {
 		profiles[shadowProfileConservative] = shadowExecutionProfile{
 			ID: shadowProfileConservative, Name: "稳健型", Strategy: "62 分门槛 · 60% 上限 · 6 持仓",
@@ -295,6 +304,11 @@ func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArc
 	aggressiveConfig.RiskCooldownDays = 2
 	aggressiveConfig.MaxParticipationPercent = 15
 	aggressiveConfig.HoldingDays = 4
+	aggressiveConfig.TMaxDailyRounds = 3
+	aggressiveConfig.TVWAPDeviationPercent = 0.4
+	aggressiveConfig.TMinimumPriceGapPercent = 0.5
+	aggressiveConfig.TMinimumNetProfitPercent = 0.1
+	aggressiveConfig.TCooldownMinutes = 10
 	if aggressive != nil {
 		profiles[shadowProfileAggressive] = shadowExecutionProfile{
 			ID: shadowProfileAggressive, Name: "进取型", Strategy: "52 分门槛 · 90% 上限 · 10 持仓",
@@ -303,6 +317,16 @@ func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArc
 		}
 	}
 	return profiles
+}
+
+func adaptiveShadowExecutionProfile(archive shadowArchive) shadowExecutionProfile {
+	cfg := paper.DefaultConfig()
+	cfg.UseCalibratedScore = true
+	return shadowExecutionProfile{
+		ID: shadowProfileAdaptive, Name: "自适应校准型", Strategy: "滚动验证门控 · Champion/Challenger",
+		Description: "使用通过时间留出门禁的候选分数与组件权重，和均衡型并行观察，不直接改写基线。",
+		Config:      cfg, Archive: archive,
+	}
 }
 
 func (s *Server) orderedShadowProfileIDs() []string {

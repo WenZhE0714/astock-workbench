@@ -34,6 +34,7 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 	}
 	report.ExecutionMode = ExecutionModeLive
 	report.GeneratedAt = eventNow
+	applyReportCalibrationMetadata(&report, signals)
 	report.Positions = normalizeRealtimePositions(report.Positions, report.Config, calendarDates, date)
 
 	// Risk exits are evaluated before discretionary signal events. Planned
@@ -99,7 +100,68 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 		}
 	}
 
-	candidates := latestRealtimeSignals(signals, date, eventNow)
+	candidates := latestRealtimeSignals(signals, date, eventNow, report.Config)
+	latestSignals := make(map[string]realtime.Signal, len(candidates))
+	for _, signal := range candidates {
+		latestSignals[signal.Symbol] = signal
+	}
+	// T operations are a separate intraday policy. They only touch an older,
+	// sellable base lot and must complete a profitable round before ordinary
+	// score-based rebalancing is considered for the same symbol.
+	if report.Config.EnableIntradayT {
+		for _, symbol := range positionSymbols {
+			if handledSymbols[symbol] {
+				continue
+			}
+			positionIndex := realtimePositionIndex(report.Positions, symbol)
+			if positionIndex < 0 {
+				continue
+			}
+			quote, ok := quotes[symbol]
+			if !ok {
+				continue
+			}
+			position := report.Positions[positionIndex]
+			signal, found := latestSignals[symbol]
+			if !found {
+				signal = positionSignal(position, eventNow)
+			}
+			pending, pendingQuantity := realtimePendingT(report, symbol, date)
+			tEventID := ""
+			if pendingQuantity > 0 {
+				tEventID = realtimeEventID("t-rebuy", symbol, quote.QuoteTime, "")
+				if realtimeEventHandled(report, tEventID) {
+					continue
+				}
+				if realtimeTRebuyEligible(pending, pendingQuantity, quote, report.Config) {
+					if executeRealtimeTRebuy(&report, &position, signal, quote, pending, pendingQuantity, tEventID, calendarDates, date) {
+						report.Positions[positionIndex] = position
+						appendRealtimeDecision(&report, signal, date, "t_rebuy", fmt.Sprintf("做T回补：现价 %.2f 较卖出价 %.2f 回落，预计净收益覆盖费用", quote.Price, pending.Price), position.Quantity, position.TargetPositionPercent, tEventID, quote)
+						handledSymbols[symbol] = true
+					}
+				} else {
+					appendRealtimeDecision(&report, signal, date, "hold", "已有做T卖出批次，等待价格回落至覆盖费用的回补区间", position.Quantity, position.TargetPositionPercent, tEventID, quote)
+				}
+				continue
+			}
+			if !realtimeTReduceEligible(position, quote, report.Config, report, date) {
+				continue
+			}
+			tEventID = realtimeEventID("t-reduce", symbol, quote.QuoteTime, "")
+			if realtimeEventHandled(report, tEventID) || realtimeTDayRounds(report, symbol, date) >= report.Config.TMaxDailyRounds {
+				continue
+			}
+			quantity := realtimeTReduceQuantity(position, date, report.Config)
+			if quantity <= 0 || realtimeSellBlocked(quote) {
+				continue
+			}
+			if executeRealtimePartialSell(&report, &position, quantity, signal, quote, tEventID, calendarDates, date) > 0 {
+				report.Positions[positionIndex] = position
+				appendRealtimeDecision(&report, signal, date, "t_reduce", fmt.Sprintf("做T高抛：现价 %.2f 高于VWAP %.2f，卖出 %d 股底仓并保留核心仓位", quote.Price, quote.AveragePrice, quantity), position.Quantity, position.TargetPositionPercent, tEventID, quote)
+				handledSymbols[symbol] = true
+			}
+		}
+	}
 	for _, signal := range candidates {
 		quote, ok := quotes[signal.Symbol]
 		if !ok || handledSymbols[signal.Symbol] {
@@ -114,12 +176,27 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 		positionIndex := realtimePositionIndex(report.Positions, signal.Symbol)
 		if positionIndex >= 0 {
 			position := report.Positions[positionIndex]
+			if _, pendingQuantity := realtimePendingT(report, signal.Symbol, date); pendingQuantity > 0 {
+				appendRealtimeDecision(&report, signal, date, "hold", "已有做T卖出批次，普通加减仓等待回补完成", position.Quantity, position.TargetPositionPercent, eventID, quote)
+				continue
+			}
 			currentScore := position.SignalScore
 			if currentScore <= 0 {
-				currentScore = shadowSignalScore(signal)
+				currentScore = shadowSignalScoreForConfig(signal, report.Config)
 			}
-			newScore := shadowSignalScore(signal)
-			if (signal.State == realtime.StateWeak || signal.State == realtime.StateInvalid) && newScore <= currentScore-report.Config.AdditionScoreStep {
+			newScore := shadowSignalScoreForConfig(signal, report.Config)
+			state := shadowSignalStateForConfig(signal, report.Config)
+			rebalance := ""
+			if (state == realtime.StateWeak || state == realtime.StateInvalid) && newScore <= currentScore-report.Config.AdditionScoreStep {
+				rebalance = "reduce"
+			} else if shadowSignalEntryEligible(signal, report.Config) && newScore >= currentScore+report.Config.AdditionScoreStep {
+				rebalance = "add"
+			}
+			if rebalance != "" && !realtimeSignalCooldownElapsed(report, signal.Symbol, date, quote.QuoteTime, report.Config.SignalRebalanceCooldownMinutes) {
+				appendRealtimeDecision(&report, signal, date, "hold", fmt.Sprintf("刚完成普通%s，盘中调仓冷却 %d 分钟未结束", map[string]string{"add": "加仓", "reduce": "减仓"}[rebalance], report.Config.SignalRebalanceCooldownMinutes), position.Quantity, position.TargetPositionPercent, eventID, quote)
+				continue
+			}
+			if (state == realtime.StateWeak || state == realtime.StateInvalid) && newScore <= currentScore-report.Config.AdditionScoreStep {
 				lotIndexes := realtimeSellableLotIndexes(position.Lots, date, true)
 				reason := fmt.Sprintf("盘中信号由 %.1f 分回落至 %.1f 分，减去一个满足 T+1 的批次", currentScore, newScore)
 				if len(lotIndexes) == 0 {
@@ -256,7 +333,7 @@ func (e *Evaluator) executeRealtimeBuy(ctx context.Context, report *Report, sign
 		OrderID: buy.ID, EntryDate: date, EntryTime: quote.QuoteTime, Quantity: quantity,
 		EntryPrice: buy.Price, EntryAmount: buy.Amount, EntryFee: fee, SignalID: signal.ID,
 		Industry: signal.Industry, SignalDate: date, SignalClose: signal.Price,
-		SignalScore: signal.Score, TriggerPrice: signal.TriggerPrice,
+		SignalScore: shadowSignalScoreForConfig(signal, report.Config), TriggerPrice: signal.TriggerPrice,
 		InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...),
 		TargetExitDate: targetExit,
 	}
@@ -265,7 +342,7 @@ func (e *Evaluator) executeRealtimeBuy(ctx context.Context, report *Report, sign
 		position.Lots = append(position.Lots, lot)
 		position.SignalID = signal.ID
 		position.SignalDate = date
-		position.SignalScore = shadowSignalScore(signal)
+		position.SignalScore = shadowSignalScoreForConfig(signal, report.Config)
 		position.SignalClose = signal.Price
 		position.TriggerPrice = signal.TriggerPrice
 		position.InvalidationPrice = signal.InvalidationPrice
@@ -277,7 +354,7 @@ func (e *Evaluator) executeRealtimeBuy(ctx context.Context, report *Report, sign
 	} else {
 		position := ShadowOpenPosition{
 			SignalID: signal.ID, Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry,
-			SignalDate: date, SignalClose: signal.Price, SignalScore: shadowSignalScore(signal),
+			SignalDate: date, SignalClose: signal.Price, SignalScore: shadowSignalScoreForConfig(signal, report.Config),
 			TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice,
 			SignalReasons: append([]string(nil), signal.Reasons...), Lots: []ShadowPositionLot{lot},
 			TargetPositionPercent: targetPercent,
@@ -324,6 +401,9 @@ func executeRealtimeSell(report *Report, position *ShadowOpenPosition, indexes [
 	remaining := make([]ShadowPositionLot, 0, len(position.Lots)-len(indexes))
 	filled := 0
 	for index, lot := range position.Lots {
+		if lot.Quantity <= 0 {
+			continue
+		}
 		if !wanted[index] {
 			remaining = append(remaining, lot)
 			continue
@@ -364,6 +444,277 @@ func executeRealtimeSell(report *Report, position *ShadowOpenPosition, indexes [
 	return filled
 }
 
+// executeRealtimePartialSell closes only part of the oldest sellable lot. The
+// remainder keeps its original cost basis, while the sold slice is recorded as
+// a completed trade so realized P&L remains auditable.
+func executeRealtimePartialSell(report *Report, position *ShadowOpenPosition, quantity int, signal realtime.Signal, quote PositionQuote, eventID string, calendarDates []string, date string) int {
+	if report == nil || position == nil || quantity <= 0 || realtimeSellBlocked(quote) {
+		return 0
+	}
+	lotIndex := -1
+	for index, lot := range position.Lots {
+		if lot.Quantity <= 0 || lot.EntryDate == "" || lot.EntryDate >= date {
+			continue
+		}
+		if lotIndex < 0 || lot.EntryDate < position.Lots[lotIndex].EntryDate {
+			lotIndex = index
+		}
+	}
+	if lotIndex < 0 {
+		return 0
+	}
+	lot := position.Lots[lotIndex]
+	if quantity > lot.Quantity {
+		quantity = lot.Quantity
+	}
+	if quantity <= 0 {
+		return 0
+	}
+	soldLot := lot
+	ratio := float64(quantity) / float64(lot.Quantity)
+	soldLot.Quantity = quantity
+	soldLot.EntryAmount = lot.EntryAmount * ratio
+	soldLot.EntryFee = lot.EntryFee * ratio
+	lot.Quantity -= quantity
+	lot.EntryAmount -= soldLot.EntryAmount
+	lot.EntryFee -= soldLot.EntryFee
+	if lot.Quantity == 0 {
+		position.Lots = append(position.Lots[:lotIndex], position.Lots[lotIndex+1:]...)
+	} else {
+		position.Lots[lotIndex] = lot
+	}
+	if signal.Symbol == "" {
+		signal = positionSignal(*position, time.Now())
+	}
+	sell := makeOrder(signal, "sell", date, quote.Price, quantity, report.Config, 0)
+	sell.ID = eventID + "-sell"
+	sell.EventID = eventID
+	sell.EventSource = "realtime-t"
+	sell.Status = OrderFilled
+	sell.ExecutionTime = quote.QuoteTime
+	sell.PositionAction = "t_reduce"
+	sell.PositionSequence = lotIndex + 1
+	sell.Reason = "做T高抛，保留核心仓位"
+	fee := transactionFee(sell.Amount, "sell", report.Config)
+	report.RemainingCash += sell.Amount - fee
+	report.Orders = append(report.Orders, sell)
+	report.Trades = append(report.Trades, tradeForRealtimeLot(soldLot, sell, quote.Price, fee, len(report.Trades)+1, calendarDates))
+	report.CompletedTrades++
+	report.TotalTurnover += sell.Amount
+	report.TotalFees += fee
+	*position = applyRealtimePositionMetrics(*position, quote, date)
+	return quantity
+}
+
+func executeRealtimeTRebuy(report *Report, position *ShadowOpenPosition, signal realtime.Signal, quote PositionQuote, sale ShadowOrder, quantity int, eventID string, calendarDates []string, date string) bool {
+	if report == nil || position == nil || quantity <= 0 || realtimeBuyBlocked(quote) {
+		return false
+	}
+	buy := makeOrder(signal, "buy", date, quote.Price, quantity, report.Config, 0)
+	buy.ID = eventID + "-buy"
+	buy.EventID = eventID
+	buy.EventSource = "realtime-t"
+	buy.Status = OrderFilled
+	buy.ExecutionTime = quote.QuoteTime
+	buy.PositionAction = "t_rebuy"
+	buy.PositionSequence = len(position.Lots) + 1
+	buy.Reason = fmt.Sprintf("做T回补，承接此前卖出批次 %s", sale.ID)
+	fee := transactionFee(buy.Amount, "buy", report.Config)
+	if buy.Amount+fee > report.RemainingCash || report.RemainingCash-buy.Amount-fee < report.Config.InitialCash*report.Config.CashReservePercent/100 {
+		return false
+	}
+	report.RemainingCash -= buy.Amount + fee
+	report.Orders = append(report.Orders, buy)
+	report.FilledEntries++
+	report.TotalTurnover += buy.Amount
+	report.TotalFees += fee
+	lot := ShadowPositionLot{
+		OrderID: buy.ID, EntryDate: date, EntryTime: quote.QuoteTime, Quantity: quantity,
+		EntryPrice: buy.Price, EntryAmount: buy.Amount, EntryFee: fee, SignalID: signal.ID,
+		Industry: signal.Industry, SignalDate: date, SignalClose: signal.Price,
+		SignalScore: shadowSignalScoreForConfig(signal, report.Config), TriggerPrice: signal.TriggerPrice,
+		InvalidationPrice: signal.InvalidationPrice, SignalReasons: append([]string(nil), signal.Reasons...),
+		TargetExitDate: holdingExitDate(calendarDates, date, report.Config.HoldingDays),
+	}
+	position.Lots = append(position.Lots, lot)
+	*position = applyRealtimePositionMetrics(*position, quote, date)
+	return true
+}
+
+func realtimePendingT(report Report, symbol, date string) (ShadowOrder, int) {
+	type sale struct {
+		order     ShadowOrder
+		remaining int
+	}
+	queue := make([]sale, 0)
+	for _, order := range report.Orders {
+		if order.Symbol != symbol || order.AttemptDate != date || order.Status != OrderFilled {
+			continue
+		}
+		switch order.PositionAction {
+		case "t_reduce":
+			if order.Quantity > 0 {
+				queue = append(queue, sale{order: order, remaining: order.Quantity})
+			}
+		case "t_rebuy":
+			remaining := order.Quantity
+			for index := range queue {
+				if remaining <= 0 {
+					break
+				}
+				used := queue[index].remaining
+				if used > remaining {
+					used = remaining
+				}
+				queue[index].remaining -= used
+				remaining -= used
+			}
+		}
+	}
+	quantity := 0
+	var latest ShadowOrder
+	for _, item := range queue {
+		if item.remaining <= 0 {
+			continue
+		}
+		quantity += item.remaining
+		if latest.ExecutionTime == "" || item.order.ExecutionTime > latest.ExecutionTime {
+			latest = item.order
+		}
+	}
+	return latest, quantity
+}
+
+func realtimeTDayRounds(report Report, symbol, date string) int {
+	count := 0
+	for _, order := range report.Orders {
+		if order.Symbol == symbol && order.AttemptDate == date && order.Status == OrderFilled && order.PositionAction == "t_rebuy" {
+			count++
+		}
+	}
+	return count
+}
+
+func realtimeTReduceQuantity(position ShadowOpenPosition, date string, cfg Config) int {
+	if position.Quantity <= 0 {
+		return 0
+	}
+	core := int(math.Ceil(float64(position.Quantity)*cfg.TCorePositionPercent/100/float64(cfg.LotSize))) * cfg.LotSize
+	if core >= position.Quantity {
+		return 0
+	}
+	available := 0
+	for _, lot := range position.Lots {
+		if lot.EntryDate != "" && lot.EntryDate < date && lot.Quantity > 0 {
+			available += lot.Quantity
+		}
+	}
+	maxSell := position.Quantity - core
+	if available < maxSell {
+		maxSell = available
+	}
+	tranche := int(float64(position.Quantity)*cfg.TTranchePercent/100/float64(cfg.LotSize)) * cfg.LotSize
+	if tranche < cfg.LotSize {
+		tranche = cfg.LotSize
+	}
+	if tranche > maxSell {
+		tranche = maxSell / cfg.LotSize * cfg.LotSize
+	}
+	return tranche
+}
+
+func realtimeTReduceEligible(position ShadowOpenPosition, quote PositionQuote, cfg Config, report Report, date string) bool {
+	if !cfg.EnableIntradayT || position.Quantity <= 0 || position.RiskExitPending || quote.Price <= 0 || quote.AveragePrice <= 0 {
+		return false
+	}
+	if !realtimeTCooldownElapsed(report, position.Symbol, date, quote.QuoteTime, cfg.TCooldownMinutes) {
+		return false
+	}
+	if quote.Price <= position.EntryPrice || quote.Price < quote.AveragePrice*(1+cfg.TVWAPDeviationPercent/100) {
+		return false
+	}
+	if realtimeTReduceQuantity(position, date, cfg) <= 0 || realtimeTDayRounds(report, position.Symbol, date) >= cfg.TMaxDailyRounds {
+		return false
+	}
+	return true
+}
+
+func realtimeTCooldownElapsed(report Report, symbol, date, quoteTime string, cooldownMinutes int) bool {
+	if cooldownMinutes <= 0 {
+		return true
+	}
+	current, ok := parseRealtimeTimestamp(quoteTime)
+	if !ok {
+		// A source without a parseable timestamp cannot prove that a cooldown
+		// was violated. The event-level de-duplication still prevents replay.
+		return true
+	}
+	for index := len(report.Orders) - 1; index >= 0; index-- {
+		order := report.Orders[index]
+		if order.Symbol != symbol || order.AttemptDate != date || order.Status != OrderFilled || (order.PositionAction != "t_reduce" && order.PositionAction != "t_rebuy") {
+			continue
+		}
+		at, parsed := parseRealtimeTimestamp(order.ExecutionTime)
+		if !parsed {
+			continue
+		}
+		return current.Sub(at) >= time.Duration(cooldownMinutes)*time.Minute
+	}
+	return true
+}
+
+// realtimeSignalCooldownElapsed debounces ordinary score-driven add/reduce
+// operations.  It intentionally excludes risk exits and T rounds: those have
+// independent safety/profitability gates and must remain responsive.
+func realtimeSignalCooldownElapsed(report Report, symbol, date, quoteTime string, cooldownMinutes int) bool {
+	if cooldownMinutes <= 0 {
+		return true
+	}
+	current, ok := parseRealtimeTimestamp(quoteTime)
+	if !ok {
+		return true
+	}
+	for index := len(report.Orders) - 1; index >= 0; index-- {
+		order := report.Orders[index]
+		if order.Symbol != symbol || order.AttemptDate != date || order.Status != OrderFilled {
+			continue
+		}
+		switch order.PositionAction {
+		case "open", "add", "reduce":
+		default:
+			continue
+		}
+		at, parsed := parseRealtimeTimestamp(order.ExecutionTime)
+		if !parsed {
+			continue
+		}
+		if current.Before(at) {
+			return false
+		}
+		return current.Sub(at) >= time.Duration(cooldownMinutes)*time.Minute
+	}
+	return true
+}
+
+func realtimeTRebuyEligible(sale ShadowOrder, quantity int, quote PositionQuote, cfg Config) bool {
+	if quantity <= 0 || sale.Price <= 0 || quote.Price <= 0 || quote.AveragePrice <= 0 {
+		return false
+	}
+	if quote.Price >= sale.Price*(1-cfg.TMinimumPriceGapPercent/100) || quote.Price > quote.AveragePrice {
+		return false
+	}
+	// Use executable prices including slippage and all configured fees. The
+	// expected round must clear both a percentage and a small absolute margin.
+	sellAmount := sale.Price * float64(quantity)
+	sellFee := transactionFee(sellAmount, "sell", cfg)
+	buyPrice := quote.Price * (1 + cfg.SlippageBPS/10000)
+	buyAmount := buyPrice * float64(quantity)
+	buyFee := transactionFee(buyAmount, "buy", cfg)
+	net := sellAmount - sellFee - buyAmount - buyFee
+	minimum := math.Max(0.01, buyAmount*cfg.TMinimumNetProfitPercent/100)
+	return net >= minimum
+}
+
 func tradeForRealtimeLot(lot ShadowPositionLot, sell ShadowOrder, rawExit, fee float64, sequence int, calendarDates []string) ShadowTrade {
 	entryAmount := lot.EntryAmount
 	if entryAmount <= 0 {
@@ -392,11 +743,11 @@ func tradeForRealtimeLot(lot ShadowPositionLot, sell ShadowOrder, rawExit, fee f
 	}
 }
 
-func latestRealtimeSignals(signals []realtime.Signal, date string, now time.Time) []realtime.Signal {
+func latestRealtimeSignals(signals []realtime.Signal, date string, now time.Time, cfg Config) []realtime.Signal {
 	latest := make(map[string]realtime.Signal)
 	latestAt := make(map[string]time.Time)
 	for _, signal := range signals {
-		if strings.TrimSpace(signal.Symbol) == "" || signalDate(signal) != date || !shadowSignalActionable(signal) {
+		if strings.TrimSpace(signal.Symbol) == "" || signalDate(signal) != date || !shadowSignalActionableForConfig(signal, cfg) {
 			continue
 		}
 		at, ok := realtimeSignalTime(signal)
@@ -404,7 +755,7 @@ func latestRealtimeSignals(signals []realtime.Signal, date string, now time.Time
 			continue
 		}
 		previousAt, found := latestAt[signal.Symbol]
-		if !found || at.After(previousAt) || (at.Equal(previousAt) && shadowSignalScore(signal) > shadowSignalScore(latest[signal.Symbol])) {
+		if !found || at.After(previousAt) || (at.Equal(previousAt) && shadowSignalScoreForConfig(signal, cfg) > shadowSignalScoreForConfig(latest[signal.Symbol], cfg)) {
 			latest[signal.Symbol] = signal
 			latestAt[signal.Symbol] = at
 		}
@@ -417,10 +768,10 @@ func latestRealtimeSignals(signals []realtime.Signal, date string, now time.Time
 		left, _ := realtimeSignalTime(result[i])
 		right, _ := realtimeSignalTime(result[j])
 		if left.Equal(right) {
-			if shadowSignalScore(result[i]) == shadowSignalScore(result[j]) {
+			if shadowSignalScoreForConfig(result[i], cfg) == shadowSignalScoreForConfig(result[j], cfg) {
 				return result[i].Symbol < result[j].Symbol
 			}
-			return shadowSignalScore(result[i]) > shadowSignalScore(result[j])
+			return shadowSignalScoreForConfig(result[i], cfg) > shadowSignalScoreForConfig(result[j], cfg)
 		}
 		return left.Before(right)
 	})
@@ -516,7 +867,7 @@ func appendRealtimeDecision(report *Report, signal realtime.Signal, date, action
 	report.Decisions = append(report.Decisions, ShadowDecision{
 		ID: eventID + "-decision", EventID: eventID, EventTime: quote.QuoteTime, EventSource: "realtime",
 		Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Date: date,
-		Action: action, Reason: reason, SignalScore: signal.Score,
+		Action: action, Reason: reason, SignalScore: shadowSignalScoreForConfig(signal, report.Config),
 		SignalReasons: append([]string(nil), signal.Reasons...), CurrentQuantity: quantity,
 		TargetPositionPercent: targetPercent,
 	})
@@ -530,7 +881,7 @@ func appendRealtimeRejection(report *Report, signal realtime.Signal, side, date,
 		OrderID: eventID + "-" + side, EventID: eventID, EventTime: quote.QuoteTime, EventSource: "realtime",
 		Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry, Side: side,
 		SignalDate: signalDate(signal), AttemptDate: date, Reason: reason,
-		SignalScore: signal.Score, SignalReasons: append([]string(nil), signal.Reasons...),
+		SignalScore: shadowSignalScoreForConfig(signal, report.Config), SignalReasons: append([]string(nil), signal.Reasons...),
 	})
 	report.RejectedOrders++
 }
@@ -614,7 +965,12 @@ func normalizeRealtimePositions(positions []ShadowOpenPosition, cfg Config, cale
 
 func realtimePositionLots(position ShadowOpenPosition, cfg Config, calendarDates []string) []ShadowPositionLot {
 	if len(position.Lots) > 0 {
-		lots := append([]ShadowPositionLot(nil), position.Lots...)
+		lots := make([]ShadowPositionLot, 0, len(position.Lots))
+		for _, source := range position.Lots {
+			if source.Quantity > 0 {
+				lots = append(lots, source)
+			}
+		}
 		for index := range lots {
 			lots[index].SignalReasons = append([]string(nil), lots[index].SignalReasons...)
 			if lots[index].TargetExitDate == "" {

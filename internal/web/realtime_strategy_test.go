@@ -109,6 +109,18 @@ type realtimeScannerStub struct {
 	calls  *int
 }
 
+type calibratableRealtimeScannerStub struct {
+	calibration realtime.ScoreCalibration
+}
+
+func (stub *calibratableRealtimeScannerStub) Scan(context.Context, []string, bool) (realtime.ScanResult, error) {
+	return realtime.ScanResult{}, nil
+}
+
+func (stub *calibratableRealtimeScannerStub) SetCalibration(value realtime.ScoreCalibration) {
+	stub.calibration = value
+}
+
 type realtimeScannerFunc func(context.Context, []string, bool) (realtime.ScanResult, error)
 
 func (fn realtimeScannerFunc) Scan(ctx context.Context, symbols []string, includeLeaders bool) (realtime.ScanResult, error) {
@@ -180,6 +192,22 @@ type realtimeOutcomeStub struct {
 	reportCalls   *int
 	reportLimit   *int
 	options       *realtime.OutcomeOptions
+}
+
+type realtimeOutcomeFunc struct {
+	evaluate func(context.Context, []realtime.Signal, realtime.OutcomeOptions) (realtime.OutcomeReport, error)
+	report   func(int, time.Time) (realtime.OutcomeReport, error)
+}
+
+func (fn realtimeOutcomeFunc) Evaluate(ctx context.Context, signals []realtime.Signal, options realtime.OutcomeOptions) (realtime.OutcomeReport, error) {
+	return fn.evaluate(ctx, signals, options)
+}
+
+func (fn realtimeOutcomeFunc) Report(limit int, now time.Time) (realtime.OutcomeReport, error) {
+	if fn.report != nil {
+		return fn.report(limit, now)
+	}
+	return realtime.OutcomeReport{}, nil
 }
 
 func (stub realtimeOutcomeStub) Evaluate(_ context.Context, _ []realtime.Signal, options realtime.OutcomeOptions) (realtime.OutcomeReport, error) {
@@ -294,8 +322,8 @@ func TestServerAutomationRunsWithoutBrowserAndExposesStatus(t *testing.T) {
 	)
 	server.now = func() time.Time { return now }
 	server.runAutomationCycle(context.Background())
-	if scanCalls != 1 || outcomeCalls != 1 {
-		t.Fatalf("automation did not run scan/outcomes: scan=%d outcomes=%d", scanCalls, outcomeCalls)
+	if scanCalls != 1 || outcomeCalls != 0 {
+		t.Fatalf("intraday automation should scan without daily validation: scan=%d outcomes=%d", scanCalls, outcomeCalls)
 	}
 	status := server.automationStatus()
 	if !status.Enabled || status.Running || status.LastSuccessAt.IsZero() || status.LastError != "" {
@@ -304,13 +332,88 @@ func TestServerAutomationRunsWithoutBrowserAndExposesStatus(t *testing.T) {
 	if strings.Join(status.TaskOrder, ",") != "scan,outcomes,shadow,research" {
 		t.Fatalf("automation task order is not stable: %#v", status.TaskOrder)
 	}
-	if status.TaskStates[automationTaskScan].Status != "success" || status.TaskStates[automationTaskOutcomes].Status != "success" {
+	if status.TaskStates[automationTaskScan].Status != "success" || status.TaskStates[automationTaskOutcomes].Status != "waiting" {
 		t.Fatalf("automation task state missing: %+v", status.TaskStates)
 	}
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/strategy/automation", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "交易时段实时扫描") {
 		t.Fatalf("automation endpoint failed: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAutomaticOutcomeValidationPlanUsesCloseAndRetryWindows(t *testing.T) {
+	beforeClose := realtimeWebTime(2026, 8, 20, 14, 0)
+	plan := automaticOutcomeValidationPlan(beforeClose, realtime.MarketSessionAt(beforeClose), time.Time{}, storage.AutomationTaskState{})
+	if plan.Run || plan.NextRunAt.Hour() != 15 || plan.NextRunAt.Minute() != 30 || !strings.Contains(plan.Detail, "15:30") {
+		t.Fatalf("unexpected pre-close validation plan: %+v", plan)
+	}
+	primaryNow := realtimeWebTime(2026, 8, 20, 15, 35)
+	plan = automaticOutcomeValidationPlan(primaryNow, realtime.MarketSessionAt(primaryNow), time.Time{}, storage.AutomationTaskState{})
+	if !plan.Run || plan.RetryAttempt || plan.NextRunAt.Hour() != 16 || plan.NextRunAt.Minute() != 5 {
+		t.Fatalf("unexpected primary validation plan: %+v", plan)
+	}
+	waitingTask := storage.AutomationTaskState{LastAttemptAt: primaryNow}
+	between := realtimeWebTime(2026, 8, 20, 15, 50)
+	plan = automaticOutcomeValidationPlan(between, realtime.MarketSessionAt(between), time.Time{}, waitingTask)
+	if plan.Run || plan.NextRunAt.Hour() != 16 || plan.NextRunAt.Minute() != 5 {
+		t.Fatalf("unexpected retry wait plan: %+v", plan)
+	}
+	retryNow := realtimeWebTime(2026, 8, 20, 16, 6)
+	plan = automaticOutcomeValidationPlan(retryNow, realtime.MarketSessionAt(retryNow), time.Time{}, waitingTask)
+	if !plan.Run || !plan.RetryAttempt || plan.NextRunAt.Day() != 21 || plan.NextRunAt.Hour() != 15 || plan.NextRunAt.Minute() != 30 {
+		t.Fatalf("unexpected retry validation plan: %+v", plan)
+	}
+	completed := realtimeWebTime(2026, 8, 20, 15, 40)
+	plan = automaticOutcomeValidationPlan(retryNow, realtime.MarketSessionAt(retryNow), completed, waitingTask)
+	if plan.Run || !strings.Contains(plan.Detail, "已完成") || plan.NextRunAt.Day() != 21 {
+		t.Fatalf("completed validation was scheduled twice: %+v", plan)
+	}
+}
+
+func TestAutomationOutcomeValidationRetriesOnceWhenDailyDataLags(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 15, 35)
+	snapshot := realtime.ScanResult{GeneratedAt: realtimeWebTime(2026, 8, 20, 15, 0), Signals: []realtime.Signal{{ID: "signal", Symbol: "sh600519", DataDate: "2026-08-20"}}}
+	calls := 0
+	evaluator := realtimeOutcomeFunc{evaluate: func(context.Context, []realtime.Signal, realtime.OutcomeOptions) (realtime.OutcomeReport, error) {
+		calls++
+		dataThrough := "2026-08-19"
+		if calls > 1 {
+			dataThrough = "2026-08-20"
+		}
+		return realtime.OutcomeReport{DataThrough: dataThrough}, nil
+	}}
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithWatchlist(watchlist),
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: snapshot.Signals, latest: snapshot}),
+		WithRealtimeOutcomes(evaluator),
+	)
+	server.now = func() time.Time { return now }
+	server.runAutomationCycle(context.Background())
+	status := server.automationStatus()
+	if calls != 1 || !status.LastOutcomeAt.IsZero() || status.TaskStates[automationTaskOutcomes].Status != "waiting" || !strings.Contains(status.TaskStates[automationTaskOutcomes].Detail, "16:05重试") {
+		t.Fatalf("lagging daily data did not schedule one retry: calls=%d status=%+v", calls, status)
+	}
+	if next := status.TaskStates[automationTaskOutcomes].NextRunAt; next.Hour() != 16 || next.Minute() != 5 {
+		t.Fatalf("unexpected retry time: %s", next)
+	}
+	now = realtimeWebTime(2026, 8, 20, 15, 50)
+	server.runAutomationCycle(context.Background())
+	if calls != 1 {
+		t.Fatalf("validation retried before 16:05: %d", calls)
+	}
+	now = realtimeWebTime(2026, 8, 20, 16, 6)
+	server.runAutomationCycle(context.Background())
+	status = server.automationStatus()
+	if calls != 2 || !status.LastOutcomeAt.Equal(now) || status.TaskStates[automationTaskOutcomes].Status != "success" {
+		t.Fatalf("16:05 retry did not complete validation: calls=%d status=%+v", calls, status)
+	}
+	if next := status.TaskStates[automationTaskOutcomes].NextRunAt; next.Day() != 21 || next.Hour() != 15 || next.Minute() != 30 {
+		t.Fatalf("next validation was not moved to the next trading close: %s", next)
 	}
 }
 
@@ -341,14 +444,14 @@ func TestAutomationContinuesIndependentJobsWhenManualScanIsBusy(t *testing.T) {
 
 	server.runAutomationCycle(context.Background())
 	status := server.automationStatus()
-	if outcomeCalls != 1 {
-		t.Fatalf("manual scan lock should not suppress independent outcome evaluation: %d", outcomeCalls)
+	if outcomeCalls != 0 {
+		t.Fatalf("intraday scan lock should not trigger daily validation: %d", outcomeCalls)
 	}
 	if status.TaskStates[automationTaskScan].Status != "busy" {
 		t.Fatalf("scan task should remain visibly busy: %+v", status.TaskStates[automationTaskScan])
 	}
-	if status.TaskStates[automationTaskOutcomes].Status != "success" {
-		t.Fatalf("outcome task did not continue from cached snapshot: %+v", status.TaskStates[automationTaskOutcomes])
+	if status.TaskStates[automationTaskOutcomes].Status != "waiting" {
+		t.Fatalf("validation task should wait for the close window: %+v", status.TaskStates[automationTaskOutcomes])
 	}
 	server.realtimeMu.Lock()
 	server.realtimeRunning = false
@@ -377,7 +480,7 @@ func TestAutomationBusyScanDoesNotRunIndependentJobsWithoutCurrentSnapshot(t *te
 		t.Fatalf("an occupied scanner without a current snapshot must not run outcomes: %d", outcomeCalls)
 	}
 	status := server.automationStatus()
-	if status.TaskStates[automationTaskScan].Status != "busy" || status.TaskStates[automationTaskOutcomes].Status != "paused" {
+	if status.TaskStates[automationTaskScan].Status != "busy" || status.TaskStates[automationTaskOutcomes].Status != "waiting" {
 		t.Fatalf("unexpected busy/stale task states: %+v", status.TaskStates)
 	}
 	server.realtimeMu.Lock()
@@ -414,14 +517,14 @@ func TestAutomationUsesCurrentSnapshotWhenFreshScanFails(t *testing.T) {
 
 	server.runAutomationCycle(context.Background())
 	status := server.automationStatus()
-	if outcomeCalls != 1 || shadowCalls != 1 {
-		t.Fatalf("current cached snapshot should keep independent jobs running: outcomes=%d shadow=%d", outcomeCalls, shadowCalls)
+	if outcomeCalls != 0 || shadowCalls != 1 {
+		t.Fatalf("current cached snapshot should keep shadow running without intraday validation: outcomes=%d shadow=%d", outcomeCalls, shadowCalls)
 	}
 	if status.TaskStates[automationTaskScan].Status != "error" {
 		t.Fatalf("scan failure was not exposed: %+v", status.TaskStates[automationTaskScan])
 	}
-	if status.TaskStates[automationTaskOutcomes].Status != "success" || status.TaskStates[automationTaskShadow].Status != "success" {
-		t.Fatalf("independent task states were not successful: %+v", status.TaskStates)
+	if status.TaskStates[automationTaskOutcomes].Status != "waiting" || status.TaskStates[automationTaskShadow].Status != "success" {
+		t.Fatalf("independent task states were unexpected: %+v", status.TaskStates)
 	}
 	if !strings.Contains(status.LastError, "实时扫描失败") {
 		t.Fatalf("scan error was not retained in cycle status: %+v", status)
@@ -722,6 +825,49 @@ func TestAutomaticResearchRunsOncePerTradingDate(t *testing.T) {
 	}
 }
 
+func TestAutomaticResearchRetriesAfterFailureCooldown(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	baseNow := realtimeWebTime(2026, 8, 24, 16, 0)
+	currentNow := baseNow
+	completed := make(chan struct{}, 2)
+	calls := 0
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist), WithAutomaticStrategyResearch(func(_ context.Context, _ []string, _ time.Time) (AutomaticResearchResult, error) {
+		calls++
+		completed <- struct{}{}
+		if calls == 1 {
+			return AutomaticResearchResult{}, fmt.Errorf("临时数据源失败")
+		}
+		return AutomaticResearchResult{Ran: true, ExperimentID: "AUTO-retry", Message: "完成"}, nil
+	}))
+	server.now = func() time.Time { return currentNow }
+	snapshot := realtime.ScanResult{GeneratedAt: baseNow, Signals: []realtime.Signal{{ID: "signal", Symbol: "sh600519", DataDate: "2026-08-24", QuoteTime: "2026-08-24 15:00:00"}}}
+	session := realtime.MarketSessionAt(baseNow)
+	server.maybeStartAutomaticResearch(context.Background(), baseNow, session, snapshot)
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("first research attempt did not finish")
+	}
+	currentNow = baseNow.Add(5 * time.Minute)
+	server.maybeStartAutomaticResearch(context.Background(), currentNow, realtime.MarketSessionAt(currentNow), snapshot)
+	if calls != 1 {
+		t.Fatalf("research retried before cooldown: %d", calls)
+	}
+	currentNow = baseNow.Add(11 * time.Minute)
+	server.maybeStartAutomaticResearch(context.Background(), currentNow, realtime.MarketSessionAt(currentNow), snapshot)
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("retry research attempt did not finish")
+	}
+	if calls != 2 || server.automationStatus().ResearchExperimentID != "AUTO-retry" {
+		t.Fatalf("unexpected retry state: calls=%d status=%+v", calls, server.automationStatus())
+	}
+}
+
 func TestRealtimeStrategyPausesDuringBreakAndAfterClose(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -924,6 +1070,55 @@ func TestRealtimeOutcomeGETIsReadOnlyAndDoesNotRequireSignalArchive(t *testing.T
 	}
 }
 
+func TestRealtimeOutcomeFullArchiveModeUsesNegativeSentinel(t *testing.T) {
+	reportCalls, reportLimit := 0, 0
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeOutcomes(realtimeOutcomeStub{
+			report:      realtime.OutcomeReport{GeneratedAt: realtimeWebTime(2026, 8, 20, 16, 0)},
+			reportCalls: &reportCalls,
+			reportLimit: &reportLimit,
+		}),
+	)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/strategy/realtime?view=outcomes&full=1", nil))
+	if recorder.Code != http.StatusOK || reportCalls != 1 || reportLimit != -1 {
+		t.Fatalf("full outcome report did not use archive sentinel: status=%d calls=%d limit=%d", recorder.Code, reportCalls, reportLimit)
+	}
+}
+
+func TestRealtimeOutcomePartialReportCannotInstallCalibration(t *testing.T) {
+	scanner := &calibratableRealtimeScannerStub{}
+	archive := realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}
+	report := realtime.OutcomeReport{
+		GeneratedAt: realtimeWebTime(2026, 8, 28, 16, 0),
+		Assessment: realtime.OutcomeAssessment{
+			Verdict:      "可作为下一轮候选",
+			Horizon:      realtime.OutcomeHorizon5D,
+			ReadySamples: 48,
+			Threshold:    &realtime.ThresholdProposal{MinimumScore: 61},
+			StrategyWeights: []realtime.StrategyWeightProposal{
+				{Key: "relative-momentum", Weight: .6},
+				{Key: "price-volume", Weight: .4},
+			},
+		},
+	}
+	server := NewServer(resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(scanner, archive),
+		WithRealtimeOutcomes(realtimeOutcomeStub{report: report}),
+	)
+	partial := httptest.NewRecorder()
+	server.Handler().ServeHTTP(partial, httptest.NewRequest(http.MethodGet, "/api/strategy/realtime?view=outcomes&limit=7", nil))
+	if partial.Code != http.StatusOK || scanner.calibration.ID != "" {
+		t.Fatalf("bounded outcome report installed a calibration: status=%d calibration=%+v", partial.Code, scanner.calibration)
+	}
+	full := httptest.NewRecorder()
+	server.Handler().ServeHTTP(full, httptest.NewRequest(http.MethodGet, "/api/strategy/realtime?view=outcomes&full=1", nil))
+	if full.Code != http.StatusOK || scanner.calibration.ID == "" {
+		t.Fatalf("full outcome report did not install a gated calibration: status=%d calibration=%+v", full.Code, scanner.calibration)
+	}
+}
+
 func TestRealtimeOutcomePOSTReadsSignalsAndEvaluates(t *testing.T) {
 	evaluateCalls, archiveCalls := 0, 0
 	options := realtime.OutcomeOptions{}
@@ -941,6 +1136,26 @@ func TestRealtimeOutcomePOSTReadsSignalsAndEvaluates(t *testing.T) {
 	}
 	if archiveCalls != 1 || evaluateCalls != 1 || len(options.Horizons) != 2 || options.Horizons[0] != 1 || options.Horizons[1] != 3 || options.TargetReturn != 6 || options.SignalLimit != 9 {
 		t.Fatalf("POST did not evaluate requested inputs: archive=%d evaluate=%d options=%+v", archiveCalls, evaluateCalls, options)
+	}
+}
+
+func TestRealtimeOutcomePOSTFullArchiveModePassesThrough(t *testing.T) {
+	evaluateCalls, archiveCalls, archiveLimit := 0, 0, 0
+	options := realtime.OutcomeOptions{}
+	archive := realtimeArchiveStub{
+		items:     []realtime.Signal{{ID: "signal", Symbol: "sh600519"}},
+		listCalls: &archiveCalls,
+		listLimit: &archiveLimit,
+	}
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, archive),
+		WithRealtimeOutcomes(realtimeOutcomeStub{evaluateCalls: &evaluateCalls, options: &options}),
+	)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/realtime?view=outcomes&full=1", nil))
+	if recorder.Code != http.StatusOK || archiveCalls != 1 || archiveLimit != -1 || evaluateCalls != 1 || options.SignalLimit != -1 {
+		t.Fatalf("full outcome evaluation did not use archive sentinel: status=%d archive=%d limit=%d evaluate=%d options=%+v", recorder.Code, archiveCalls, archiveLimit, evaluateCalls, options)
 	}
 }
 
@@ -1273,5 +1488,53 @@ func TestShadowCanAdvanceV8LedgerWithNewRotationControls(t *testing.T) {
 	options.Config.HoldingDays++
 	if shadowCanAdvance(report, options) {
 		t.Fatal("v8 migration ignored an incompatible pre-v9 execution change")
+	}
+}
+
+func TestServerRestoresDurableRealtimeCalibration(t *testing.T) {
+	scanner := &calibratableRealtimeScannerStub{}
+	store := storage.NewRealtimeCalibrationStore(filepath.Join(t.TempDir(), "calibration.json"))
+	active := realtime.ScoreCalibration{ID: "CAL-RESTORE", DataThrough: "2026-08-27", ReadySamples: 48, MinimumScore: 61, ComponentWeights: map[string]float64{"relative-momentum": .6, "price-volume": .4}}
+	if err := store.Save(storage.RealtimeCalibrationState{Active: active}); err != nil {
+		t.Fatal(err)
+	}
+	_ = NewServer(nil, nil, nil, nil, "600519", WithRealtimeStrategy(scanner, nil), WithRealtimeCalibrationStore(store))
+	if scanner.calibration.ID != active.ID || scanner.calibration.MinimumScore != active.MinimumScore {
+		t.Fatalf("durable calibration was not restored: %+v", scanner.calibration)
+	}
+}
+
+func TestNewerRealtimeCalibrationRejectsStaleEvidence(t *testing.T) {
+	current := realtime.ScoreCalibration{ID: "CAL-20260827-H5-N48", DataThrough: "2026-08-27", ReadySamples: 48}
+	if newerRealtimeCalibration(realtime.ScoreCalibration{ID: "CAL-20260826-H5-N60", DataThrough: "2026-08-26", ReadySamples: 60}, current) {
+		t.Fatal("older data cutoff must not replace the active calibration")
+	}
+	if !newerRealtimeCalibration(realtime.ScoreCalibration{ID: "CAL-20260828-H5-N48", DataThrough: "2026-08-28", ReadySamples: 48}, current) {
+		t.Fatal("newer data cutoff should replace the active calibration")
+	}
+}
+
+func TestRealtimeCalibrationRollsBackMateriallyWorseChallenger(t *testing.T) {
+	scanner := &calibratableRealtimeScannerStub{}
+	store := storage.NewRealtimeCalibrationStore(filepath.Join(t.TempDir(), "calibration.json"))
+	active := realtime.ScoreCalibration{ID: "CAL-ROLLBACK", DataThrough: "2026-08-27", ReadySamples: 48, MinimumScore: 61, ComponentWeights: map[string]float64{"relative-momentum": .6, "price-volume": .4}}
+	if err := store.Save(storage.RealtimeCalibrationState{Active: active, Status: "challenger-active"}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(nil, nil, nil, nil, "600519", WithRealtimeStrategy(scanner, nil), WithRealtimeCalibrationStore(store))
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 28, 16, 0) }
+	report := realtime.OutcomeReport{Calibration: realtime.CalibrationAnalysis{
+		ID: "CAL-ROLLBACK", ReadySamples: 42, Status: "候选落后", Recommendation: "候选落后，暂停晋级",
+	}}
+	server.applyRealtimeCalibration(report)
+	if scanner.calibration.ID != "" {
+		t.Fatalf("rolled-back challenger remained active: %+v", scanner.calibration)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "challenger-rolled-back" || len(state.RejectedIDs) != 1 || state.RejectedIDs[0] != "CAL-ROLLBACK" {
+		t.Fatalf("rollback decision was not persisted: %+v", state)
 	}
 }

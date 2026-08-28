@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/backtest"
-	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 	"github.com/wenzhe/astock-workbench/internal/ui"
 )
@@ -743,7 +742,7 @@ type strategyLabTask struct {
 
 func (app *App) runStrategyLabBacktest(ctx context.Context, task strategyLabTask) (backtest.Result, error) {
 	request := defaultResearchRequest(task.symbols, task.names, task.period)
-	engine := backtest.NewDailyEngine(backtest.NewCachingDailyBarProvider(market.EastmoneyClient{}))
+	engine := app.newBacktestEngine()
 	result, err := engine.Run(ctx, request)
 	if err != nil {
 		return backtest.Result{}, err
@@ -761,8 +760,7 @@ func (app *App) runStrategyLabOptimization(
 	request.MaxCandidates = task.maxCandidates
 	request.MinimumValidationTrades = task.minimumTrades
 	request.UseAI = task.useAI
-	provider := backtest.NewCachingDailyBarProvider(market.EastmoneyClient{})
-	optimizer := backtest.NewOptimizer(backtest.NewDailyEngine(provider))
+	optimizer := backtest.NewOptimizer(app.newBacktestEngine())
 	result, err := optimizer.OptimizeWithProgress(ctx, request, func(item backtest.OptimizationProgress) {
 		if progress == nil {
 			return

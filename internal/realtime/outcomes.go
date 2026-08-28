@@ -2,6 +2,9 @@ package realtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -17,6 +20,7 @@ const (
 	defaultOutcomeSignalLimit               = 500
 	defaultTargetReturn                     = 5.0
 	minimumResearchSamples                  = 35
+	minimumResearchDates                    = 5
 	minimumFoldSamples                      = 5
 	minimumActiveStrategyScore              = 8.0
 	minimumCorrelationSamples               = 20
@@ -35,6 +39,11 @@ const (
 	maximumPortfolioIndustryConcentration   = 40.0
 	maximumPortfolioComponentConcentration  = 60.0
 	maximumPortfolioRedundantPairPercent    = 30.0
+	minimumCalibrationComparisonSamples     = 20
+	minimumCalibrationExcessUplift          = 0.20
+	minimumCalibrationHitRateUplift         = -2.0
+	maximumCalibrationExcessDrawdown        = -0.20
+	maximumCalibrationHitRateDrawdown       = -5.0
 )
 
 const (
@@ -87,8 +96,13 @@ func (e *OutcomeEvaluator) Evaluate(ctx context.Context, signals []Signal, optio
 		targetReturn = defaultTargetReturn
 	}
 	limit := options.SignalLimit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = defaultOutcomeSignalLimit
+	} else if limit < 0 {
+		// A negative limit is an explicit full-archive request. The scheduler uses
+		// this mode so older pending horizons get another chance to mature instead
+		// of being permanently crowded out by frequent intraday scans.
+		limit = 0
 	}
 	evaluatedAt := now()
 	selected := representativeSignals(signals, limit)
@@ -110,6 +124,7 @@ func (e *OutcomeEvaluator) Evaluate(ctx context.Context, signals []Signal, optio
 			benchmarkBars = normalizedOutcomeBars(bars)
 		}
 	}
+	dataThrough := latestOutcomeDataDate(benchmarkBars, barMap)
 
 	outcomes := make([]SignalOutcome, 0, len(selected)*len(horizons))
 	for _, signal := range selected {
@@ -133,7 +148,21 @@ func (e *OutcomeEvaluator) Evaluate(ctx context.Context, signals []Signal, optio
 		outcomes = merged
 	}
 	report := BuildOutcomeReport(outcomes, evaluatedAt, warnings)
+	report.DataThrough = dataThrough
 	return report, nil
+}
+
+func latestOutcomeDataDate(benchmark []domain.DailyBar, histories map[string][]domain.DailyBar) string {
+	if len(benchmark) > 0 {
+		return benchmark[len(benchmark)-1].Date
+	}
+	latest := ""
+	for _, bars := range histories {
+		if len(bars) > 0 && bars[len(bars)-1].Date > latest {
+			latest = bars[len(bars)-1].Date
+		}
+	}
+	return latest
 }
 
 func (e *OutcomeEvaluator) Report(limit int, now time.Time) (OutcomeReport, error) {
@@ -277,7 +306,7 @@ func representativeSignals(input []Signal, limit int) []Signal {
 		}
 		seen[key] = true
 		result = append(result, item)
-		if len(result) >= limit {
+		if limit > 0 && len(result) >= limit {
 			break
 		}
 	}
@@ -300,8 +329,12 @@ func labelSignal(signal Signal, bars, benchmark []domain.DailyBar, horizon int, 
 	outcome := SignalOutcome{
 		Key: signal.Symbol + ":" + date + ":" + fmt.Sprint(horizon), SignalID: signal.ID, Symbol: signal.Symbol,
 		Name: signal.Name, Industry: signal.Industry, SignalDate: date, SignalAsOf: signal.AsOf,
-		Score: signal.Score, State: signal.State, MarketRegime: classifyMarketRegime(benchmark, date), Horizon: horizon, Status: OutcomeInvalid,
-		EvaluatedAt: evaluatedAt, DataSource: signal.DataSource,
+		Score: signal.Score, RiskAdjustedScore: signal.RiskAdjustedScore, RiskMultiplier: signal.RiskMultiplier,
+		State: signal.State, MarketRegime: classifyMarketRegime(benchmark, date), Horizon: horizon, Status: OutcomeInvalid,
+		CalibrationID: signal.CalibrationID, CalibratedScore: signal.CalibratedScore,
+		CalibratedRiskAdjustedScore: signal.CalibratedRiskAdjustedScore, CalibratedMinimumScore: signal.CalibrationMinimumScore,
+		CalibratedState: signal.CalibratedState,
+		EvaluatedAt:     evaluatedAt, DataSource: signal.DataSource,
 		StrategyScores: make(map[string]float64), StrategyStates: make(map[string]string), StrategyNames: make(map[string]string),
 	}
 	for _, component := range signal.Components {
@@ -403,6 +436,11 @@ func BuildOutcomeReport(outcomes []SignalOutcome, now time.Time, warnings []stri
 	}
 	sort.Ints(horizons)
 	report := OutcomeReport{GeneratedAt: now, AsOf: now.Format("2006-01-02"), Horizons: horizons, Warnings: uniqueStrings(warnings, 20)}
+	for _, outcome := range outcomes {
+		if outcome.TargetDate > report.DataThrough {
+			report.DataThrough = outcome.TargetDate
+		}
+	}
 	report.Summaries = summarizeOutcomes(outcomes, horizons)
 	report.Strategies = strategyBreakdowns(outcomes, horizons)
 	report.Scores = breakdownOutcomes(outcomes, horizons, func(item SignalOutcome) []OutcomeBreakdown {
@@ -430,6 +468,9 @@ func BuildOutcomeReport(outcomes []SignalOutcome, now time.Time, warnings []stri
 	report.WalkForward = buildComponentWalkForwardAnalysis(outcomes, horizons)
 	report.Portfolio = buildPortfolioConstraintAnalysis(outcomes, horizons, report.ComponentAnalysis)
 	report.Assessment = buildOutcomeAssessment(outcomes, horizons, report.ComponentAnalysis, report.WalkForward, report.Portfolio)
+	report.Calibration = buildCalibrationAnalysis(outcomes, horizons)
+	report.Tuning = buildTuningAnalysis(outcomes, horizons, report.Assessment, report.ComponentAnalysis, report.WalkForward)
+	report.Tuning.DataThrough = report.DataThrough
 	report.Recent = recentOutcomes(outcomes, 24)
 	return report
 }
@@ -523,6 +564,271 @@ func summarizeWithScores(items []SignalOutcome, horizon int, scoreFor func(Signa
 		result.ExcessHitRate = float64(result.PositiveExcess) / float64(len(excess)) * 100
 	}
 	return result
+}
+
+func buildCalibrationAnalysis(outcomes []SignalOutcome, horizons []int) CalibrationAnalysis {
+	horizon := OutcomeHorizon5D
+	if !containsInt(horizons, horizon) && len(horizons) > 0 {
+		horizon = horizons[len(horizons)-1]
+	}
+	analysis := CalibrationAnalysis{Horizon: horizon, Status: "暂无 Challenger", Recommendation: "等待通过滚动验证门禁的校准候选"}
+	ready := make([]SignalOutcome, 0)
+	latestID := ""
+	var latestAt time.Time
+	for _, item := range outcomes {
+		if item.Horizon != horizon {
+			continue
+		}
+		if item.Status == OutcomeReady && item.BenchmarkAvailable {
+			ready = append(ready, item)
+		}
+		if strings.TrimSpace(item.CalibrationID) == "" {
+			continue
+		}
+		at := item.SignalAsOf
+		if at.IsZero() {
+			at, _ = time.ParseInLocation("2006-01-02", item.SignalDate, time.Local)
+		}
+		if latestID == "" || at.After(latestAt) || (at.Equal(latestAt) && item.CalibrationID > latestID) {
+			latestID = strings.TrimSpace(item.CalibrationID)
+			latestAt = at
+		}
+	}
+	analysis.ReadySamples = len(ready)
+	analysis.ID = latestID
+	if latestID == "" {
+		return analysis
+	}
+	comparison := make([]SignalOutcome, 0)
+	for _, item := range ready {
+		if strings.TrimSpace(item.CalibrationID) != latestID || !finite(calibratedOutcomeScore(item)) {
+			continue
+		}
+		comparison = append(comparison, item)
+	}
+	analysis.ComparisonSamples = len(comparison)
+	championItems := filterCalibrationItems(comparison, false, 55)
+	challengerThreshold := 55.0
+	for _, item := range comparison {
+		if item.CalibratedMinimumScore > 0 && finite(item.CalibratedMinimumScore) {
+			challengerThreshold = item.CalibratedMinimumScore
+			break
+		}
+	}
+	challengerItems := filterCalibrationItems(comparison, true, challengerThreshold)
+	analysis.Champion = calibrationMetric(championItems, func(item SignalOutcome) (float64, bool) {
+		value := baselineOutcomeScore(item)
+		return value, finite(value)
+	})
+	analysis.Challenger = calibrationMetric(challengerItems, func(item SignalOutcome) (float64, bool) {
+		value := calibratedOutcomeScore(item)
+		return value, finite(value)
+	})
+	// Rank IC is evaluated on the complete common universe, while return and
+	// hit-rate metrics reflect the stocks each model would actually select.
+	analysis.Champion.RankIC = calibrationRankIC(comparison, func(item SignalOutcome) (float64, bool) {
+		value := baselineOutcomeScore(item)
+		return value, finite(value)
+	})
+	analysis.Challenger.RankIC = calibrationRankIC(comparison, func(item SignalOutcome) (float64, bool) {
+		value := calibratedOutcomeScore(item)
+		return value, finite(value)
+	})
+	analysis.ExcessUplift = analysis.Challenger.AverageExcess - analysis.Champion.AverageExcess
+	analysis.HitRateUplift = analysis.Challenger.HitRate - analysis.Champion.HitRate
+	analysis.RankICUplift = analysis.Challenger.RankIC - analysis.Champion.RankIC
+	if len(comparison) < minimumCalibrationComparisonSamples ||
+		analysis.Champion.Samples < minimumCalibrationComparisonSamples || analysis.Challenger.Samples < minimumCalibrationComparisonSamples {
+		analysis.Status = "观察中"
+		analysis.Recommendation = fmt.Sprintf("继续积累两套模型的可交易成熟样本（共同%d、Champion%d、Challenger%d；门槛%d），暂不替换 Champion", len(comparison), analysis.Champion.Samples, analysis.Challenger.Samples, minimumCalibrationComparisonSamples)
+		return analysis
+	}
+	if analysis.ExcessUplift >= minimumCalibrationExcessUplift && analysis.HitRateUplift >= minimumCalibrationHitRateUplift {
+		analysis.Status = "候选领先"
+		analysis.Recommendation = "候选在同样本上领先；保留并进入人工晋级复核，不自动修改 Champion"
+		return analysis
+	}
+	if analysis.ExcessUplift <= maximumCalibrationExcessDrawdown || analysis.HitRateUplift <= maximumCalibrationHitRateDrawdown {
+		analysis.Status = "候选落后"
+		analysis.Recommendation = "候选表现落后；暂停晋级，继续使用 Champion 并检查权重、阈值和市场状态"
+		return analysis
+	}
+	analysis.Status = "暂无显著差异"
+	analysis.Recommendation = "Champion 与 Challenger 差异尚不显著，继续观察更多非重叠窗口"
+	return analysis
+}
+
+func buildTuningAnalysis(outcomes []SignalOutcome, horizons []int, assessment OutcomeAssessment, components ComponentAnalysis, walkForward ComponentWalkForwardAnalysis) TuningAnalysis {
+	horizon := OutcomeHorizon5D
+	if !containsInt(horizons, horizon) && len(horizons) > 0 {
+		horizon = horizons[len(horizons)-1]
+	}
+	items := uniqueOutcomeObservationsForHorizon(outcomes, horizon)
+	dates := distinctOutcomeDates(items)
+	analysis := TuningAnalysis{
+		Horizon:     horizon,
+		Status:      "样本收集中",
+		MatureDates: len(dates),
+		Summary:     fmt.Sprintf("当前 %d 日窗口已形成 %d 个成熟、具备基准覆盖的代表样本，覆盖 %d 个交易日", horizon, len(items), len(dates)),
+	}
+	if len(items) > 0 {
+		summary := summarize(items, horizon)
+		analysis.MatureSamples = summary.Ready
+		analysis.AverageExcess = summary.AverageExcess
+		analysis.HitRate = summary.HitRatePercent
+		analysis.Summary = fmt.Sprintf("当前 %d 日窗口成熟样本 %d 个，覆盖 %d 个交易日，正收益率 %.1f%%，平均超额 %+.2f%%", horizon, summary.Ready, len(dates), summary.HitRatePercent, summary.AverageExcess)
+	}
+	if assessment.Threshold != nil && finite(assessment.Threshold.MinimumScore) && assessment.Threshold.MinimumScore > 0 {
+		analysis.Summary += fmt.Sprintf("；当前滚动候选最低风险调整分 %.0f", assessment.Threshold.MinimumScore)
+	}
+	add := func(key, priority, action, evidence string) {
+		if strings.TrimSpace(action) == "" {
+			return
+		}
+		for _, item := range analysis.Recommendations {
+			if item.Key == key {
+				return
+			}
+		}
+		analysis.Recommendations = append(analysis.Recommendations, TuningRecommendation{Key: key, Priority: priority, Action: action, Evidence: evidence})
+	}
+	if len(items) < minimumResearchSamples {
+		add("sample", "high", fmt.Sprintf("继续采集 %d 日成熟结果后再调整阈值和组件权重", horizon), fmt.Sprintf("当前 %d/%d 个样本，尚不足滚动校准门槛", len(items), minimumResearchSamples))
+	} else if len(dates) < minimumResearchDates {
+		analysis.Status = "时间样本不足"
+		add("dates", "high", fmt.Sprintf("继续积累至少 %d 个不同交易日的成熟结果，再进行时间顺序调优", minimumResearchDates), fmt.Sprintf("当前仅覆盖 %d/%d 个交易日；同一交易日的多只股票不能替代时间样本", len(dates), minimumResearchDates))
+	} else if assessment.Verdict == "可作为下一轮候选" {
+		analysis.Status = "Challenger待前向"
+		add("challenger", "high", "将通过历史门禁的候选放入自适应影子账户，进行同样本前向对照；暂不自动替换 Champion", assessment.NextStage)
+	} else {
+		analysis.Status = "滚动验证中"
+		add("champion", "medium", "继续使用当前 Champion，等待更多非重叠窗口后再决定是否调权", assessment.Verdict)
+	}
+	// Keep the daily review actionable even when a hard gate blocks a
+	// Challenger. The recommendation names the failing evidence rather than
+	// presenting a generic "等待" state, so the next data collection or model
+	// change is explicit and auditable.
+	for _, check := range assessment.Checks {
+		if !check.Required || check.Passed {
+			continue
+		}
+		switch check.Key {
+		case "time-slices":
+			add("gate:time-slices", "high", "继续积累独立交易日，禁止用同日横截面样本替代时间验证", check.Detail)
+		case "component-correlation":
+			add("gate:correlation", "high", "对高度相关组件做去重或收缩权重，再重新跑时间顺序验证", check.Detail)
+		case "excess":
+			add("gate:excess", "high", "暂不提高仓位；复核入场门槛、市场状态和负超额窗口", check.Detail)
+		case "hit-rate":
+			add("gate:hit-rate", "high", "降低低命中组件的影响并检查信号触发条件，等待后续窗口确认", check.Detail)
+		case "benchmark":
+			add("gate:benchmark", "high", "补齐沪深300同期基准数据后再进行调优", check.Detail)
+		case "sample":
+			add("gate:sample", "high", "继续收集成熟前向结果，当前不修改线上权重", check.Detail)
+		}
+	}
+	for _, coverage := range components.Coverage {
+		if coverage.AvailablePercent >= minimumComponentCoverage {
+			continue
+		}
+		add("coverage:"+coverage.Key, "high", fmt.Sprintf("补齐%s数据后再把它用于调优", coverage.Name), fmt.Sprintf("覆盖率 %.1f%%，要求至少 %.0f%%", coverage.AvailablePercent, minimumComponentCoverage))
+	}
+	for _, metric := range walkForward.Metrics {
+		if metric.Horizon != horizon || !metric.SampleSufficient {
+			continue
+		}
+		switch metric.State {
+		case "negative":
+			add("negative:"+metric.ComponentKey, "high", fmt.Sprintf("降低或暂缓%s的权重，先复核其失效市场状态", metric.ComponentName), fmt.Sprintf("滚动验证平均超额 %+.2f%%，负向折 %d", metric.ValidationAverageExcess, metric.NegativeFolds))
+		case "unstable":
+			add("unstable:"+metric.ComponentKey, "medium", fmt.Sprintf("保持%s接近中性权重，等待权重漂移收敛", metric.ComponentName), fmt.Sprintf("权重漂移 %.1f%%，上限 %.1f%%", metric.WeightDrift*100, maximumComponentWeightDrift*100))
+		}
+	}
+	if len(analysis.Recommendations) == 0 {
+		add("observe", "low", "继续观察新的成熟结果和市场状态分层表现", "当前没有足够证据支持新的参数动作")
+	}
+	return analysis
+}
+
+func calibratedOutcomeScore(item SignalOutcome) float64 {
+	if finite(item.CalibratedRiskAdjustedScore) && item.CalibratedRiskAdjustedScore > 0 {
+		return item.CalibratedRiskAdjustedScore
+	}
+	return item.CalibratedScore
+}
+
+// baselineOutcomeScore keeps Champion and Challenger on the same scale. New
+// signals carry the risk-adjusted score used by portfolio gates; older rows
+// only have the raw composite score and remain backwards compatible.
+func baselineOutcomeScore(item SignalOutcome) float64 {
+	if finite(item.RiskAdjustedScore) && item.RiskAdjustedScore > 0 {
+		return item.RiskAdjustedScore
+	}
+	return item.Score
+}
+
+func filterCalibrationItems(items []SignalOutcome, challenger bool, threshold float64) []SignalOutcome {
+	result := make([]SignalOutcome, 0, len(items))
+	for _, item := range items {
+		score := baselineOutcomeScore(item)
+		state := item.State
+		if challenger {
+			score = calibratedOutcomeScore(item)
+			state = item.CalibratedState
+		}
+		if !finite(score) || score < threshold {
+			continue
+		}
+		// Old outcome rows may predate explicit calibrated states. Their score is
+		// still usable for comparison; new rows carry the stricter state gate.
+		if state != "" && state != StateTriggered && state != StateWatching {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func calibrationMetric(items []SignalOutcome, scoreFor func(SignalOutcome) (float64, bool)) CalibrationMetric {
+	metric := CalibrationMetric{}
+	scores, returns, excess := make([]float64, 0, len(items)), make([]float64, 0, len(items)), make([]float64, 0, len(items))
+	for _, item := range items {
+		score, ok := scoreFor(item)
+		if !ok || item.Status != OutcomeReady || !item.BenchmarkAvailable {
+			continue
+		}
+		metric.Samples++
+		if item.ReturnPercent > 0 {
+			metric.Positive++
+		}
+		returns = append(returns, item.ReturnPercent)
+		excess = append(excess, item.ExcessReturn)
+		scores = append(scores, score)
+	}
+	if metric.Samples == 0 {
+		return metric
+	}
+	metric.HitRate = float64(metric.Positive) / float64(metric.Samples) * 100
+	metric.AverageReturn, _ = meanMedian(returns)
+	metric.AverageExcess, _ = meanMedian(excess)
+	metric.RankIC = pearson(averageRanks(scores), averageRanks(excess))
+	return metric
+}
+
+func calibrationRankIC(items []SignalOutcome, scoreFor func(SignalOutcome) (float64, bool)) float64 {
+	scores, excess := make([]float64, 0, len(items)), make([]float64, 0, len(items))
+	for _, item := range items {
+		if item.Status != OutcomeReady || !item.BenchmarkAvailable {
+			continue
+		}
+		score, ok := scoreFor(item)
+		if !ok || !finite(score) || !finite(item.ExcessReturn) {
+			continue
+		}
+		scores = append(scores, score)
+		excess = append(excess, item.ExcessReturn)
+	}
+	return pearson(averageRanks(scores), averageRanks(excess))
 }
 
 func strategyBreakdowns(outcomes []SignalOutcome, horizons []int) []OutcomeBreakdown {
@@ -991,6 +1297,24 @@ func uniqueOutcomeObservationsForHorizon(outcomes []SignalOutcome, horizon int) 
 	return result
 }
 
+func distinctOutcomeDates(items []SignalOutcome) []string {
+	seen := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		date := outcomeDate(item)
+		if date == "" {
+			continue
+		}
+		if _, ok := seen[date]; ok {
+			continue
+		}
+		seen[date] = struct{}{}
+		result = append(result, date)
+	}
+	sort.Strings(result)
+	return result
+}
+
 func availableComponentItems(items []SignalOutcome, componentKey string) []SignalOutcome {
 	result := make([]SignalOutcome, 0, len(items))
 	for _, item := range items {
@@ -1371,6 +1695,7 @@ func buildOutcomeAssessment(
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].SignalAsOf.Before(items[j].SignalAsOf) })
+	dateCount := len(distinctOutcomeDates(items))
 	assessment := OutcomeAssessment{
 		Stage:          "信号校准",
 		Verdict:        "样本收集中",
@@ -1380,6 +1705,7 @@ func buildOutcomeAssessment(
 		NextStage:      "继续积累带沪深300基准的成熟结果",
 		Checks: []OutcomeCheck{
 			{Key: "sample", Name: "成熟样本量", Required: true, Passed: len(items) >= minimumResearchSamples, Detail: fmt.Sprintf("%d / %d 个 %d日结果", len(items), minimumResearchSamples, horizon)},
+			{Key: "time-slices", Name: "独立交易日", Required: true, Passed: dateCount >= minimumResearchDates, Detail: fmt.Sprintf("%d / %d 个不同交易日；同日横截面不能替代时间样本", dateCount, minimumResearchDates)},
 			{Key: "benchmark", Name: "基准覆盖", Required: true, Passed: len(items) >= minimumResearchSamples, Detail: "结果必须同时具备沪深300同期收益"},
 		},
 	}
@@ -1449,6 +1775,7 @@ func buildOutcomeAssessment(
 		assessment.Notes = []string{
 			"样本不足时不调整组件权重或阈值；先让每个交易日的代表信号自然成熟。",
 			"同一股票同一交易日只保留最后一次扫描，避免30秒刷新造成重复计数。",
+			fmt.Sprintf("滚动调优至少需要 %d 个不同交易日；同日多股票只用于横截面归因，不能替代时间顺序留出。", minimumResearchDates),
 			fmt.Sprintf("组件相关性至少需要 %d 个成对完整样本；状态稳定性每格至少需要 %d 个可用样本和 %d 个激活样本。", minimumCorrelationSamples, minimumRegimeSamples, minimumFoldSamples),
 			"滚动组件权重只使用此前日期训练，并在后续非重叠日期验证；组合集中度只用于研究门禁，不会自动删票或改分。",
 		}
@@ -1486,7 +1813,8 @@ func buildOutcomeAssessment(
 	}
 	assessment.Notes = []string{
 		"阈值候选只在训练窗口选择，再在后续窗口验证；不会使用最终留出结果反向调参。",
-		"组件权重是研究提案；当前回测引擎尚无多组件组合接口，不会自动改变实时评分或伪装成已完成回测验证。",
+		"组件权重是研究提案；只有通过独立交易日、覆盖、相关性和时间顺序门禁后，才会进入自适应 Challenger，不会直接改写 Champion。",
+		fmt.Sprintf("滚动调优至少需要 %d 个不同交易日；阈值与组合使用同一风险调整分口径。", minimumResearchDates),
 		fmt.Sprintf("组件相关性至少需要 %d 个成对完整样本；状态稳定性每格至少需要 %d 个可用样本和 %d 个激活样本。", minimumCorrelationSamples, minimumRegimeSamples, minimumFoldSamples),
 		"组合集中度按每日候选检查行业覆盖、单一行业、活跃组件和高相关组件配对；研究结果不会自动删除候选。",
 	}
@@ -1494,19 +1822,89 @@ func buildOutcomeAssessment(
 }
 
 func walkForwardWeightProposals(analysis ComponentWalkForwardAnalysis, horizon int) []StrategyWeightProposal {
-	result := make([]StrategyWeightProposal, 0)
+	// A component weight is a research proposal, not a live signal.  The last
+	// fold is deliberately not privileged: a short regime or a data glitch in
+	// the newest window must not be able to replace the evidence accumulated in
+	// earlier, non-overlapping windows.
+	type aggregate struct {
+		metric        ComponentValidationMetric
+		weight        float64
+		samples       int
+		averageExcess float64
+		hitRate       float64
+	}
+	aggregates := make([]aggregate, 0)
 	for _, metric := range analysis.Metrics {
 		if metric.Horizon != horizon || len(metric.Folds) == 0 {
 			continue
 		}
-		latest := metric.Folds[len(metric.Folds)-1]
-		if !latest.WeightAvailable {
+		valid := make([]ComponentValidationFold, 0, len(metric.Folds))
+		for _, fold := range metric.Folds {
+			if !fold.SampleSufficient || !fold.WeightAvailable || !finite(fold.CandidateWeight) || fold.CandidateWeight <= 0 {
+				continue
+			}
+			valid = append(valid, fold)
+		}
+		if len(valid) < minimumComponentValidationFolds {
 			continue
 		}
-		result = append(result, StrategyWeightProposal{
-			Key: metric.ComponentKey, Name: metric.ComponentName, Samples: metric.ValidationActive,
-			AverageExcess: metric.ValidationAverageExcess, HitRate: metric.ValidationHitRate, Weight: latest.CandidateWeight,
+		weights := make([]float64, 0, len(valid))
+		weightTotal, excessTotal, hitTotal := 0.0, 0.0, 0.0
+		samples := 0
+		for _, fold := range valid {
+			weights = append(weights, fold.CandidateWeight)
+			foldSamples := fold.ValidationActiveSamples
+			if foldSamples <= 0 {
+				foldSamples = fold.ValidationSamples
+			}
+			if foldSamples <= 0 {
+				foldSamples = 1
+			}
+			samples += foldSamples
+			weightTotal += fold.CandidateWeight * float64(foldSamples)
+			excessTotal += fold.ValidationAverageExcess * float64(foldSamples)
+			hitTotal += fold.ValidationHitRate * float64(foldSamples)
+		}
+		if weightTotal <= 0 || !finite(weightTotal) {
+			continue
+		}
+		meanWeight, medianWeight := meanMedian(weights)
+		// Blending the sample-weighted mean with the median is a small robust
+		// estimator: it keeps useful information from larger folds while
+		// limiting the influence of one extreme fold.  The remaining shrinkage
+		// toward a neutral weight is applied after all components are collected.
+		robustWeight := (weightTotal/float64(samples) + medianWeight) / 2
+		if !finite(robustWeight) || robustWeight <= 0 {
+			robustWeight = meanWeight
+		}
+		aggregates = append(aggregates, aggregate{
+			metric: metric, weight: robustWeight, samples: samples,
+			averageExcess: excessTotal / float64(samples), hitRate: hitTotal / float64(samples),
 		})
+	}
+	if len(aggregates) == 0 {
+		return nil
+	}
+	neutral := 1 / float64(len(aggregates))
+	result := make([]StrategyWeightProposal, 0, len(aggregates))
+	weightTotal := 0.0
+	for _, item := range aggregates {
+		// Keep the calibration conservative even when a component has a very
+		// strong but short-lived historical edge.
+		weight := .80*item.weight + .20*neutral
+		if !finite(weight) || weight <= 0 {
+			continue
+		}
+		weightTotal += weight
+		result = append(result, StrategyWeightProposal{
+			Key: item.metric.ComponentKey, Name: item.metric.ComponentName, Samples: item.samples,
+			AverageExcess: item.averageExcess, HitRate: item.hitRate, Weight: weight,
+		})
+	}
+	if weightTotal > 0 {
+		for index := range result {
+			result[index].Weight /= weightTotal
+		}
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Weight == result[j].Weight {
@@ -1515,6 +1913,63 @@ func walkForwardWeightProposals(analysis ComponentWalkForwardAnalysis, horizon i
 		return result[i].Weight > result[j].Weight
 	})
 	return result
+}
+
+// CalibrationFromOutcome converts only a fully gated walk-forward proposal
+// into a challenger configuration. It never changes the champion score; the
+// caller decides where the parallel challenger is observed.
+func CalibrationFromOutcome(report OutcomeReport) (ScoreCalibration, bool) {
+	assessment := report.Assessment
+	if assessment.Verdict != "可作为下一轮候选" || assessment.Threshold == nil || len(assessment.StrategyWeights) < 2 {
+		return ScoreCalibration{}, false
+	}
+	for _, check := range assessment.Checks {
+		if check.Required && !check.Passed {
+			return ScoreCalibration{}, false
+		}
+	}
+	minimumScore := assessment.Threshold.MinimumScore
+	if !finite(minimumScore) || minimumScore <= 0 {
+		return ScoreCalibration{}, false
+	}
+	weights := make(map[string]float64, len(assessment.StrategyWeights))
+	weightTotal := 0.0
+	for _, proposal := range assessment.StrategyWeights {
+		key := strings.TrimSpace(proposal.Key)
+		if key == "" || !finite(proposal.Weight) || proposal.Weight <= 0 {
+			continue
+		}
+		weights[key] = proposal.Weight
+		weightTotal += proposal.Weight
+	}
+	if len(weights) < 2 || weightTotal <= 0 {
+		return ScoreCalibration{}, false
+	}
+	for key := range weights {
+		weights[key] /= weightTotal
+	}
+	dataThrough := strings.TrimSpace(report.DataThrough)
+	if dataThrough == "" {
+		dataThrough = strings.TrimSpace(report.AsOf)
+	}
+	calibration := ScoreCalibration{
+		ID:          fmt.Sprintf("CAL-%s-H%d-N%d-%s", strings.ReplaceAll(dataThrough, "-", ""), assessment.Horizon, assessment.ReadySamples, calibrationFingerprint(minimumScore, weights)),
+		DataThrough: dataThrough, Horizon: assessment.Horizon, ReadySamples: assessment.ReadySamples,
+		MinimumScore: minimumScore, ComponentWeights: weights,
+	}
+	return calibration, true
+}
+
+func calibrationFingerprint(minimumScore float64, weights map[string]float64) string {
+	data, err := json.Marshal(struct {
+		MinimumScore float64            `json:"minimum_score"`
+		Weights      map[string]float64 `json:"weights"`
+	}{MinimumScore: minimumScore, Weights: weights})
+	if err != nil {
+		return "unknown"
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:4])
 }
 
 func portfolioHorizonMetric(analysis PortfolioConstraintAnalysis, horizon int) *PortfolioHorizonAnalysis {
@@ -1543,56 +1998,134 @@ func findSummaryForHorizon(outcomes []SignalOutcome, horizon int) *OutcomeSummar
 	return &summary[0]
 }
 
+type outcomeDateGroup struct {
+	date  string
+	items []SignalOutcome
+}
+
 func buildWalkForwardFolds(items []SignalOutcome) []OutcomeValidationFold {
 	if len(items) < minimumResearchSamples {
 		return nil
 	}
-	initialTrain := len(items) / 2
-	remaining := len(items) - initialTrain
-	foldCount := remaining / minimumFoldSamples
-	if foldCount > 3 {
-		foldCount = 3
+	// Split on trading-date boundaries. Multiple stocks emitted on one day must
+	// stay in the same side of a fold; otherwise the validation set leaks the
+	// day's cross-sectional information into training.
+	ordered := append([]SignalOutcome(nil), items...)
+	sort.SliceStable(ordered, func(left, right int) bool {
+		leftDate, rightDate := outcomeDate(ordered[left]), outcomeDate(ordered[right])
+		if leftDate == rightDate {
+			return ordered[left].SignalAsOf.Before(ordered[right].SignalAsOf)
+		}
+		return leftDate < rightDate
+	})
+	groups := make([]outcomeDateGroup, 0)
+	for _, item := range ordered {
+		date := outcomeDate(item)
+		if date == "" {
+			continue
+		}
+		if len(groups) == 0 || groups[len(groups)-1].date != date {
+			groups = append(groups, outcomeDateGroup{date: date})
+		}
+		groups[len(groups)-1].items = append(groups[len(groups)-1].items, item)
 	}
-	if foldCount < 2 {
+	if len(groups) < minimumResearchDates {
 		return nil
 	}
-	validationSize := remaining / foldCount
-	if validationSize < minimumFoldSamples {
+	initialDays := len(groups) / 2
+	remainingDays := len(groups) - initialDays
+	maxFolds := remainingDays
+	if maxFolds > 3 {
+		maxFolds = 3
+	}
+	for foldCount := maxFolds; foldCount >= 2; foldCount-- {
+		partitions := partitionOutcomeDateGroups(groups[initialDays:], foldCount)
+		if len(partitions) != foldCount {
+			continue
+		}
+		valid := true
+		for _, partition := range partitions {
+			if len(flattenOutcomeDateGroups(partition)) < minimumFoldSamples {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		folds := make([]OutcomeValidationFold, 0, foldCount)
+		trainGroupEnd := initialDays
+		for index, partition := range partitions {
+			validation := flattenOutcomeDateGroups(partition)
+			train := flattenOutcomeDateGroups(groups[:trainGroupEnd])
+			threshold := chooseThreshold(train)
+			if threshold.TrainSamples < minimumFoldSamples {
+				valid = false
+				break
+			}
+			_, validationAverage, validationHit := thresholdStats(validation, threshold.MinimumScore)
+			_, baselineAverage, _ := thresholdStats(validation, 0)
+			folds = append(folds, OutcomeValidationFold{
+				Index: index + 1, TrainEnd: groups[trainGroupEnd-1].date,
+				ValidationStart: partition[0].date, ValidationEnd: partition[len(partition)-1].date,
+				MinimumScore: threshold.MinimumScore, TrainSamples: threshold.TrainSamples,
+				ValidationSamples: len(validation), TrainAverageExcess: threshold.TrainAverageExcess, AverageExcess: validationAverage, HitRate: validationHit,
+				BaselineExcess: baselineAverage,
+			})
+			trainGroupEnd += len(partition)
+		}
+		if valid && len(folds) >= 2 {
+			return folds
+		}
+	}
+	return nil
+}
+
+func outcomeDate(item SignalOutcome) string {
+	date := strings.TrimSpace(item.SignalDate)
+	if date == "" && !item.SignalAsOf.IsZero() {
+		date = item.SignalAsOf.In(time.Local).Format("2006-01-02")
+	}
+	return date
+}
+
+func partitionOutcomeDateGroups(groups []outcomeDateGroup, count int) [][]outcomeDateGroup {
+	if count <= 0 || len(groups) < count {
 		return nil
 	}
-	folds := make([]OutcomeValidationFold, 0, foldCount)
-	trainEnd := initialTrain
-	for index := 0; index < foldCount; index++ {
-		validationEnd := trainEnd + validationSize
-		if index == foldCount-1 || validationEnd > len(items) {
-			validationEnd = len(items)
+	result := make([][]outcomeDateGroup, 0, count)
+	base, extra := len(groups)/count, len(groups)%count
+	start := 0
+	for index := 0; index < count; index++ {
+		size := base
+		if index < extra {
+			size++
 		}
-		if validationEnd-trainEnd < minimumFoldSamples {
-			break
+		if size <= 0 {
+			return nil
 		}
-		threshold := chooseThreshold(items[:trainEnd])
-		validation := items[trainEnd:validationEnd]
-		_, validationAverage, validationHit := thresholdStats(validation, threshold.MinimumScore)
-		_, baselineAverage, _ := thresholdStats(validation, 0)
-		folds = append(folds, OutcomeValidationFold{
-			Index: index + 1, TrainEnd: items[trainEnd-1].SignalDate,
-			ValidationStart: validation[0].SignalDate, ValidationEnd: validation[len(validation)-1].SignalDate,
-			MinimumScore: threshold.MinimumScore, TrainSamples: threshold.TrainSamples,
-			ValidationSamples: len(validation), TrainAverageExcess: threshold.TrainAverageExcess, AverageExcess: validationAverage, HitRate: validationHit,
-			BaselineExcess: baselineAverage,
-		})
-		trainEnd = validationEnd
-		if trainEnd >= len(items) {
-			break
-		}
+		result = append(result, groups[start:start+size])
+		start += size
 	}
-	return folds
+	return result
+}
+
+func flattenOutcomeDateGroups(groups []outcomeDateGroup) []SignalOutcome {
+	result := make([]SignalOutcome, 0)
+	for _, group := range groups {
+		result = append(result, group.items...)
+	}
+	return result
 }
 
 func chooseThreshold(items []SignalOutcome) ThresholdProposal {
-	best := ThresholdProposal{MinimumScore: 0, TrainSamples: len(items)}
+	// A zero threshold is useful for an unconditional baseline comparison, but
+	// it is never a valid live entry gate. Keep research candidates on the same
+	// risk-adjusted scale as the realtime portfolio gate and fall back to 55
+	// when the higher score buckets do not yet have enough observations.
+	best := ThresholdProposal{MinimumScore: minimumPortfolioScore, TrainSamples: len(items)}
 	bestAverage := math.Inf(-1)
-	for _, threshold := range []float64{0, 50, 65, 80} {
+	for _, threshold := range []float64{minimumPortfolioScore, 60, 65, 70, 75} {
 		samples, average, hitRate := thresholdStats(items, threshold)
 		if samples < minimumFoldSamples {
 			continue
@@ -1606,8 +2139,8 @@ func chooseThreshold(items []SignalOutcome) ThresholdProposal {
 		}
 	}
 	if math.IsInf(bestAverage, -1) {
-		_, best.TrainAverageExcess, best.ValidationHitRate = thresholdStats(items, 0)
-		best.MinimumScore = 0
+		best.TrainSamples, best.TrainAverageExcess, best.ValidationHitRate = thresholdStats(items, minimumPortfolioScore)
+		best.MinimumScore = minimumPortfolioScore
 	}
 	return best
 }
@@ -1617,14 +2150,31 @@ func aggregateThresholdProposal(folds []OutcomeValidationFold) ThresholdProposal
 	if len(folds) == 0 {
 		return proposal
 	}
-	proposal.MinimumScore = folds[len(folds)-1].MinimumScore
+	// Thresholds are selected independently inside each training window.  Use a
+	// cross-fold median so the newest window cannot unilaterally push the live
+	// gate to an extreme value.  The result remains one of the observed fold
+	// values (or the midpoint of the two central values), which keeps the audit
+	// trail easy to interpret.
+	thresholds := make([]float64, 0, len(folds))
 	for _, fold := range folds {
+		if finite(fold.MinimumScore) {
+			thresholds = append(thresholds, fold.MinimumScore)
+		}
 		proposal.TrainSamples += fold.TrainSamples
 		proposal.ValidationSamples += fold.ValidationSamples
 		proposal.TrainAverageExcess += fold.TrainAverageExcess * float64(fold.ValidationSamples)
 		proposal.ValidationAverageExcess += fold.AverageExcess * float64(fold.ValidationSamples)
 		proposal.ValidationHitRate += fold.HitRate * float64(fold.ValidationSamples)
 		proposal.BaselineValidationExcess += fold.BaselineExcess * float64(fold.ValidationSamples)
+	}
+	if len(thresholds) > 0 {
+		sort.Float64s(thresholds)
+		middle := len(thresholds) / 2
+		if len(thresholds)%2 == 0 {
+			proposal.MinimumScore = (thresholds[middle-1] + thresholds[middle]) / 2
+		} else {
+			proposal.MinimumScore = thresholds[middle]
+		}
 	}
 	denominator := 0
 	for _, fold := range folds {
@@ -1642,7 +2192,7 @@ func aggregateThresholdProposal(folds []OutcomeValidationFold) ThresholdProposal
 func thresholdStats(items []SignalOutcome, threshold float64) (int, float64, float64) {
 	count, positive, total := 0, 0, 0.0
 	for _, item := range items {
-		if item.Score < threshold {
+		if baselineOutcomeScore(item) < threshold {
 			continue
 		}
 		count++

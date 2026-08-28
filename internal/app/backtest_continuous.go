@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/backtest"
-	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
@@ -212,8 +211,7 @@ func (app *App) runContinuousOptimizationLocked(
 		MinimumValidationTrades: options.MinimumTrades, MinimumPositiveFoldRatio: options.MinimumPositive,
 		MaximumValidationDrawdown: options.MaximumDrawdown,
 	}
-	provider := backtest.NewCachingDailyBarProvider(market.EastmoneyClient{})
-	optimizer := backtest.NewContinuousOptimizer(backtest.NewDailyEngine(provider))
+	optimizer := backtest.NewContinuousOptimizer(app.newBacktestEngine())
 	result, err := optimizer.Optimize(ctx, request, agentRuns, func(item backtest.OptimizationProgress) {
 		if progress == nil {
 			return
@@ -232,7 +230,10 @@ func (app *App) runContinuousOptimizationLocked(
 	result.Cycle = cycle
 	result.DataCutoff = dateOnly(end).Format("2006-01-02")
 	result.PriorLessons = priorLessons
-	result.Manifest = backtest.BuildExperimentManifest(request, result.DataCutoff, parentID, previousHoldoutEnd)
+	// The optimizer may transparently remove a ticker whose historical data is
+	// unavailable. Build the manifest from the request that actually ran so the
+	// archive cannot claim coverage for a symbol that was excluded.
+	result.Manifest = backtest.BuildExperimentManifest(result.Request, result.DataCutoff, parentID, previousHoldoutEnd)
 	if options.UseAI {
 		if progress != nil {
 			progress("主Agent监督子Agent分歧与确定性门禁")

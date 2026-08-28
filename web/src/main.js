@@ -18,7 +18,7 @@ const marketIndexDefinitions = [
 ]
 const automationTaskDefinitions = [
   { key: "scan", label: "扫描" },
-  { key: "outcomes", label: "前测" },
+  { key: "outcomes", label: "验证" },
   { key: "shadow", label: "影子" },
   { key: "research", label: "研究" },
 ]
@@ -75,6 +75,7 @@ createApp({
       shadowProfileID: "balanced",
       shadowRequestID: 0,
       shadowCheckedAt: 0,
+      shadowOrderSymbol: "",
       chartMode: "intraday",
       chartGeometry: null,
       crosshair: null,
@@ -225,6 +226,12 @@ createApp({
     realtimeOutcomeSummary() {
       return this.realtimeOutcomeSummaries.find(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)) || this.realtimeOutcomeSummaries[0] || {}
     },
+    realtimeCalibration() {
+      return (this.realtimeOutcomeReport && this.realtimeOutcomeReport.calibration) || {}
+    },
+    realtimeTuning() {
+      return (this.realtimeOutcomeReport && this.realtimeOutcomeReport.tuning) || {}
+    },
     realtimeOutcomeBreakdowns() {
       if (!this.realtimeOutcomeReport) return []
       const key = this.realtimeOutcomeView === "strategies" ? "strategies" : this.realtimeOutcomeView === "regimes" ? "market_regimes" : "score_buckets"
@@ -292,8 +299,18 @@ createApp({
       return horizons.find(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)) || horizons[0] || {}
     },
     shadowTrades() { return this.shadowReport && Array.isArray(this.shadowReport.trades) ? this.shadowReport.trades : [] },
-    shadowPositions() { return this.shadowReport && Array.isArray(this.shadowReport.positions) ? this.shadowReport.positions : [] },
+    shadowPositions() {
+      const positions = this.shadowReport && Array.isArray(this.shadowReport.positions) ? this.shadowReport.positions : []
+      return positions.slice().sort((left, right) => Number(right.market_value || 0) - Number(left.market_value || 0))
+    },
     shadowOrders() { return this.shadowReport && Array.isArray(this.shadowReport.orders) ? this.shadowReport.orders : [] },
+    shadowFilteredOrders() {
+      if (!this.shadowOrderSymbol) return this.shadowOrders
+      return this.shadowOrders.filter(item => item && item.symbol === this.shadowOrderSymbol)
+    },
+    shadowOrderPosition() {
+      return this.shadowPositions.find(item => item && item.symbol === this.shadowOrderSymbol) || null
+    },
     shadowRejections() { return this.shadowReport && Array.isArray(this.shadowReport.rejections) ? this.shadowReport.rejections : [] },
     shadowDecisions() { return this.shadowReport && Array.isArray(this.shadowReport.decisions) ? this.shadowReport.decisions : [] },
     shadowLatestDecision() {
@@ -475,12 +492,60 @@ createApp({
       return item.reason || ""
     },
     shadowActionLabel(action) {
-      return ({ open: "首次建仓", add: "加仓", rotate_in: "轮入", rotate_out: "轮出", reduce: "减仓", risk_exit: "风险退出", exit: "到期退出", hold: "持有", wait: "等待" })[action] || action || "--"
+      return ({ open: "首次建仓", add: "加仓", rotate_in: "轮入", rotate_out: "轮出", reduce: "减仓", t_reduce: "做T高抛", t_rebuy: "做T回补", risk_exit: "风险退出", exit: "到期退出", hold: "持有", wait: "等待" })[action] || action || "--"
     },
     shadowLotSummary(position) {
       const lots = Array.isArray(position && position.lots) ? position.lots : []
       const sellable = lots.filter(lot => lot.entry_date && this.shadowReport && String(lot.entry_date) < String(this.shadowReport.as_of || "")).reduce((sum, lot) => sum + Number(lot.quantity || 0), 0)
       return `${lots.length || 1} 批 · 可卖 ${sellable || Number(position && position.available_quantity || 0)} 股`
+    },
+    shadowPositionWeight(position) {
+      const equity = Number(this.shadowReport && this.shadowReport.total_equity)
+      const marketValue = Number(position && position.market_value)
+      if (!Number.isFinite(equity) || equity <= 0 || !Number.isFinite(marketValue)) return 0
+      return marketValue / equity * 100
+    },
+    shadowPositionMeterWidth(position) {
+      const weight = this.shadowPositionWeight(position)
+      const limit = Number(this.shadowConfig.max_position_percent || 20)
+      if (!Number.isFinite(limit) || limit <= 0) return "0%"
+      return String(Math.max(0, Math.min(100, weight / limit * 100))) + "%"
+    },
+    shadowPositionStatus(position) {
+      if (position && position.risk_exit_pending) return "待风险退出"
+      if (Number(position && position.available_quantity) > 0) return "可卖"
+      return "T+1 锁定"
+    },
+    shadowPositionStatusClass(position) {
+      if (position && position.risk_exit_pending) return "risk"
+      if (Number(position && position.available_quantity) > 0) return "ready"
+      return "locked"
+    },
+    shadowPositionAvailability(position) {
+      const quantity = Number(position && position.quantity)
+      const available = Number(position && position.available_quantity)
+      if (!Number.isFinite(quantity) || quantity <= 0) return "无有效数量"
+      if (available > 0 && available < quantity) return `部分可卖 · ${quantity - available} 股锁定`
+      if (available >= quantity) return "全部可卖"
+      return "今日新开仓，下一交易日可卖"
+    },
+    viewShadowPositionMarket(position) {
+      if (!position || !position.symbol) return
+      this.workspaceMode = "market"
+      this.query = this.displayCode(position.symbol)
+      this.requestedSymbol = position.symbol
+      this.load(position.symbol)
+      window.scrollTo({ top: 0, behavior: "auto" })
+    },
+    showShadowOrderHistory(position) {
+      if (!position || !position.symbol) return
+      this.shadowOrderSymbol = position.symbol
+      this.$nextTick(() => {
+        document.getElementById("shadow-order-ledger")?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    },
+    clearShadowOrderHistory() {
+      this.shadowOrderSymbol = ""
     },
     shadowIndustryWidth(item) {
       const exposure = Number(item && item.exposure_percent)
@@ -503,6 +568,7 @@ createApp({
       if (!this.shadowProfiles.some(item => item && item.id === id)) return
       const scrollY = window.scrollY
       this.shadowProfileID = id
+      this.shadowOrderSymbol = ""
       // Do not leave the previous account's positions visible while the new
       // ledger is loading; account identity must always match its details.
       this.shadowReport = null
@@ -753,6 +819,22 @@ createApp({
       return check.required ? "fail required" : "pending"
     },
     outcomeWeightText(value) { return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(1)}%` : "--" },
+    calibrationStatusClass(status) {
+      if (status === "候选领先") return "pass"
+      if (status === "候选落后") return "fail required"
+      if (status === "观察中") return "pending"
+      return ""
+    },
+    calibrationMetricSummary(metric) {
+      if (!metric || !Number(metric.samples)) return "暂无可交易样本"
+      return `${metric.samples} 个入选 · 命中 ${this.percentText(metric.hit_rate_percent)} · 超额 ${this.percentText(metric.average_excess_percent)}`
+    },
+    tuningPriorityLabel(priority) {
+      return ({ high: "优先", medium: "观察", low: "常规" })[priority] || "观察"
+    },
+    tuningPriorityClass(priority) {
+      return priority === "high" ? "high" : priority === "low" ? "low" : "medium"
+    },
     componentCoverageClass(item) {
       if (!item || !Number.isFinite(Number(item.available_percent))) return "flat"
       return Number(item.available_percent) >= 70 ? "up" : "warn-text"
@@ -897,10 +979,10 @@ createApp({
       if (this.realtimeOutcomeLoading) return
       this.realtimeOutcomeError = ""
       try {
-        const response = await fetch("/api/strategy/realtime?view=outcomes&limit=2000", { cache: "no-store" })
+        const response = await fetch("/api/strategy/realtime?view=outcomes&full=1", { cache: "no-store" })
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
-        if (!response.ok) throw new Error(payload.error || "前测结果读取失败")
+        if (!response.ok) throw new Error(payload.error || "信号验证结果读取失败")
         this.realtimeOutcomeReport = payload.report || null
         if (this.realtimeOutcomeReport && Array.isArray(this.realtimeOutcomeReport.horizons) && this.realtimeOutcomeReport.horizons.length && !this.realtimeOutcomeReport.horizons.includes(Number(this.realtimeOutcomeHorizon))) {
           this.realtimeOutcomeHorizon = Number(this.realtimeOutcomeReport.horizons[0])
@@ -915,10 +997,10 @@ createApp({
       this.realtimeOutcomeLoading = true
       this.realtimeOutcomeError = ""
       try {
-        const response = await fetch("/api/strategy/realtime?view=outcomes&limit=2000&horizons=1,3,5,10", { method: "POST", cache: "no-store" })
+        const response = await fetch("/api/strategy/realtime?view=outcomes&full=1&horizons=1,3,5,10", { method: "POST", cache: "no-store" })
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
-        if (!response.ok) throw new Error(payload.error || "前测结果更新失败")
+        if (!response.ok) throw new Error(payload.error || "信号验证结果更新失败")
         this.realtimeOutcomeReport = payload.report || null
       } catch (error) {
         this.realtimeOutcomeError = error instanceof Error ? error.message : String(error)
@@ -1057,7 +1139,8 @@ createApp({
       return `${prefix}${this.compact(delta * 10000)}  (${delta > 0 ? "+" : ""}${Number(amount.percent).toFixed(2)}%)`
     },
     isMarketIndex(symbol) {
-      return marketIndexDefinitions.some(item => item.symbol === symbol)
+      const normalized = String(symbol || "").toLowerCase()
+      return marketIndexDefinitions.some(item => item.symbol === normalized) || /^sh000\d{3}$/.test(normalized) || /^sz399\d{3}$/.test(normalized)
     },
     async loadIndices() {
       const requestID = ++this.indicesRequestID
@@ -1637,7 +1720,8 @@ createApp({
         context.fillText("暂无分时数据", 18, 28)
         return
       }
-      const left = 54
+      const indexChart = this.isMarketIndex(this.data.symbol)
+      const left = indexChart ? 72 : 54
       const right = 16
       const top = 18
       const bottom = 52
@@ -1645,11 +1729,17 @@ createApp({
       const plotBottom = height - bottom - volumeHeight
       const plotHeight = Math.max(20, plotBottom - top)
       const plotWidth = Math.max(20, width - left - right)
-      const points = this.minutes.map(point => ({ ...point, slot: this.minuteSlot(point.time) })).filter(point => point.slot != null && Number.isFinite(Number(point.price)))
+      const points = this.minutes.map(point => ({ ...point, slot: this.minuteSlot(point.time) })).filter(point => point.slot != null && Number.isFinite(Number(point.price)) && Number(point.price) > 0)
       if (!points.length) {
         context.fillStyle = "#91a0a7"
         context.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
         context.fillText("暂无有效分时数据", 18, 28)
+        return
+      }
+      if (indexChart && points.length < 2) {
+        context.fillStyle = "#91a0a7"
+        context.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+        context.fillText("等待开盘形成有效指数走势", 18, 28)
         return
       }
       const lunchGap = Math.min(52, Math.max(24, plotWidth * 0.06))
@@ -1658,12 +1748,15 @@ createApp({
         if (slot < morningSlots) return left + slot / (morningSlots - 1) * sessionWidth
         return left + sessionWidth + lunchGap + (slot - morningSlots) / (afternoonSlots - 1) * sessionWidth
       }
-      const values = points.flatMap(point => [Number(point.price), Number(point.average)]).filter(Number.isFinite)
+      const priceValues = points.map(point => Number(point.price)).filter(value => Number.isFinite(value) && value > 0)
+      const values = indexChart
+        ? [...priceValues, Number(this.quote.high), Number(this.quote.low)].filter(value => Number.isFinite(value) && value > 0)
+        : points.flatMap(point => [Number(point.price), Number(point.average)]).filter(value => Number.isFinite(value) && value > 0)
       const previousClose = Number(this.quote.previous_close)
-      if (Number.isFinite(previousClose)) values.push(previousClose)
+      if (!indexChart && Number.isFinite(previousClose) && previousClose > 0) values.push(previousClose)
       let minimum = Math.min(...values)
       let maximum = Math.max(...values)
-      const padding = (maximum - minimum) * 0.08 || Math.max(0.1, maximum * 0.002)
+      const padding = indexChart ? (maximum === minimum ? Math.max(0.1, maximum * 0.001) : 0) : ((maximum - minimum) * 0.08 || Math.max(0.1, maximum * 0.002))
       minimum -= padding
       maximum += padding
       const y = value => top + (maximum - value) / (maximum - minimum) * plotHeight
@@ -1696,7 +1789,7 @@ createApp({
         let previousSlot = null
         points.forEach(point => {
           const value = Number(point[field])
-          if (!Number.isFinite(value)) return
+          if (!Number.isFinite(value) || value <= 0) return
           const crossedLunch = previousSlot != null && previousSlot < morningSlots && point.slot >= morningSlots
           if (previousSlot != null && (point.slot - previousSlot > 1 || crossedLunch)) {
             context.strokeStyle = color
@@ -1897,7 +1990,8 @@ createApp({
         context.fillText("暂无日 K 数据", 18, 28)
         return
       }
-      const left = 48
+      const indexChart = this.isMarketIndex(this.data.symbol)
+      const left = indexChart ? 72 : 48
       const right = width < 560 ? 70 : 94
       const top = 18
       const bottom = 54
@@ -1910,15 +2004,25 @@ createApp({
       const firstSourceIndex = viewport.startIndex
       const values = []
       bars.forEach((bar, index) => {
-        values.push(Number(bar.low), Number(bar.high))
-        ;[5, 20, 60].forEach(length => {
-          const value = this.movingAverage(allBars, firstSourceIndex + index, length)
-          if (value) values.push(value)
-        })
+        const lowValue = Number(bar.low)
+        const highValue = Number(bar.high)
+        if (Number.isFinite(lowValue) && lowValue > 0) values.push(lowValue)
+        if (Number.isFinite(highValue) && highValue > 0) values.push(highValue)
+        if (!indexChart) {
+          ;[5, 20, 60].forEach(length => {
+            const value = this.movingAverage(allBars, firstSourceIndex + index, length)
+            if (Number.isFinite(value) && value > 0) values.push(value)
+          })
+        }
       })
+      if (!values.length) {
+        context.fillStyle = "#91a0a7"
+        context.fillText("暂无有效日 K 数据", 18, 28)
+        return
+      }
       const minimum = Math.min(...values)
       const maximum = Math.max(...values)
-      const padding = (maximum - minimum) * 0.08 || 1
+      const padding = indexChart ? (maximum === minimum ? Math.max(0.1, maximum * 0.001) : 0) : ((maximum - minimum) * 0.08 || 1)
       const low = minimum - padding
       const high = maximum + padding
       const xStep = (width - left - right) / bars.length
@@ -1963,7 +2067,7 @@ createApp({
         let started = false
         bars.forEach((bar, index) => {
           const value = this.movingAverage(allBars, firstSourceIndex + index, length)
-          if (!value) return
+          if (!Number.isFinite(value) || value <= 0 || (indexChart && (value < low || value > high))) return
           const x = left + (index + 0.5) * xStep
           if (started) context.lineTo(x, y(value))
           else { context.moveTo(x, y(value)); started = true }

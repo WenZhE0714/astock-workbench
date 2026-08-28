@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -200,6 +201,30 @@ const (
 type ContinuousOptimizer struct {
 	engine Engine
 	now    func() time.Time
+}
+
+// continuousTickerDataError marks a failure that can be isolated to one
+// ticker.  Continuous research may transparently continue with the remaining
+// pool, while the ordinary DailyEngine contract remains strict for callers
+// that explicitly request a particular ticker set.
+type continuousTickerDataError struct {
+	ticker string
+	phase  string
+	err    error
+}
+
+func (err *continuousTickerDataError) Error() string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s%s数据失败：%v", err.ticker, err.phase, err.err)
+}
+
+func (err *continuousTickerDataError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.err
 }
 
 func NewContinuousOptimizer(engine Engine) *ContinuousOptimizer {
@@ -415,6 +440,61 @@ func (optimizer *ContinuousOptimizer) Optimize(
 	if err := validateContinuousRequest(request); err != nil {
 		return ContinuousOptimizationResult{}, err
 	}
+	excludedWarnings := make([]string, 0)
+	for attempt := 0; attempt <= len(request.BaseRequest.Tickers); attempt++ {
+		result, err := optimizer.optimizeOnce(ctx, request, agents, progress)
+		if err == nil {
+			result.Warnings = append(result.Warnings, excludedWarnings...)
+			if len(excludedWarnings) > 0 {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("本轮实际研究股票池为 %d 只；建议至少保留 3 只以检验组合稳定性", len(request.BaseRequest.Tickers)))
+			}
+			return result, nil
+		}
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		var dataError *continuousTickerDataError
+		if !errors.As(err, &dataError) || dataError.ticker == "" {
+			return result, err
+		}
+		if len(request.BaseRequest.Tickers) <= 1 {
+			return result, fmt.Errorf("连续优化无法继续：股票 %s 是研究池中最后一只可用股票（%v）", dataError.ticker, dataError.err)
+		}
+		request = removeContinuousTicker(request, dataError.ticker)
+		excludedWarnings = append(excludedWarnings, fmt.Sprintf("已排除股票 %s（%s）：%v；其余股票继续研究", dataError.ticker, dataError.phase, dataError.err))
+		if progress != nil {
+			progress(OptimizationProgress{Phase: "data-quality", Completed: len(excludedWarnings), Total: len(excludedWarnings)})
+		}
+	}
+	return ContinuousOptimizationResult{}, fmt.Errorf("连续优化数据预检未能建立可用股票池")
+}
+
+func removeContinuousTicker(request ContinuousOptimizationRequest, ticker string) ContinuousOptimizationRequest {
+	filtered := make([]string, 0, len(request.BaseRequest.Tickers)-1)
+	for _, candidate := range request.BaseRequest.Tickers {
+		if candidate != ticker {
+			filtered = append(filtered, candidate)
+		}
+	}
+	request.BaseRequest.Tickers = filtered
+	if request.BaseRequest.Names != nil {
+		names := make(map[string]string, len(filtered))
+		for _, candidate := range filtered {
+			if name, ok := request.BaseRequest.Names[candidate]; ok {
+				names[candidate] = name
+			}
+		}
+		request.BaseRequest.Names = names
+	}
+	return request
+}
+
+func (optimizer *ContinuousOptimizer) optimizeOnce(
+	ctx context.Context,
+	request ContinuousOptimizationRequest,
+	agents []AgentResearchRun,
+	progress func(OptimizationProgress),
+) (ContinuousOptimizationResult, error) {
 	result := ContinuousOptimizationResult{
 		ID: "AUTO-" + optimizer.now().Format("20060102T150405"), GeneratedAt: optimizer.now(),
 		Request: request, Agents: agents, Stage: ContinuousStageResearch,
@@ -432,6 +512,9 @@ func (optimizer *ContinuousOptimizer) Optimize(
 				if ctx.Err() != nil {
 					return result, ctx.Err()
 				}
+				if ticker := continuousDataFailureTicker(err, request.BaseRequest.Tickers); ticker != "" {
+					return result, &continuousTickerDataError{ticker: ticker, phase: fmt.Sprintf("%s训练", fold.ID), err: err}
+				}
 				candidate.Rejected = true
 				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("%s训练失败：%s", fold.ID, err))
 				break
@@ -440,6 +523,9 @@ func (optimizer *ContinuousOptimizer) Optimize(
 			if err != nil {
 				if ctx.Err() != nil {
 					return result, ctx.Err()
+				}
+				if ticker := continuousDataFailureTicker(err, request.BaseRequest.Tickers); ticker != "" {
+					return result, &continuousTickerDataError{ticker: ticker, phase: fmt.Sprintf("%s验证", fold.ID), err: err}
 				}
 				candidate.Rejected = true
 				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("%s验证失败：%s", fold.ID, err))
@@ -498,6 +584,9 @@ func (optimizer *ContinuousOptimizer) Optimize(
 	holdoutRequest := periodRequest(request.BaseRequest, request.Holdout, result.Selected.Proposal.Parameters)
 	holdout, err := optimizer.engine.Run(ctx, holdoutRequest)
 	if err != nil {
+		if ticker := continuousDataFailureTicker(err, request.BaseRequest.Tickers); ticker != "" {
+			return result, &continuousTickerDataError{ticker: ticker, phase: "最终留出", err: err}
+		}
 		return result, fmt.Errorf("最终留出回测失败: %w", err)
 	}
 	result.Holdout = &holdout
@@ -509,10 +598,33 @@ func (optimizer *ContinuousOptimizer) Optimize(
 	stressRequest.SlippageBPS *= 2
 	doubleCost, err := optimizer.engine.Run(ctx, stressRequest)
 	if err != nil {
+		if ticker := continuousDataFailureTicker(err, request.BaseRequest.Tickers); ticker != "" {
+			return result, &continuousTickerDataError{ticker: ticker, phase: "压力测试", err: err}
+		}
 		return result, fmt.Errorf("双倍成本压力测试失败: %w", err)
 	}
 	result.Stress = StressResult{DoubleCost: &doubleCost, BestTradeProfitShare: bestTradeProfitShare(holdout)}
 	result.Quality = evaluateContinuousDataQuality(&result)
 	continuousGate(&result)
 	return result, nil
+}
+
+func continuousDataFailureTicker(err error, tickers []string) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	for _, ticker := range tickers {
+		ticker = strings.TrimSpace(ticker)
+		if ticker == "" {
+			continue
+		}
+		// DailyEngine prefixes data errors with "<ticker>:".  Also accept a
+		// wrapped error containing that exact token, but do not classify a
+		// generic candidate failure as a ticker problem.
+		if strings.HasPrefix(strings.TrimSpace(message), ticker+":") || strings.Contains(message, " "+ticker+":") || strings.Contains(message, ") "+ticker+":") {
+			return ticker
+		}
+	}
+	return ""
 }
