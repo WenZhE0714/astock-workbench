@@ -234,6 +234,7 @@ type aiChatAnswer struct {
 	FactsAt   time.Time
 	FactsHash string
 	Agents    []domain.AgentResearchRun
+	Fallback  bool
 }
 
 func (app *App) answerAIChatQuestion(
@@ -274,6 +275,7 @@ func (app *App) answerAIChatQuestionDetailed(
 	result := aiChatAnswer{FactsAt: facts.GeneratedAt, FactsHash: facts.SnapshotHash, Agents: agents}
 	if successfulAgentCount(agents) == 0 {
 		failure := "AI咨询的多角色Agent均不可用: " + researchFailureSummary(agents)
+		result.Fallback = true
 		result.Answer = attachResearchFreshness(
 			renderDeterministicAIChatFallback(facts, question, failure), freshness, agents,
 		)
@@ -286,6 +288,7 @@ func (app *App) answerAIChatQuestionDetailed(
 		aiContext, researchSupervisorPrompt(prompt, "实时咨询", freshness, agents), facts,
 	)
 	if err != nil {
+		result.Fallback = true
 		result.Answer = attachResearchFreshness(
 			renderDeterministicAIChatFallback(facts, question, err.Error()), freshness, agents,
 		)

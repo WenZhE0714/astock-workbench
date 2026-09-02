@@ -27,8 +27,11 @@ type Paths struct {
 	ShadowConservativeFile     string
 	ShadowAggressiveFile       string
 	ShadowAdaptiveFile         string
+	ShadowMonsterFile          string
 	RealtimeCalibrationFile    string
 	AutomationStateFile        string
+	AIConfigFile               string
+	AITokenFile                string
 }
 
 func ResolvePaths() (Paths, error) {
@@ -72,7 +75,10 @@ func ResolvePaths() (Paths, error) {
 		ShadowConservativeFile:     filepath.Join(dataDir, "paper", "shadow-report-conservative.json"),
 		ShadowAggressiveFile:       filepath.Join(dataDir, "paper", "shadow-report-aggressive.json"),
 		ShadowAdaptiveFile:         filepath.Join(dataDir, "paper", "shadow-report-adaptive.json"),
+		ShadowMonsterFile:          filepath.Join(dataDir, "paper", "shadow-report-monster.json"),
 		RealtimeCalibrationFile:    filepath.Join(dataDir, "realtime-signals", "calibration-state.json"),
 		AutomationStateFile:        filepath.Join(dataDir, "automation", "state.json"),
+		AIConfigFile:               filepath.Join(configRoot, "astock-workbench", "ai-config.json"),
+		AITokenFile:                filepath.Join(configRoot, "astock-workbench", "ai-token"),
 	}, nil
 }

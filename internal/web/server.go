@@ -30,11 +30,14 @@ import (
 var assets embed.FS
 
 const (
-	quoteCacheTTL   = 5 * time.Second
-	minuteCacheTTL  = 5 * time.Second
-	boardCacheTTL   = 5 * time.Second
-	historyCacheTTL = time.Minute
-	amountCacheTTL  = 10 * time.Minute
+	quoteCacheTTL         = 5 * time.Second
+	minuteCacheTTL        = 5 * time.Second
+	boardCacheTTL         = 5 * time.Second
+	historyCacheTTL       = time.Minute
+	amountCacheTTL        = 10 * time.Minute
+	globalMarketCacheTTL  = 30 * time.Second
+	globalHistoryCacheTTL = 5 * time.Minute
+	globalMinuteCacheTTL  = 30 * time.Second
 )
 
 type marketIndexDefinition struct {
@@ -46,6 +49,26 @@ var marketIndexDefinitions = []marketIndexDefinition{
 	{Symbol: "sh000001", Name: "上证指数"},
 	{Symbol: "sz399001", Name: "深证成指"},
 	{Symbol: "sz399006", Name: "创业板指"},
+}
+
+type globalMarketDefinition struct {
+	Symbol string
+	Region string
+	Name   string
+}
+
+// Keep the Web surface focused on the markets most useful for an A-share
+// operator. The underlying Sina adapter may fetch more indices for the CLI,
+// but the browser should remain a compact market context strip.
+var globalMarketDefinitions = []globalMarketDefinition{
+	{Symbol: "rt_hkHSI", Region: "港股", Name: "恒生指数"},
+	{Symbol: "rt_hkHSTECH", Region: "港股", Name: "恒生科技"},
+	{Symbol: "b_NKY", Region: "日本", Name: "日经225"},
+	{Symbol: "b_KOSPI", Region: "韩国", Name: "KOSPI"},
+	{Symbol: "b_KOSDAQ", Region: "韩国", Name: "KOSDAQ"},
+	{Symbol: "gb_ixic", Region: "美国", Name: "纳斯达克"},
+	{Symbol: "gb_inx", Region: "美国", Name: "标普500"},
+	{Symbol: "gb_dji", Region: "美国", Name: "道琼斯"},
 }
 
 var marketAmountSymbols = []string{"sh000001", "sz399106", "bj899050"}
@@ -68,6 +91,19 @@ type BoardDetailClient interface {
 
 type MarketAmountClient interface {
 	FetchPreviousMarketAmount(context.Context) (domain.MarketAmountSnapshot, error)
+}
+
+type GlobalIndexClient interface {
+	FetchGlobalIndices(context.Context) ([]domain.GlobalIndex, error)
+}
+
+// GlobalChartClient supplies the historical and intraday series used by the
+// dedicated overseas-market view. It is kept separate from the A-share
+// history interfaces because global exchanges use different sessions and
+// timezones.
+type GlobalChartClient interface {
+	FetchGlobalDailyBars(context.Context, string) ([]domain.DailyBar, error)
+	FetchGlobalMinutePoints(context.Context, string) ([]domain.MinutePoint, error)
 }
 
 type SymbolResolver interface {
@@ -160,6 +196,8 @@ type Server struct {
 	minutes                   MinuteClient
 	boardDetails              BoardDetailClient
 	marketAmounts             MarketAmountClient
+	globalMarkets             GlobalIndexClient
+	globalCharts              GlobalChartClient
 	strategyEngine            backtest.Engine
 	strategyArchive           backtestArchive
 	candidateEngine           backtest.Engine
@@ -170,6 +208,13 @@ type Server struct {
 	shadowEvaluator           shadowAnalyzer
 	shadowArchive             shadowArchive
 	shadowProfiles            map[string]shadowExecutionProfile
+	aiChatService             AIChatService
+	aiConfigService           AIConfigService
+	assistantContextMu        sync.Mutex
+	assistantContexts         map[string]assistantContextCacheEntry
+	assistantJobsMu           sync.Mutex
+	assistantJobs             map[string]*assistantChatJob
+	assistantJobSequence      uint64
 	defaultSymbol             string
 	watchlistFile             string
 	nameCacheFile             string
@@ -184,6 +229,11 @@ type Server struct {
 	boardCache                map[string]boardCacheEntry
 	amountMu                  sync.Mutex
 	amountCache               marketAmountCacheEntry
+	globalMu                  sync.Mutex
+	globalCache               globalMarketCacheEntry
+	globalChartMu             sync.Mutex
+	globalHistoryCache        map[string]historyCacheEntry
+	globalMinuteCache         map[string]minuteCacheEntry
 	watchlistMu               sync.Mutex
 	strategyMu                sync.Mutex
 	strategyRunning           bool
@@ -299,6 +349,12 @@ type marketAmountCacheEntry struct {
 	valid     bool
 }
 
+type globalMarketCacheEntry struct {
+	items     []domain.GlobalIndex
+	fetchedAt time.Time
+	valid     bool
+}
+
 type boardCacheEntry struct {
 	flow      domain.BoardFlow
 	leaders   []domain.MarketStockSnapshot
@@ -382,6 +438,7 @@ type quoteResponse struct {
 	LimitUp       string   `json:"limit_up"`
 	LimitDown     string   `json:"limit_down"`
 	VolumeRatio   string   `json:"volume_ratio"`
+	Leading       *float64 `json:"leading,omitempty"`
 }
 
 type marketIndexResponse struct {
@@ -394,12 +451,69 @@ type marketIndexResponse struct {
 	Source    string   `json:"source"`
 }
 
+type globalMarketResponse struct {
+	Symbol        string                  `json:"symbol"`
+	Region        string                  `json:"region"`
+	Name          string                  `json:"name"`
+	Current       string                  `json:"current"`
+	PreviousClose string                  `json:"previous_close"`
+	Open          string                  `json:"open"`
+	High          string                  `json:"high"`
+	Low           string                  `json:"low"`
+	Delta         *float64                `json:"delta"`
+	Percent       *float64                `json:"percent"`
+	QuoteTime     string                  `json:"quote_time"`
+	Source        string                  `json:"source"`
+	Extended      *globalExtendedResponse `json:"extended,omitempty"`
+}
+
+type globalExtendedResponse struct {
+	Session   string   `json:"session"`
+	Symbol    string   `json:"symbol"`
+	Name      string   `json:"name"`
+	Price     string   `json:"price"`
+	Delta     *float64 `json:"delta"`
+	Percent   *float64 `json:"percent"`
+	Volume    *float64 `json:"volume"`
+	QuoteTime string   `json:"quote_time"`
+	Source    string   `json:"source"`
+}
+
 type marketIndicesResponse struct {
-	Items         []marketIndexResponse `json:"items"`
-	MarketAmount  *marketAmountResponse `json:"market_amount,omitempty"`
-	FetchedAt     string                `json:"fetched_at"`
-	Warning       string                `json:"warning,omitempty"`
-	AmountWarning string                `json:"amount_warning,omitempty"`
+	Items           []marketIndexResponse  `json:"items"`
+	MarketAmount    *marketAmountResponse  `json:"market_amount,omitempty"`
+	FetchedAt       string                 `json:"fetched_at"`
+	Warning         string                 `json:"warning,omitempty"`
+	AmountWarning   string                 `json:"amount_warning,omitempty"`
+	GlobalMarkets   []globalMarketResponse `json:"global_markets,omitempty"`
+	GlobalFetchedAt string                 `json:"global_fetched_at,omitempty"`
+	GlobalWarning   string                 `json:"global_warning,omitempty"`
+}
+
+type globalMarketsResponse struct {
+	Items     []globalMarketResponse `json:"items"`
+	FetchedAt string                 `json:"fetched_at"`
+	Warning   string                 `json:"warning,omitempty"`
+}
+
+// globalChartResponse intentionally carries both series when mode=all. This
+// lets the browser switch between 分时 and 日 K without a second round trip.
+type globalChartResponse struct {
+	Symbol      string                `json:"symbol"`
+	Region      string                `json:"region"`
+	Name        string                `json:"name"`
+	Timezone    string                `json:"timezone"`
+	Interval    string                `json:"interval,omitempty"`
+	Proxy       string                `json:"proxy,omitempty"`
+	Approximate bool                  `json:"approximate,omitempty"`
+	Market      *globalMarketResponse `json:"market,omitempty"`
+	Bars        []chartBar            `json:"bars,omitempty"`
+	Minutes     []minutePointResponse `json:"minutes,omitempty"`
+	FetchedAt   string                `json:"fetched_at"`
+	QuoteError  string                `json:"quote_error,omitempty"`
+	DailyError  string                `json:"daily_error,omitempty"`
+	MinuteError string                `json:"minute_error,omitempty"`
+	Warning     string                `json:"warning,omitempty"`
 }
 
 type marketAmountResponse struct {
@@ -428,6 +542,7 @@ type minutePointResponse struct {
 	Time      string  `json:"time"`
 	Price     float64 `json:"price"`
 	Average   float64 `json:"average"`
+	Leading   float64 `json:"leading,omitempty"`
 	Volume    float64 `json:"volume"`
 	Amount    float64 `json:"amount_yuan"`
 }
@@ -482,9 +597,45 @@ func WithNameCache(file string) ServerOption {
 	}
 }
 
+// WithAIChatService connects the read-only Codex-backed research assistant.
+// The Web package owns HTTP/job lifecycle while the embedding application owns
+// fact collection, model invocation and conversation persistence.
+func WithAIChatService(service AIChatService) ServerOption {
+	return func(server *Server) {
+		server.aiChatService = service
+	}
+}
+
+// WithAIConfigService connects the local, redacted AI settings surface. The
+// embedding application owns persistence, credential lookup and connection
+// tests; Web never receives a token except in the inbound request body.
+func WithAIConfigService(service AIConfigService) ServerOption {
+	return func(server *Server) {
+		server.aiConfigService = service
+	}
+}
+
 func WithMarketAmount(client MarketAmountClient) ServerOption {
 	return func(server *Server) {
 		server.marketAmounts = client
+	}
+}
+
+// WithGlobalMarkets connects the compact Web market strip to the existing
+// read-only overseas-index adapter. It is optional so lightweight embedders
+// can keep serving domestic quotes without configuring an external source.
+func WithGlobalMarkets(client GlobalIndexClient) ServerOption {
+	return func(server *Server) {
+		server.globalMarkets = client
+	}
+}
+
+// WithGlobalCharts connects historical and intraday series for the dedicated
+// overseas-market tab. It is optional so existing lightweight embedders keep
+// the domestic quote surface unchanged.
+func WithGlobalCharts(client GlobalChartClient) ServerOption {
+	return func(server *Server) {
+		server.globalCharts = client
 	}
 }
 
@@ -562,6 +713,21 @@ func WithAdaptiveShadowExecution(archive shadowArchive) ServerOption {
 	}
 }
 
+// WithMonsterShadowExecution adds an isolated radar experiment ledger. The
+// profile is optional so embedders can keep the original account set while the
+// full Web application can collect forward evidence for the Monster model.
+func WithMonsterShadowExecution(archive shadowArchive) ServerOption {
+	return func(server *Server) {
+		if archive == nil {
+			return
+		}
+		if server.shadowProfiles == nil {
+			server.shadowProfiles = make(map[string]shadowExecutionProfile)
+		}
+		server.shadowProfiles[shadowProfileMonster] = monsterShadowExecutionProfile(archive)
+	}
+}
+
 func WithAutomaticStrategyResearch(runner func(context.Context, []string, time.Time) (AutomaticResearchResult, error)) ServerOption {
 	return func(server *Server) {
 		server.automationResearch = runner
@@ -601,17 +767,21 @@ func WithTradingCalendar(provider func(context.Context, time.Time) ([]string, er
 // have to configure the shared CLI watchlist and name cache.
 func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistoryClient, minutes MinuteClient, defaultSymbol string, options ...ServerOption) *Server {
 	server := &Server{
-		resolver:        resolver,
-		quotes:          quotes,
-		history:         history,
-		minutes:         minutes,
-		defaultSymbol:   strings.TrimSpace(defaultSymbol),
-		quoteCache:      make(map[string]quoteCacheEntry),
-		minuteCache:     make(map[string]minuteCacheEntry),
-		historyCache:    make(map[string]historyCacheEntry),
-		boardCache:      make(map[string]boardCacheEntry),
-		automationTasks: make(map[string]storage.AutomationTaskState),
-		now:             time.Now,
+		resolver:           resolver,
+		quotes:             quotes,
+		history:            history,
+		minutes:            minutes,
+		defaultSymbol:      strings.TrimSpace(defaultSymbol),
+		quoteCache:         make(map[string]quoteCacheEntry),
+		minuteCache:        make(map[string]minuteCacheEntry),
+		historyCache:       make(map[string]historyCacheEntry),
+		globalHistoryCache: make(map[string]historyCacheEntry),
+		globalMinuteCache:  make(map[string]minuteCacheEntry),
+		boardCache:         make(map[string]boardCacheEntry),
+		assistantContexts:  make(map[string]assistantContextCacheEntry),
+		assistantJobs:      make(map[string]*assistantChatJob),
+		automationTasks:    make(map[string]storage.AutomationTaskState),
+		now:                time.Now,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -771,6 +941,8 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/indices", s.handleIndices)
+	mux.HandleFunc("/api/global/markets", s.handleGlobalMarkets)
+	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
 	mux.HandleFunc("/api/stock", s.handleStock)
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
@@ -778,6 +950,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
 	mux.HandleFunc("/api/strategy/shadow", s.handleShadowExecution)
 	mux.HandleFunc("/api/strategy/automation", s.handleAutomationStatus)
+	mux.HandleFunc("/api/assistant/context", s.handleAssistantContext)
+	mux.HandleFunc("/api/assistant/alerts", s.handleAssistantAlerts)
+	mux.HandleFunc("/api/assistant/chat", s.handleAssistantChat)
+	mux.HandleFunc("/api/ai/config", s.handleAIConfig)
+	mux.HandleFunc("/api/ai/config/test", s.handleAIConfigTest)
+	mux.HandleFunc("/api/ai/config/reset", s.handleAIConfigReset)
 	staticAssets, err := fs.Sub(assets, "dist")
 	if err == nil {
 		mux.Handle("/assets/", http.FileServer(http.FS(staticAssets)))
@@ -797,6 +975,7 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer s.cancelAssistantJobs()
 	server := &http.Server{Addr: address, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	automationCtx, cancelAutomation := context.WithCancel(ctx)
 	defer cancelAutomation()
@@ -847,12 +1026,16 @@ func (s *Server) automationRunContext() context.Context {
 func (s *Server) automationStatus() AutomationStatus {
 	s.automationMu.Lock()
 	defer s.automationMu.Unlock()
+	shadowTask := "影子账户推进"
+	if count := len(s.shadowProfiles); count > 0 {
+		shadowTask = fmt.Sprintf("%d个影子账户推进", count)
+	}
 	return AutomationStatus{
 		Enabled: strings.TrimSpace(s.watchlistFile) != "" && s.realtimeScanner != nil && s.realtimeArchive != nil,
 		Running: s.automationRunning, LastRunAt: s.automationLastRun,
 		LastSuccessAt: s.automationLastSuccess, LastError: s.automationLastError,
 		NextRunAt: s.automationNextRun, LastOutcomeAt: s.automationLastOutcome, LastShadowAt: s.automationLastShadow,
-		Tasks:           []string{"交易时段实时扫描", "收盘后信号验证", "四个影子账户推进", "非重叠窗口滚动研究"},
+		Tasks:           []string{"交易时段实时扫描", "收盘后信号验证", shadowTask, "非重叠窗口滚动研究"},
 		TaskOrder:       []string{automationTaskScan, automationTaskOutcomes, automationTaskShadow, automationTaskResearch},
 		ResearchRunning: s.automationResearchRunning, ResearchAttemptAt: s.automationResearchAttempt,
 		ResearchSuccessAt: s.automationResearchSuccess, ResearchExperimentID: s.automationResearchID,
@@ -1183,7 +1366,8 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			} else if allCached {
 				s.setAutomationTask(automationTaskShadow, "waiting", "已检查最新快照，暂无新增报价水位", now, nil)
 			} else {
-				s.setAutomationTask(automationTaskShadow, "success", "四个影子账户已按最新快照推进", now, nil)
+				shadowCount := len(s.shadowProfiles)
+				s.setAutomationTask(automationTaskShadow, "success", fmt.Sprintf("%d个影子账户已按最新快照推进", shadowCount), now, nil)
 			}
 		}
 	} else {
@@ -1392,7 +1576,7 @@ func (s *Server) handleIndices(writer http.ResponseWriter, request *http.Request
 		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "指数行情只支持 GET"})
 		return
 	}
-	if s.quotes == nil {
+	if s.quotes == nil && s.globalMarkets == nil {
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "实时行情服务未初始化"})
 		return
 	}
@@ -1404,7 +1588,13 @@ func (s *Server) handleIndices(writer http.ResponseWriter, request *http.Request
 	allSymbols = append(allSymbols, marketAmountSymbols[1:]...)
 	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
 	defer cancel()
-	quotes, fetchError := s.fetchQuoteBatch(ctx, allSymbols)
+	quotes := make(map[string]domain.Quote)
+	var fetchError error
+	if s.quotes == nil {
+		fetchError = fmt.Errorf("A股指数行情服务未初始化")
+	} else {
+		quotes, fetchError = s.fetchQuoteBatch(ctx, allSymbols)
+	}
 	response := marketIndicesResponse{
 		Items:     make([]marketIndexResponse, 0, len(marketIndexDefinitions)),
 		FetchedAt: time.Now().Format(time.RFC3339),
@@ -1434,7 +1624,33 @@ func (s *Server) handleIndices(writer http.ResponseWriter, request *http.Request
 	if amountError != nil {
 		response.AmountWarning = amountError.Error()
 	}
-	if available == 0 {
+	globalItems, globalFetchedAt, globalError := s.fetchGlobalIndices(ctx)
+	globalAvailable := 0
+	if s.globalMarkets != nil || len(globalItems) > 0 {
+		response.GlobalMarkets = make([]globalMarketResponse, 0, len(globalMarketDefinitions))
+		for _, definition := range globalMarketDefinitions {
+			item := domain.GlobalIndex{Symbol: definition.Symbol, Region: definition.Region, Name: definition.Name, Current: math.NaN(), Delta: math.NaN(), Percent: math.NaN()}
+			for _, candidate := range globalItems {
+				if candidate.Symbol == definition.Symbol {
+					item = candidate
+					break
+				}
+			}
+			if !math.IsNaN(item.Current) && !math.IsInf(item.Current, 0) {
+				globalAvailable++
+			}
+			response.GlobalMarkets = append(response.GlobalMarkets, newGlobalMarketResponse(item, definition))
+		}
+		if !globalFetchedAt.IsZero() {
+			response.GlobalFetchedAt = globalFetchedAt.Format(time.RFC3339)
+		}
+		if globalError != nil {
+			response.GlobalWarning = globalError.Error()
+		} else if globalAvailable < len(globalMarketDefinitions) {
+			response.GlobalWarning = fmt.Sprintf("仅返回 %d/%d 个外盘市场行情", globalAvailable, len(globalMarketDefinitions))
+		}
+	}
+	if available == 0 && globalAvailable == 0 {
 		if response.Warning == "" {
 			response.Warning = "未返回有效指数行情"
 		}
@@ -1442,6 +1658,315 @@ func (s *Server) handleIndices(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func globalMarketDefinitionFor(symbol string) (globalMarketDefinition, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(symbol))
+	for _, definition := range globalMarketDefinitions {
+		if strings.ToLower(definition.Symbol) == normalized {
+			return definition, true
+		}
+	}
+	return globalMarketDefinition{}, false
+}
+
+func (s *Server) handleGlobalMarkets(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "外盘市场只支持 GET"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
+	defer cancel()
+	items, fetchedAt, fetchError := s.fetchGlobalIndices(ctx)
+	received := make(map[string]domain.GlobalIndex, len(items))
+	for _, item := range items {
+		received[strings.ToLower(item.Symbol)] = item
+	}
+	response := globalMarketsResponse{Items: make([]globalMarketResponse, 0, len(globalMarketDefinitions))}
+	for _, definition := range globalMarketDefinitions {
+		item := domain.GlobalIndex{Symbol: definition.Symbol, Region: definition.Region, Name: definition.Name, Current: math.NaN(), Delta: math.NaN(), Percent: math.NaN(), Open: math.NaN(), PreviousClose: math.NaN(), High: math.NaN(), Low: math.NaN()}
+		if candidate, ok := received[strings.ToLower(definition.Symbol)]; ok {
+			item = candidate
+		}
+		response.Items = append(response.Items, newGlobalMarketResponse(item, definition))
+	}
+	if !fetchedAt.IsZero() {
+		response.FetchedAt = fetchedAt.Format(time.RFC3339)
+	} else {
+		response.FetchedAt = time.Now().Format(time.RFC3339)
+	}
+	if fetchError != nil {
+		response.Warning = fetchError.Error()
+	}
+	available := 0
+	for _, item := range response.Items {
+		if item.Current != "--" {
+			available++
+		}
+	}
+	if available == 0 {
+		if response.Warning == "" {
+			response.Warning = "未返回有效外盘市场行情"
+		}
+		writeJSON(writer, http.StatusBadGateway, response)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+type globalChartFetchResult struct {
+	bars   []domain.DailyBar
+	points []domain.MinutePoint
+	err    error
+}
+
+func (s *Server) handleGlobalChart(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "外盘图表只支持 GET"})
+		return
+	}
+	symbol := strings.TrimSpace(request.URL.Query().Get("symbol"))
+	definition, ok := globalMarketDefinitionFor(symbol)
+	if !ok {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "不支持的外盘市场代码"})
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("mode")))
+	if mode == "" {
+		mode = "all"
+	}
+	if mode == "kline" {
+		mode = "daily"
+	}
+	if mode != "all" && mode != "daily" && mode != "intraday" {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "外盘图表 mode 只支持 all、daily 或 intraday"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 18*time.Second)
+	defer cancel()
+	response := globalChartResponse{
+		Symbol: definition.Symbol, Region: definition.Region, Name: definition.Name,
+		Timezone: timezoneLabel(definition.Symbol), FetchedAt: time.Now().Format(time.RFC3339),
+		Interval: "5分钟",
+	}
+
+	marketChannel := make(chan struct {
+		items []domain.GlobalIndex
+		at    time.Time
+		err   error
+	}, 1)
+	go func() {
+		items, at, err := s.fetchGlobalIndices(ctx)
+		marketChannel <- struct {
+			items []domain.GlobalIndex
+			at    time.Time
+			err   error
+		}{items: items, at: at, err: err}
+	}()
+
+	var dailyChannel, minuteChannel chan globalChartFetchResult
+	if mode == "all" || mode == "daily" {
+		dailyChannel = make(chan globalChartFetchResult, 1)
+		go func() {
+			bars, err := s.fetchGlobalDailyBars(ctx, symbol)
+			dailyChannel <- globalChartFetchResult{bars: limitBars(bars, request.URL.Query().Get("limit")), err: err}
+		}()
+	}
+	if mode == "all" || mode == "intraday" {
+		minuteChannel = make(chan globalChartFetchResult, 1)
+		go func() {
+			points, err := s.fetchGlobalMinutePoints(ctx, symbol)
+			minuteChannel <- globalChartFetchResult{points: points, err: err}
+		}()
+	}
+
+	marketResult := <-marketChannel
+	for _, item := range marketResult.items {
+		if strings.EqualFold(item.Symbol, symbol) {
+			converted := newGlobalMarketResponse(item, definition)
+			response.Market = &converted
+			break
+		}
+	}
+	if marketResult.err != nil {
+		response.QuoteError = marketResult.err.Error()
+	}
+	if !marketResult.at.IsZero() {
+		response.FetchedAt = marketResult.at.Format(time.RFC3339)
+	}
+	if dailyChannel != nil {
+		result := <-dailyChannel
+		if len(result.bars) > 0 {
+			response.Bars = newChartBars(result.bars)
+		}
+		if result.err != nil {
+			response.DailyError = result.err.Error()
+		}
+	}
+	if minuteChannel != nil {
+		result := <-minuteChannel
+		if len(result.points) > 0 {
+			response.Minutes = newMinutePoints(result.points)
+		}
+		if result.err != nil {
+			response.MinuteError = result.err.Error()
+		}
+	}
+	normalizeGlobalProxySeries(&response)
+	if response.QuoteError != "" || response.DailyError != "" || response.MinuteError != "" {
+		warnings := make([]string, 0, 3)
+		if response.QuoteError != "" {
+			warnings = append(warnings, response.QuoteError)
+		}
+		if response.DailyError != "" {
+			warnings = append(warnings, response.DailyError)
+		}
+		if response.MinuteError != "" {
+			warnings = append(warnings, response.MinuteError)
+		}
+		response.Warning = strings.Join(warnings, "；")
+	}
+	status := http.StatusOK
+	if response.Market == nil && len(response.Bars) == 0 && len(response.Minutes) == 0 {
+		status = http.StatusBadGateway
+	}
+	writeJSON(writer, status, response)
+}
+
+func normalizeGlobalProxySeries(response *globalChartResponse) {
+	if response == nil {
+		return
+	}
+	proxy := ""
+	for _, bar := range response.Bars {
+		if strings.Contains(bar.Source, "代理") {
+			proxy = bar.Source
+			break
+		}
+	}
+	if proxy == "" {
+		for _, point := range response.Minutes {
+			if strings.Contains(point.Source, "代理") {
+				proxy = point.Source
+				break
+			}
+		}
+	}
+	if proxy == "" {
+		return
+	}
+	response.Proxy = proxy
+	response.Approximate = true
+	if response.Market == nil {
+		return
+	}
+	target, err := strconv.ParseFloat(response.Market.Current, 64)
+	if err != nil || !finiteNumber(target) || target <= 0 {
+		return
+	}
+	if len(response.Bars) > 0 {
+		latest := response.Bars[len(response.Bars)-1].Close
+		if finiteNumber(latest) && latest > 0 {
+			scale := target / latest
+			for index := range response.Bars {
+				response.Bars[index].Open *= scale
+				response.Bars[index].Close *= scale
+				response.Bars[index].High *= scale
+				response.Bars[index].Low *= scale
+			}
+		}
+	}
+	if len(response.Minutes) > 0 {
+		latest := response.Minutes[len(response.Minutes)-1].Price
+		if finiteNumber(latest) && latest > 0 {
+			scale := target / latest
+			for index := range response.Minutes {
+				response.Minutes[index].Price *= scale
+				response.Minutes[index].Average *= scale
+				response.Minutes[index].Amount *= scale
+			}
+		}
+	}
+}
+
+func finiteNumber(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func timezoneLabel(symbol string) string {
+	// Keep the Web package independent from provider internals while exposing
+	// the exchange-local timezone in the chart response.
+	switch strings.ToLower(strings.TrimSpace(symbol)) {
+	case "rt_hkhsi", "rt_hkhstech":
+		return "Asia/Hong_Kong"
+	case "b_nky":
+		return "Asia/Tokyo"
+	case "b_kospi", "b_kosdaq":
+		return "Asia/Seoul"
+	default:
+		return "America/New_York"
+	}
+}
+
+func (s *Server) fetchGlobalIndices(ctx context.Context) ([]domain.GlobalIndex, time.Time, error) {
+	if s == nil || s.globalMarkets == nil {
+		return nil, time.Time{}, fmt.Errorf("外盘指数服务未初始化")
+	}
+	now := time.Now()
+	s.globalMu.Lock()
+	cached := s.globalCache
+	if cached.valid && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < globalMarketCacheTTL {
+		items := append([]domain.GlobalIndex(nil), cached.items...)
+		s.globalMu.Unlock()
+		return items, cached.fetchedAt, nil
+	}
+	s.globalMu.Unlock()
+
+	items, err := s.globalMarkets.FetchGlobalIndices(ctx)
+	if err != nil {
+		if cached.valid && len(cached.items) > 0 {
+			return append([]domain.GlobalIndex(nil), cached.items...), cached.fetchedAt, fmt.Errorf("外盘刷新失败，已使用上次数据：%w", err)
+		}
+		return nil, time.Time{}, err
+	}
+	s.globalMu.Lock()
+	s.globalCache = globalMarketCacheEntry{items: append([]domain.GlobalIndex(nil), items...), fetchedAt: now, valid: true}
+	s.globalMu.Unlock()
+	return append([]domain.GlobalIndex(nil), items...), now, nil
+}
+
+func newGlobalMarketResponse(item domain.GlobalIndex, definition globalMarketDefinition) globalMarketResponse {
+	if strings.TrimSpace(item.Symbol) == "" {
+		item.Symbol = definition.Symbol
+	}
+	if strings.TrimSpace(item.Region) == "" {
+		item.Region = definition.Region
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		item.Name = definition.Name
+	}
+	result := globalMarketResponse{
+		Symbol: item.Symbol, Region: item.Region, Name: item.Name,
+		Current: globalNumberString(item.Current), PreviousClose: globalNumberString(item.PreviousClose),
+		Open: globalNumberString(item.Open), High: globalNumberString(item.High), Low: globalNumberString(item.Low),
+		Delta: finitePointer(item.Delta), Percent: finitePointer(item.Percent),
+		QuoteTime: item.QuoteTime, Source: item.Source,
+	}
+	if item.Extended != nil {
+		result.Extended = &globalExtendedResponse{
+			Session: item.Extended.Session, Symbol: item.Extended.Symbol, Name: item.Extended.Name,
+			Price: globalNumberString(item.Extended.Price), Delta: finitePointer(item.Extended.Delta), Percent: finitePointer(item.Extended.Percent),
+			Volume: finitePointer(item.Extended.Volume), QuoteTime: item.Extended.QuoteTime, Source: item.Extended.Source,
+		}
+	}
+	return result
+}
+
+func globalNumberString(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "--"
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func (s *Server) marketAmount(ctx context.Context, quotes map[string]domain.Quote) (*marketAmountResponse, error) {
@@ -1816,6 +2341,18 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 	quoteResult := <-quoteChannel
 	historyResult := <-historyChannel
 	minuteResult := <-minuteChannel
+	// The leading yellow line is carried by minute points rather than the
+	// quote snapshot. Promote the latest valid value to the quote summary for
+	// broad-market indices so chart, tooltip and side metrics stay consistent.
+	if quoteResult.err == nil && minuteResult.err == nil && market.IsBroadMarketSymbol(symbol) {
+		for index := len(minuteResult.points) - 1; index >= 0; index-- {
+			leading := minuteResult.points[index].Leading
+			if leading > 0 && !math.IsNaN(leading) && !math.IsInf(leading, 0) {
+				quoteResult.quote.Leading = leading
+				break
+			}
+		}
+	}
 	response := stockResponse{Symbol: symbol, Kind: market.AssetKindOf(symbol), FetchedAt: time.Now().Format(time.RFC3339)}
 	if quoteResult.err != nil {
 		response.QuoteError = quoteResult.err.Error()
@@ -1902,6 +2439,7 @@ func newQuoteResponse(quote domain.Quote) quoteResponse {
 		Delta: finitePointer(quote.Delta), Percent: finitePointer(quote.Percent), High: quote.High,
 		Low: quote.Low, Amount: finitePointer(quote.Amount), Turnover: quote.Turnover,
 		LimitUp: quote.LimitUp, LimitDown: quote.LimitDown, VolumeRatio: quote.VolumeRatio,
+		Leading: finitePointer(quote.Leading),
 	}
 }
 
@@ -1921,7 +2459,7 @@ func newMinutePoints(points []domain.MinutePoint) []minutePointResponse {
 	for _, point := range points {
 		result = append(result, minutePointResponse{
 			Source: point.Source, TradeDate: point.TradeDate, Time: point.Time,
-			Price: point.Price, Average: point.Average, Volume: point.Volume, Amount: point.Amount,
+			Price: point.Price, Average: point.Average, Leading: point.Leading, Volume: point.Volume, Amount: point.Amount,
 		})
 	}
 	return result
@@ -2057,6 +2595,60 @@ func (s *Server) fetchMinutePoints(ctx context.Context, symbol string) ([]domain
 	s.minuteCache[symbol] = minuteCacheEntry{points: append([]domain.MinutePoint(nil), points...), fetchedAt: now}
 	s.minuteMu.Unlock()
 	return points, nil
+}
+
+func (s *Server) fetchGlobalDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
+	if s == nil || s.globalCharts == nil {
+		return nil, fmt.Errorf("外盘日 K 服务未初始化")
+	}
+	now := time.Now()
+	s.globalChartMu.Lock()
+	cached, found := s.globalHistoryCache[symbol]
+	if found && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < globalHistoryCacheTTL {
+		bars := append([]domain.DailyBar(nil), cached.bars...)
+		s.globalChartMu.Unlock()
+		return bars, nil
+	}
+	s.globalChartMu.Unlock()
+
+	bars, err := s.globalCharts.FetchGlobalDailyBars(ctx, symbol)
+	if err != nil {
+		if found && len(cached.bars) > 0 {
+			return append([]domain.DailyBar(nil), cached.bars...), fmt.Errorf("外盘日 K 刷新失败，已使用上次数据：%w", err)
+		}
+		return nil, err
+	}
+	s.globalChartMu.Lock()
+	s.globalHistoryCache[symbol] = historyCacheEntry{bars: append([]domain.DailyBar(nil), bars...), fetchedAt: now}
+	s.globalChartMu.Unlock()
+	return append([]domain.DailyBar(nil), bars...), nil
+}
+
+func (s *Server) fetchGlobalMinutePoints(ctx context.Context, symbol string) ([]domain.MinutePoint, error) {
+	if s == nil || s.globalCharts == nil {
+		return nil, fmt.Errorf("外盘分时服务未初始化")
+	}
+	now := time.Now()
+	s.globalChartMu.Lock()
+	cached, found := s.globalMinuteCache[symbol]
+	if found && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < globalMinuteCacheTTL {
+		points := append([]domain.MinutePoint(nil), cached.points...)
+		s.globalChartMu.Unlock()
+		return points, nil
+	}
+	s.globalChartMu.Unlock()
+
+	points, err := s.globalCharts.FetchGlobalMinutePoints(ctx, symbol)
+	if err != nil {
+		if found && len(cached.points) > 0 {
+			return append([]domain.MinutePoint(nil), cached.points...), fmt.Errorf("外盘分时刷新失败，已使用上次数据：%w", err)
+		}
+		return nil, err
+	}
+	s.globalChartMu.Lock()
+	s.globalMinuteCache[symbol] = minuteCacheEntry{points: append([]domain.MinutePoint(nil), points...), fetchedAt: now}
+	s.globalChartMu.Unlock()
+	return append([]domain.MinutePoint(nil), points...), nil
 }
 
 func limitBars(bars []domain.DailyBar, rawLimit string) []domain.DailyBar {

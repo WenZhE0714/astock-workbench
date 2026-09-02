@@ -11,6 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/wenzhe/astock-workbench/internal/domain"
 )
 
 type TextSynthesizer interface {
@@ -22,7 +25,8 @@ type StructuredSynthesizer interface {
 }
 
 type CodexRunner struct {
-	WorkDir string
+	WorkDir  string
+	Settings func() (domain.AIConfig, string, error)
 }
 
 func limitedRuneSuffix(value string, limit int) string {
@@ -71,8 +75,64 @@ func NewCodexRunner(workDir string) *CodexRunner {
 	return &CodexRunner{WorkDir: workDir}
 }
 
+// NewConfiguredCodexRunner keeps the historical runner type while allowing
+// the Web settings page to switch between Codex CLI and direct provider APIs.
+func NewConfiguredCodexRunner(workDir string, settings func() (domain.AIConfig, string, error)) *CodexRunner {
+	return &CodexRunner{WorkDir: workDir, Settings: settings}
+}
+
+// CloneForWorkDir creates an isolated runner for parallel specialist agents
+// without losing the shared runtime configuration.
+func (runner *CodexRunner) CloneForWorkDir(workDir string) *CodexRunner {
+	if runner == nil {
+		return NewCodexRunner(workDir)
+	}
+	return &CodexRunner{WorkDir: workDir, Settings: runner.Settings}
+}
+
+func (runner *CodexRunner) currentSettings() (domain.AIConfig, string, error) {
+	if runner != nil && runner.Settings != nil {
+		config, token, err := runner.Settings()
+		if err != nil {
+			return domain.AIConfig{}, "", err
+		}
+		return config.Normalized(), strings.TrimSpace(token), nil
+	}
+	// Preserve the original environment-driven behavior for embedders and
+	// existing unit tests that construct NewCodexRunner directly.
+	config := domain.AIConfig{
+		Enabled:        true,
+		ExecutionMode:  domain.AIExecutionCodex,
+		Provider:       strings.TrimSpace(os.Getenv("ASTOCK_AI_PROVIDER")),
+		Model:          strings.TrimSpace(os.Getenv("ASTOCK_CODEX_MODEL")),
+		CodexBin:       strings.TrimSpace(os.Getenv("ASTOCK_CODEX_BIN")),
+		CodexHome:      strings.TrimSpace(os.Getenv("CODEX_HOME")),
+		CodexProfile:   strings.TrimSpace(os.Getenv("ASTOCK_CODEX_PROFILE")),
+		TimeoutSeconds: 600,
+	}
+	if execution := strings.TrimSpace(os.Getenv("ASTOCK_AI_EXECUTION")); execution != "" {
+		config.ExecutionMode = strings.ToLower(execution)
+	}
+	if config.Provider == "" {
+		config.Provider = "openai"
+	}
+	return config.Normalized(), "", nil
+}
+
 func (runner *CodexRunner) Synthesize(ctx context.Context, prompt string) (string, error) {
-	binary := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_BIN"))
+	config, token, err := runner.currentSettings()
+	if err != nil {
+		return "", err
+	}
+	if !config.Enabled {
+		return "", fmt.Errorf("AI 服务已停用，请在 Web 的 AI 设置中启用")
+	}
+	ctx, cancel := contextWithAIConfigTimeout(ctx, config)
+	defer cancel()
+	if config.ExecutionMode == domain.AIExecutionAPI {
+		return runner.synthesizeProviderAPI(ctx, config, token, prompt)
+	}
+	binary := strings.TrimSpace(config.CodexBin)
 	if binary == "" {
 		binary = "codex"
 	}
@@ -91,10 +151,12 @@ func (runner *CodexRunner) Synthesize(ctx context.Context, prompt string) (strin
 	defer os.Remove(outputPath)
 
 	args := []string{"-a", "never"}
-	if profile := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_PROFILE")); profile != "" {
+	if profile := strings.TrimSpace(config.CodexProfile); profile != "" {
 		args = append(args, "-p", profile)
 	}
-	if model := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_MODEL")); model != "" {
+	if model := strings.TrimSpace(config.Model); model != "" && runner.Settings != nil {
+		args = append(args, "-m", model)
+	} else if model := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_MODEL")); model != "" {
 		args = append(args, "-m", model)
 	}
 	args = append(args,
@@ -110,7 +172,7 @@ func (runner *CodexRunner) Synthesize(ctx context.Context, prompt string) (strin
 	args = append(args, "-C", workDir, "-o", outputPath, "-")
 	command := exec.CommandContext(ctx, resolved, args...)
 	command.Stdin = strings.NewReader(prompt)
-	command.Env = append(os.Environ(), "NO_COLOR=1")
+	command.Env = configuredCommandEnv(config, token)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -132,7 +194,19 @@ func (runner *CodexRunner) Synthesize(ctx context.Context, prompt string) (strin
 }
 
 func (runner *CodexRunner) SynthesizeJSON(ctx context.Context, prompt string, schema []byte, target any) error {
-	binary := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_BIN"))
+	config, token, err := runner.currentSettings()
+	if err != nil {
+		return err
+	}
+	if !config.Enabled {
+		return fmt.Errorf("AI 服务已停用，请在 Web 的 AI 设置中启用")
+	}
+	ctx, cancel := contextWithAIConfigTimeout(ctx, config)
+	defer cancel()
+	if config.ExecutionMode == domain.AIExecutionAPI {
+		return runner.synthesizeProviderJSON(ctx, config, token, prompt, schema, target)
+	}
+	binary := strings.TrimSpace(config.CodexBin)
 	if binary == "" {
 		binary = "codex"
 	}
@@ -167,10 +241,12 @@ func (runner *CodexRunner) SynthesizeJSON(ctx context.Context, prompt string, sc
 		return err
 	}
 	args := []string{"-a", "never"}
-	if profile := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_PROFILE")); profile != "" {
+	if profile := strings.TrimSpace(config.CodexProfile); profile != "" {
 		args = append(args, "-p", profile)
 	}
-	if model := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_MODEL")); model != "" {
+	if model := strings.TrimSpace(config.Model); model != "" && runner.Settings != nil {
+		args = append(args, "-m", model)
+	} else if model := strings.TrimSpace(os.Getenv("ASTOCK_CODEX_MODEL")); model != "" {
 		args = append(args, "-m", model)
 	}
 	workDir := runner.WorkDir
@@ -183,7 +259,7 @@ func (runner *CodexRunner) SynthesizeJSON(ctx context.Context, prompt string, sc
 	args = append(args, "exec", "--ephemeral", "--skip-git-repo-check", "-s", "read-only", "--color", "never", "--output-schema", schemaPath, "-C", workDir, "-o", outPath, "-")
 	command := exec.CommandContext(ctx, resolved, args...)
 	command.Stdin = strings.NewReader(prompt)
-	command.Env = append(os.Environ(), "NO_COLOR=1")
+	command.Env = configuredCommandEnv(config, token)
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
@@ -208,4 +284,50 @@ func (runner *CodexRunner) SynthesizeJSON(ctx context.Context, prompt string, sc
 		return fmt.Errorf("Codex 结构化候选尾部无效: %w", err)
 	}
 	return nil
+}
+
+func contextWithAIConfigTimeout(ctx context.Context, config domain.AIConfig) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if config.TimeoutSeconds < 30 || config.TimeoutSeconds > 1800 {
+		return ctx, func() {}
+	}
+	deadline := time.Now().Add(time.Duration(config.TimeoutSeconds) * time.Second)
+	if parentDeadline, ok := ctx.Deadline(); ok && !deadline.Before(parentDeadline) {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline)
+}
+
+func configuredCommandEnv(config domain.AIConfig, token string) []string {
+	env := append([]string(nil), os.Environ()...)
+	setEnv := func(key, value string) {
+		prefix := key + "="
+		for index, item := range env {
+			if strings.HasPrefix(item, prefix) {
+				env[index] = prefix + value
+				return
+			}
+		}
+		env = append(env, prefix+value)
+	}
+	setEnv("NO_COLOR", "1")
+	if home := strings.TrimSpace(config.CodexHome); home != "" {
+		setEnv("CODEX_HOME", expandHome(home))
+	}
+	if strings.TrimSpace(token) != "" {
+		setEnv("OPENAI_API_KEY", strings.TrimSpace(token))
+	}
+	return env
+}
+
+func expandHome(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "~" || strings.HasPrefix(value, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(value, "~/"))
+		}
+	}
+	return value
 }

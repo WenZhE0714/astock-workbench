@@ -68,6 +68,98 @@ func TestShadowSignalEntryEligibilityUsesNewPortfolioOverlayAndLegacyFallback(t 
 	}
 }
 
+func TestMonsterShadowSignalUsesRadarGateScoreAndState(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.UseMonsterRadar = true
+	cfg.MinimumScore = 58
+	signal := shadowSignal("monster", "sh600000", "2026-08-20", 12)
+	signal.State = realtime.StateInvalid
+	signal.Monster = realtime.MonsterRadar{
+		Score:    66,
+		Stage:    realtime.MonsterStageStarting,
+		Eligible: true,
+	}
+	if !shadowSignalEntryEligible(signal, cfg) {
+		t.Fatal("eligible monster radar should pass even when the composite signal is invalid")
+	}
+	if got := shadowSignalScoreForConfig(signal, cfg); got != 66 {
+		t.Fatalf("monster account did not use radar score: got %.1f", got)
+	}
+	if got := shadowSignalStateForConfig(signal, cfg); got != realtime.StateWatching {
+		t.Fatalf("monster starting state with a mid score should be watching, got %s", got)
+	}
+
+	signal.Monster.Eligible = false
+	if shadowSignalEntryEligible(signal, cfg) {
+		t.Fatal("ineligible monster radar must not open a position")
+	}
+	if got := shadowSignalStateForConfig(signal, cfg); got != realtime.StateWeak {
+		t.Fatalf("ineligible monster radar should be weak, got %s", got)
+	}
+}
+
+func TestMonsterShadowSignalStateMapsEveryRadarStage(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.UseMonsterRadar = true
+	cases := []struct {
+		name  string
+		stage realtime.MonsterStage
+		score float64
+		ok    bool
+		want  realtime.SignalState
+	}{
+		{name: "dormant watching", stage: realtime.MonsterStageDormant, score: 60, ok: true, want: realtime.StateWatching},
+		{name: "starting triggered", stage: realtime.MonsterStageStarting, score: 72, ok: true, want: realtime.StateTriggered},
+		{name: "accelerating triggered", stage: realtime.MonsterStageAccelerating, score: 80, ok: true, want: realtime.StateTriggered},
+		{name: "diverging weak", stage: realtime.MonsterStageDiverging, score: 80, ok: true, want: realtime.StateWeak},
+		{name: "ebbing weak", stage: realtime.MonsterStageEbbing, score: 70, ok: true, want: realtime.StateWeak},
+		{name: "insufficient invalid", stage: realtime.MonsterStageInsufficient, score: 0, ok: false, want: realtime.StateInvalid},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			signal := realtime.Signal{Monster: realtime.MonsterRadar{Stage: item.stage, Score: item.score, Eligible: item.ok}}
+			if got := shadowSignalStateForConfig(signal, cfg); got != item.want {
+				t.Fatalf("stage %s mapped to %s, want %s", item.stage, got, item.want)
+			}
+		})
+	}
+}
+
+func TestMonsterShadowRealtimeRankingUsesRadarScore(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.UseMonsterRadar = true
+	now := time.Date(2026, 8, 26, 10, 10, 0, 0, shanghaiLocation)
+	low := realtimeShadowSignal("low", "sh600001", "2026-08-26 10:05", 95)
+	high := realtimeShadowSignal("high", "sh600002", "2026-08-26 10:05", 10)
+	low.Monster = realtime.MonsterRadar{Score: 61, Stage: realtime.MonsterStageStarting, Eligible: true}
+	high.Monster = realtime.MonsterRadar{Score: 85, Stage: realtime.MonsterStageAccelerating, Eligible: true}
+	items := latestRealtimeSignals([]realtime.Signal{low, high}, "2026-08-26", now, cfg)
+	if len(items) != 2 || items[0].Symbol != high.Symbol {
+		t.Fatalf("monster ranking ignored radar score: %+v", items)
+	}
+	if got := shadowSignalScoreForConfig(items[0], cfg); got != 85 {
+		t.Fatalf("ranked signal score mismatch: %.1f", got)
+	}
+}
+
+func TestMonsterShadowRepresentativeSignalPrefersRadarScoreOnTimestampTie(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.UseMonsterRadar = true
+	at := time.Date(2026, 8, 26, 14, 30, 0, 0, shanghaiLocation)
+	compositeWinner := realtime.Signal{
+		ID: "composite", Symbol: "sh600003", Score: 95, AsOf: at,
+		Monster: realtime.MonsterRadar{Score: 60, Stage: realtime.MonsterStageStarting, Eligible: true},
+	}
+	radarWinner := compositeWinner
+	radarWinner.ID = "radar"
+	radarWinner.Score = 20
+	radarWinner.Monster.Score = 86
+	selected := representativeSignalsForConfig([]realtime.Signal{compositeWinner, radarWinner}, 0, cfg)
+	if len(selected) != 1 || selected[0].ID != "radar" {
+		t.Fatalf("timestamp tie did not use monster score: %+v", selected)
+	}
+}
+
 func TestRealtimeShadowFillsAtQuoteTimeAndIsIdempotent(t *testing.T) {
 	symbol := "sh600000"
 	bars := []domain.DailyBar{
@@ -100,6 +192,71 @@ func TestRealtimeShadowFillsAtQuoteTimeAndIsIdempotent(t *testing.T) {
 	}
 	if len(second.Orders) != len(report.Orders) || len(second.Trades) != len(report.Trades) {
 		t.Fatalf("重复同一报价产生重复事件: before=%d/%d after=%d/%d", len(report.Orders), len(report.Trades), len(second.Orders), len(second.Trades))
+	}
+}
+
+func TestMonsterRealtimeEntryWaitsThroughOpeningObservationWindow(t *testing.T) {
+	symbol := "sh600000"
+	cfg := DefaultConfig()
+	cfg.UseMonsterRadar = true
+	cfg.MinimumScore = 58
+	bars := shadowStrategyBars(symbol)
+	calendar := []string{"2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28"}
+	stub := shadowHistoryStub{bars: map[string][]domain.DailyBar{symbol: bars}}
+	evaluator := NewEvaluator(stub)
+	makeSignal := func(at string) realtime.Signal {
+		return realtime.Signal{
+			ID: symbol + "-" + strings.ReplaceAll(at, ":", ""), Symbol: symbol, Name: "抓妖测试",
+			AsOf: func() time.Time {
+				value, _ := time.ParseInLocation("2006-01-02 15:04", at, shanghaiLocation)
+				return value
+			}(),
+			Price: 10.8, State: realtime.StateInvalid,
+			Monster: realtime.MonsterRadar{Score: 76, Stage: realtime.MonsterStageStarting, Eligible: true},
+		}
+	}
+	makeQuote := func(at string) PositionQuote {
+		return PositionQuote{Symbol: symbol, Price: 10.8, QuoteTime: at + ":00", Source: "test"}
+	}
+	early := time.Date(2026, 8, 26, 9, 31, 0, 0, shanghaiLocation)
+	first, err := evaluator.AdvanceRealtime(context.Background(), Report{
+		EngineVersion: ShadowEngineVersion, Config: cfg, ConfigFingerprint: OptionsFingerprint(cfg, 0),
+		AsOf: "2026-08-26", CheckpointPhase: CheckpointOpen, InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash,
+	}, []realtime.Signal{makeSignal("2026-08-26 09:31")}, Options{
+		Config: cfg, Realtime: true, RealtimeAt: early, RealtimeQuotes: []PositionQuote{makeQuote("2026-08-26 09:31")}, CalendarDates: calendar,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Orders) != 0 || !hasShadowDecision(first.Decisions, "wait") {
+		t.Fatalf("opening observation should defer the first entry: orders=%+v decisions=%+v", first.Orders, first.Decisions)
+	}
+	foundWindowReason := false
+	for _, decision := range first.Decisions {
+		if strings.Contains(decision.Reason, "开盘观察期") {
+			foundWindowReason = true
+			break
+		}
+	}
+	if !foundWindowReason {
+		t.Fatalf("opening observation reason missing: %+v", first.Decisions)
+	}
+
+	late := time.Date(2026, 8, 26, 9, 41, 0, 0, shanghaiLocation)
+	second, err := evaluator.AdvanceRealtime(context.Background(), first, []realtime.Signal{makeSignal("2026-08-26 09:41")}, Options{
+		Config: cfg, Realtime: true, RealtimeAt: late, RealtimeQuotes: []PositionQuote{makeQuote("2026-08-26 09:41")}, CalendarDates: calendar,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Orders) != 1 || second.Orders[0].PositionAction != "open" || len(second.Positions) != 1 {
+		t.Fatalf("entry was not allowed after opening observation: orders=%+v positions=%+v", second.Orders, second.Positions)
+	}
+}
+
+func TestBaselineRealtimeEntryIsNotDelayedByMonsterOpeningPolicy(t *testing.T) {
+	if !realtimeEntryWindowOpen(time.Date(2026, 8, 26, 9, 31, 0, 0, shanghaiLocation), DefaultConfig()) {
+		t.Fatal("baseline accounts must retain their existing opening behavior")
 	}
 }
 

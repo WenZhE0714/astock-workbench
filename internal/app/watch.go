@@ -466,6 +466,23 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		if err := app.decorateQuotes(stocks, pinyins); err != nil {
 			return err
 		}
+		if app.minutes != nil {
+			if points, leadingError := app.minutes.FetchMinutePoints(ctx, "sh000001"); leadingError == nil && len(points) > 0 {
+				leading := points[len(points)-1].Leading
+				if leading > 0 && !math.IsNaN(leading) && !math.IsInf(leading, 0) {
+					for stock := range stocks {
+						if market.IsBroadMarketSymbol(stocks[stock].Symbol) {
+							stocks[stock].Leading = leading
+						}
+					}
+					for index := range indices {
+						if market.IsBroadMarketSymbol(indices[index].Symbol) {
+							indices[index].Leading = leading
+						}
+					}
+				}
+			}
+		}
 		flows := map[string]domain.FundFlow{}
 		previousAmounts := domain.MarketAmountSnapshot{}
 		flowError := ""
@@ -513,6 +530,36 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	dragonTigers := map[string]domain.DragonTigerSnapshot{}
 	technicalSignals := map[string]domain.TechnicalSignal{}
 	previousAmounts := domain.MarketAmountSnapshot{}
+	leadingRefreshedAt := time.Time{}
+	refreshIndexLeading := func() {
+		if app.minutes == nil || len(indices) == 0 {
+			return
+		}
+		now := time.Now()
+		if !leadingRefreshedAt.IsZero() && now.Sub(leadingRefreshedAt) < 5*time.Second {
+			return
+		}
+		points, err := app.minutes.FetchMinutePoints(ctx, "sh000001")
+		if err != nil || len(points) == 0 {
+			return
+		}
+		latest := points[len(points)-1]
+		leading := latest.Leading
+		if leading <= 0 || math.IsNaN(leading) || math.IsInf(leading, 0) {
+			return
+		}
+		for stock := range current {
+			if market.IsBroadMarketSymbol(current[stock].Symbol) {
+				current[stock].Leading = leading
+			}
+		}
+		for index := range indices {
+			if market.IsBroadMarketSymbol(indices[index].Symbol) {
+				indices[index].Leading = leading
+			}
+		}
+		leadingRefreshedAt = now
+	}
 	refreshed := time.Time{}
 	message := ""
 	flowMessage := ""
@@ -794,6 +841,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				current = mergeBoardAssetQuotes(stocks, symbols, boardAssets, options.Pinyin)
 				if len(marketIndices) > 0 {
 					indices = marketIndices
+					refreshIndexLeading()
 				}
 				message = ""
 				refreshed = time.Now()

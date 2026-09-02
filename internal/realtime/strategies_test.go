@@ -44,6 +44,58 @@ func TestTrendBreakoutUsesRealtimePriceAndVolumeRatio(t *testing.T) {
 	}
 }
 
+func TestMergeRealtimeQuoteOverlaysPointInTimeFields(t *testing.T) {
+	stock := domain.MarketStockSnapshot{
+		Symbol: "sh600000", Name: "测试股份", Price: 9.8, Percent: -1,
+		Amount: 1e8, Turnover: .4, VolumeRatio: .7, High: 10, Low: 9.5,
+		Open: 9.9, PreviousClose: 9.9, MarketCap: 2e9,
+	}
+	quote := domain.Quote{
+		Symbol: "SH600000", Name: "测试股份", Current: "10.80", Percent: 6.2,
+		Amount: 12345, Turnover: "5.6", VolumeRatio: "2.4", High: "11.00",
+		Low: "10.10", Open: "10.20", PreviousClose: "10.16", MarketCap: 16351.07,
+	}
+	merged := mergeRealtimeQuote(stock, quote)
+	if merged.Symbol != "sh600000" || merged.Price != 10.8 || merged.Percent != 6.2 {
+		t.Fatalf("quote price fields were not overlaid: %+v", merged)
+	}
+	if merged.Amount != 12345*10000 || merged.Turnover != 5.6 || merged.VolumeRatio != 2.4 {
+		t.Fatalf("quote liquidity fields were not converted: %+v", merged)
+	}
+	if merged.High != 11 || merged.Low != 10.1 || merged.Open != 10.2 || merged.PreviousClose != 10.16 {
+		t.Fatalf("quote range fields were not overlaid: %+v", merged)
+	}
+	if merged.MarketCap != 16351.07*1e8 {
+		t.Fatalf("quote market-cap unit was not converted: got %.2f", merged.MarketCap)
+	}
+}
+
+func TestMergeRealtimeQuoteKeepsExistingValuesWhenQuoteFieldUnavailable(t *testing.T) {
+	stock := domain.MarketStockSnapshot{Symbol: "sh600000", Amount: 2e8, Turnover: 3, VolumeRatio: 1.5, High: 11}
+	merged := mergeRealtimeQuote(stock, domain.Quote{Symbol: "sh600000", Current: "--", Amount: 0, Turnover: "--", VolumeRatio: "--", High: "--"})
+	if merged.Amount != stock.Amount || merged.Turnover != stock.Turnover || merged.VolumeRatio != stock.VolumeRatio || merged.High != stock.High {
+		t.Fatalf("unavailable quote fields should not erase snapshot values: %+v", merged)
+	}
+}
+
+func TestScannerEstimatesMissingSpeedFromRecentMinutePoints(t *testing.T) {
+	scanner := &Scanner{strategies: DefaultStrategies(), now: func() time.Time {
+		return time.Date(2026, 8, 20, 10, 30, 0, 0, marketLocation)
+	}}
+	input := Snapshot{
+		Now: scanner.now(), Bars: risingBars(70), Benchmark: risingBars(70),
+		Stock:   domain.MarketStockSnapshot{Symbol: "sh600000", Price: 18, Percent: 2, Speed: math.NaN(), VolumeRatio: 1.5, Amount: 5e8, MainNet: 1e8},
+		Minutes: []domain.MinutePoint{{Price: 10}, {Price: 10.2}},
+	}
+	result := scanner.evaluate(input)
+	if !finite(result.Speed) || math.Abs(result.Speed-2) > 1e-9 {
+		t.Fatalf("missing speed was not estimated from minute path: %+v", result)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "；"), "最近两条有效分时价格") {
+		t.Fatalf("speed estimation warning missing: %+v", result.Warnings)
+	}
+}
+
 func TestCompletedBarsExcludeInProgressTradingDay(t *testing.T) {
 	bars := risingBars(70)
 	currentDate := "2026-08-20"
@@ -465,6 +517,20 @@ func TestScannerIndexesIndustryBoardsByNormalizedName(t *testing.T) {
 	board, found = matchIndustryBoard(communicationBoards, "通信设备")
 	if !found || board.Name != "通信设备" {
 		t.Fatalf("exact industry should win over normalized alias: board=%+v found=%v", board, found)
+	}
+	aliases := []struct {
+		stock string
+		board string
+	}{
+		{stock: "通信设备Ⅱ", board: "通信"},
+		{stock: "申万行业-电气设备", board: "电力设备"},
+		{stock: " 半导体 ", board: "半导体"},
+	}
+	for _, item := range aliases {
+		matched, ok := matchIndustryBoard(map[string]domain.BoardFlow{item.board: {Name: item.board}}, item.stock)
+		if !ok || matched.Name != item.board {
+			t.Fatalf("industry alias did not match: stock=%q board=%q got=%+v found=%v", item.stock, item.board, matched, ok)
+		}
 	}
 }
 

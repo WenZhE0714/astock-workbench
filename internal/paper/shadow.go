@@ -23,21 +23,25 @@ type HistoryClient interface {
 }
 
 type Config struct {
-	InitialCash                    float64 `json:"initial_cash"`
-	MinimumScore                   float64 `json:"minimum_score"`
-	MaxPositionPercent             float64 `json:"max_position_percent"`
-	MaxIndustryPercent             float64 `json:"max_industry_percent"`
-	MaxPortfolioPercent            float64 `json:"max_portfolio_percent"`
-	CashReservePercent             float64 `json:"cash_reserve_percent"`
-	MaxDailyDeploymentPercent      float64 `json:"max_daily_deployment_percent"`
-	InitialEntryPercent            float64 `json:"initial_entry_percent"`
-	MaxEntryTranches               int     `json:"max_entry_tranches"`
-	AdditionScoreStep              float64 `json:"addition_score_step"`
-	MaxOpenPositions               int     `json:"max_open_positions"`
-	MaxDailyRotations              int     `json:"max_daily_rotations"`
-	RotationScoreGap               float64 `json:"rotation_score_gap"`
-	RotationMinimumHoldDays        int     `json:"rotation_minimum_hold_days"`
-	UseCalibratedScore             bool    `json:"use_calibrated_score,omitempty"`
+	InitialCash               float64 `json:"initial_cash"`
+	MinimumScore              float64 `json:"minimum_score"`
+	MaxPositionPercent        float64 `json:"max_position_percent"`
+	MaxIndustryPercent        float64 `json:"max_industry_percent"`
+	MaxPortfolioPercent       float64 `json:"max_portfolio_percent"`
+	CashReservePercent        float64 `json:"cash_reserve_percent"`
+	MaxDailyDeploymentPercent float64 `json:"max_daily_deployment_percent"`
+	InitialEntryPercent       float64 `json:"initial_entry_percent"`
+	MaxEntryTranches          int     `json:"max_entry_tranches"`
+	AdditionScoreStep         float64 `json:"addition_score_step"`
+	MaxOpenPositions          int     `json:"max_open_positions"`
+	MaxDailyRotations         int     `json:"max_daily_rotations"`
+	RotationScoreGap          float64 `json:"rotation_score_gap"`
+	RotationMinimumHoldDays   int     `json:"rotation_minimum_hold_days"`
+	UseCalibratedScore        bool    `json:"use_calibrated_score,omitempty"`
+	// UseMonsterRadar gates this account with the independent high-volatility
+	// radar. It is opt-in so existing Champion accounts keep their historical
+	// eligibility and execution semantics unchanged.
+	UseMonsterRadar                bool    `json:"use_monster_radar,omitempty"`
 	EnableIntradayT                bool    `json:"enable_intraday_t"`
 	TCorePositionPercent           float64 `json:"t_core_position_percent"`
 	TTranchePercent                float64 `json:"t_tranche_percent"`
@@ -199,6 +203,10 @@ type ShadowOpenPosition struct {
 	TargetPositionPercent   float64             `json:"target_position_percent,omitempty"`
 	RiskExitPending         bool                `json:"risk_exit_pending,omitempty"`
 	RiskExitReason          string              `json:"risk_exit_reason,omitempty"`
+	// Monster preserves the radar state that justified the latest lot. Keeping
+	// it on the position lets an experimental account resume consistently after
+	// a process restart.
+	Monster realtime.MonsterRadar `json:"monster,omitempty"`
 }
 
 type ShadowPositionLot struct {
@@ -1400,7 +1408,7 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		return previous, fmt.Errorf("影子账户检查点倒退: %s -> %s", previous.AsOf, report.AsOf)
 	}
 	active := make(map[string]shadowPosition, len(previous.Positions))
-	archivedSignals := representativeSignals(signals, 0)
+	archivedSignals := representativeSignalsForConfig(signals, 0, cfg)
 	for index := range report.Rejections {
 		if report.Rejections[index].SignalScore > 0 && len(report.Rejections[index].SignalReasons) > 0 && report.Rejections[index].Industry != "" {
 			continue
@@ -1426,7 +1434,7 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			continue
 		}
 		bars = normalizedBars(bars)
-		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Industry: position.Industry, Price: position.SignalClose, Score: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, Reasons: append([]string(nil), position.SignalReasons...)}
+		signal := realtime.Signal{ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Industry: position.Industry, Price: position.SignalClose, Score: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, Reasons: append([]string(nil), position.SignalReasons...), Monster: position.Monster}
 		if enriched, found := matchingArchivedSignal(archivedSignals, position); found {
 			if signal.ID == "" {
 				signal.ID = enriched.ID
@@ -1451,6 +1459,9 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 			}
 			if len(signal.Reasons) == 0 {
 				signal.Reasons = append([]string(nil), enriched.Reasons...)
+			}
+			if enriched.Monster.Stage != "" {
+				signal.Monster = enriched.Monster
 			}
 			// Preserve the challenger metadata when an adaptive account carries
 			// an existing position into the next daily checkpoint. Without this,
@@ -1610,7 +1621,7 @@ func (e *Evaluator) AdvanceRealtime(ctx context.Context, previous Report, signal
 }
 
 func (e *Evaluator) plansAfter(ctx context.Context, signals []realtime.Signal, cfg Config, after string, checkpoint Checkpoint, calendarDates []string, active map[string]shadowPosition) ([]shadowPlan, error) {
-	selected := representativeSignals(signals, 0)
+	selected := representativeSignalsForConfig(signals, 0, cfg)
 	bySymbol := make(map[string][]realtime.Signal)
 	for _, signal := range selected {
 		date := signalDate(signal)
@@ -2701,7 +2712,7 @@ func aggregateShadowPosition(position shadowPosition, cfg Config, asOf string) S
 	if industry == "" && len(lots) > 0 {
 		industry = lots[len(lots)-1].Industry
 	}
-	return ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, Industry: industry, SignalDate: position.lastSignalDate, EntryDate: entryDate, EntryTime: entryTime, Quantity: quantity, EntryPrice: entryPrice, EntryAmount: entryAmount, EntryFee: entryFee, SignalClose: position.plan.signalClose, AvailableQuantity: available, SignalScore: position.lastSignalScore, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, entryCost), TargetExitDate: targetExit, Lots: lots, AdditionCount: maxInt(0, len(lots)-1), TargetPositionPercent: targetPercent, RiskExitPending: position.riskExitReason != "", RiskExitReason: position.riskExitReason}
+	return ShadowOpenPosition{SignalID: position.plan.signal.ID, Symbol: position.plan.signal.Symbol, Name: position.plan.signal.Name, Industry: industry, SignalDate: position.lastSignalDate, EntryDate: entryDate, EntryTime: entryTime, Quantity: quantity, EntryPrice: entryPrice, EntryAmount: entryAmount, EntryFee: entryFee, SignalClose: position.plan.signalClose, AvailableQuantity: available, SignalScore: position.lastSignalScore, TriggerPrice: position.plan.signal.TriggerPrice, InvalidationPrice: position.plan.signal.InvalidationPrice, SignalReasons: append([]string(nil), position.plan.signal.Reasons...), Monster: position.plan.signal.Monster, LastDate: lastBar.Date, LastPrice: lastBar.Close, MarketValue: marketValue, UnrealizedProfit: profit, UnrealizedReturnPercent: safeReturnPercent(profit, entryCost), TargetExitDate: targetExit, Lots: lots, AdditionCount: maxInt(0, len(lots)-1), TargetPositionPercent: targetPercent, RiskExitPending: position.riskExitReason != "", RiskExitReason: position.riskExitReason}
 }
 
 func tPlusOneAvailableQuantity(entryDate, asOf string, quantity int) int {
@@ -2988,6 +2999,9 @@ func cloneReport(report Report) Report {
 	for index := range report.Positions {
 		report.Positions[index].Lots = append([]ShadowPositionLot(nil), report.Positions[index].Lots...)
 		report.Positions[index].SignalReasons = append([]string(nil), report.Positions[index].SignalReasons...)
+		report.Positions[index].Monster.Reasons = append([]string(nil), report.Positions[index].Monster.Reasons...)
+		report.Positions[index].Monster.Risks = append([]string(nil), report.Positions[index].Monster.Risks...)
+		report.Positions[index].Monster.Warnings = append([]string(nil), report.Positions[index].Monster.Warnings...)
 		for lotIndex := range report.Positions[index].Lots {
 			report.Positions[index].Lots[lotIndex].SignalReasons = append([]string(nil), report.Positions[index].Lots[lotIndex].SignalReasons...)
 		}
@@ -3023,7 +3037,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 	if limit < 0 {
 		limit = 500
 	}
-	selected := representativeSignals(signals, limit)
+	selected := representativeSignalsForConfig(signals, limit, cfg)
 	currentNow := now()
 	calendarDates, calendarError := e.tradingCalendar(ctx, currentNow, options.CalendarDates)
 	if calendarError != nil {
@@ -3228,6 +3242,15 @@ func canonicalConfig(cfg Config) Config {
 }
 
 func representativeSignals(signals []realtime.Signal, limit int) []realtime.Signal {
+	return representativeSignalsForConfig(signals, limit, Config{})
+}
+
+// representativeSignalsForConfig keeps one point-in-time signal per symbol and
+// signal date. When two archive rows share the same timestamp, the account's
+// active score model decides which row is representative. This matters for
+// the independent Monster ledger because the composite score and radar score
+// can intentionally disagree.
+func representativeSignalsForConfig(signals []realtime.Signal, limit int, cfg Config) []realtime.Signal {
 	latest := make(map[string]realtime.Signal)
 	for _, signal := range signals {
 		if strings.TrimSpace(signal.Symbol) == "" {
@@ -3235,7 +3258,7 @@ func representativeSignals(signals []realtime.Signal, limit int) []realtime.Sign
 		}
 		key := signal.Symbol + ":" + signalDate(signal)
 		previous, found := latest[key]
-		if !found || signal.AsOf.After(previous.AsOf) || (signal.AsOf.Equal(previous.AsOf) && signal.Score > previous.Score) {
+		if !found || signal.AsOf.After(previous.AsOf) || (signal.AsOf.Equal(previous.AsOf) && representativeSignalScore(signal, cfg) > representativeSignalScore(previous, cfg)) {
 			latest[key] = signal
 		}
 	}
@@ -3245,7 +3268,7 @@ func representativeSignals(signals []realtime.Signal, limit int) []realtime.Sign
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].AsOf.Equal(result[j].AsOf) {
-			return result[i].Score > result[j].Score
+			return representativeSignalScore(result[i], cfg) > representativeSignalScore(result[j], cfg)
 		}
 		return result[i].AsOf.Before(result[j].AsOf)
 	})
@@ -3253,6 +3276,13 @@ func representativeSignals(signals []realtime.Signal, limit int) []realtime.Sign
 		return result[:limit]
 	}
 	return result
+}
+
+func representativeSignalScore(signal realtime.Signal, cfg Config) float64 {
+	if cfg.UseMonsterRadar || cfg.UseCalibratedScore {
+		return shadowSignalScoreForConfig(signal, cfg)
+	}
+	return signal.Score
 }
 
 func shadowSignalActionable(signal realtime.Signal) bool {
@@ -3270,14 +3300,36 @@ func shadowSignalActionableForConfig(signal realtime.Signal, cfg Config) bool {
 }
 
 func shadowSignalStateForConfig(signal realtime.Signal, cfg Config) realtime.SignalState {
+	if cfg.UseMonsterRadar {
+		return monsterSignalState(signal.Monster)
+	}
 	if cfg.UseCalibratedScore && signal.CalibrationID != "" && signal.CalibratedState != "" {
 		return signal.CalibratedState
 	}
 	return signal.State
 }
 
+func monsterSignalState(radar realtime.MonsterRadar) realtime.SignalState {
+	switch radar.Stage {
+	case realtime.MonsterStageEbbing, realtime.MonsterStageDiverging:
+		return realtime.StateWeak
+	case realtime.MonsterStageInsufficient, "":
+		return realtime.StateInvalid
+	}
+	if !radar.Eligible {
+		return realtime.StateWeak
+	}
+	if radar.Score >= 72 {
+		return realtime.StateTriggered
+	}
+	return realtime.StateWatching
+}
+
 func shadowSignalEntryEligible(signal realtime.Signal, cfg Config) bool {
 	minimumScore := cfg.MinimumScore
+	if cfg.UseMonsterRadar {
+		return signal.Monster.Eligible && shadowSignalScoreForConfig(signal, cfg) >= minimumScore
+	}
 	if cfg.UseCalibratedScore && signal.CalibrationID != "" && signal.CalibrationMinimumScore > 0 {
 		minimumScore = signal.CalibrationMinimumScore
 	}
@@ -3299,6 +3351,9 @@ func shadowSignalScore(signal realtime.Signal) float64 {
 }
 
 func shadowSignalScoreForConfig(signal realtime.Signal, cfg Config) float64 {
+	if cfg.UseMonsterRadar && signal.Monster.Score > 0 && finite(signal.Monster.Score) {
+		return signal.Monster.Score
+	}
 	if cfg.UseCalibratedScore && signal.CalibrationID != "" {
 		if signal.CalibratedRiskAdjustedScore > 0 && finite(signal.CalibratedRiskAdjustedScore) {
 			return signal.CalibratedRiskAdjustedScore

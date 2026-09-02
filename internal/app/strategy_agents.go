@@ -202,8 +202,8 @@ func (app *App) collectStrategyAgentProposals(ctx context.Context, request backt
 				return
 			}
 			defer os.RemoveAll(temporary)
-			if _, isRunner := structured.(*analysis.CodexRunner); isRunner {
-				isolated = analysis.NewCodexRunner(temporary)
+			if runner, isRunner := structured.(*analysis.CodexRunner); isRunner {
+				isolated = runner.CloneForWorkDir(temporary)
 			}
 			err := isolated.SynthesizeJSON(callContext, strategyAgentPrompt(role, request, priorLessons), []byte(strategyAgentSchema), &batch)
 			cancel()

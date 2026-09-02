@@ -43,6 +43,20 @@ Web 只负责日 K、成交量、均线和涨跌停边界的交互呈现。
                                              v
                                   background AI answer + terminal UI
 
+Web 研究助手复用同一事实与会话边界：
+
+```text
+Web drawer ──> /api/assistant/context ──> StockReportFacts + key-level map
+           └─> /api/assistant/alerts  ──> latest realtime ScanResult
+           └─> /api/assistant/chat   ──> async read-only Codex job ──> AIChatStore
+Web AI 设置 ──> /api/ai/config ──> local 0600 config + secret files
+           └─> /api/ai/config/test ──> Codex CLI or provider API probe
+```
+
+浏览器只持有任务状态和已返回文本，不持有模型凭证；AI 配置接口只返回掩码和状态，
+Token 单独存储在本机权限为 0600 的秘密文件中。提醒由确定性信号/点位规则生成，
+不会在轮询时调用模型。聊天任务支持排队、进度、取消和过期清理，完成后按股票原子保存会话。
+
 TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
                                              │
                          ┌───────────────────┼──────────────────┐
@@ -60,9 +74,9 @@ TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
 - `internal/market`：个股/指数行情、沪深个股涨跌幅/涨速榜、未复权日 K、沪深京历史成交额、个股与全行业主力资金流、行业板块成份股成交额排行、关联板块排行、龙虎榜、公告索引、新闻搜索、券商研报索引和名称解析适配器，不包含策略逻辑。个股榜单直接携带东方财富行业分类；日 K 先使用东方财富，自动回退腾讯未复权序列，再回退14天内本地有效缓存；上一交易日成交额使用新浪上证指数、深证综指和北证 50 的 5 分钟精确成交额按日汇总。
 - `internal/app`：持有交互状态与异步轮询。9:15 集合竞价开始行情轮询，连续交易与可轮询时段分开建模，避免竞价数据进入盘中严格筛选。看盘启动后先在后台预热当前自选池；资金雷达按 10 秒记录累计主力净额，保留 6 分钟内存样本并派生 1/3/5 分钟 `FundMovement`，默认按 1 分钟净流入降序展示，行业快照按 60 秒刷新。采样状态与雷达可见状态分离，按 `v` 只显示并立即复用已有历史；分组或自选变化会重新绑定采样池。`y` 板块资金看板以独立 goroutine 获取双向 Top 5，并用最多 4 个 worker 查询 10 个板块的成交额前三成份股；看板可见时自动刷新间隔不低于 60 秒，局部成份股失败保留其他板块，整轮失败保留旧快照。智能市场扫描、个股研判、`x` 个股 AI 问答和 `t` 策略研究任务均在独立 goroutine 中执行并通过有界 channel 回到看盘事件循环，不阻塞行情刷新；不同任务可并行，同类任务只允许一个实例，所有任务状态按行聚合。策略页冻结进入时的股票或列表上下文，后台 goroutine 只读取任务快照。
 - `internal/ui`：纯终端渲染，输入是标准 `Quote`、`DailyBar` 派生信号、`FundFlow`、`FundMovement`、`BoardFlow`、`DragonTigerSnapshot`、回测/优化摘要或已生成的报告；策略研究中心使用同一滚动渲染器展示菜单、设置、历史、候选与交易证据，不持有市场或撮合逻辑。
-- `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents；市场、个股报告和看盘问答以临时会话、只读沙箱和非交互模式调用 Codex，只接收已采集的结构化 JSON 与当前股票最近6轮问答，不读取仓库、不搜索网络、不调用交易接口。外部信息由 Go 采集一次并冻结，所有子 Agent 使用同一快照；模型不能自行扩充来源。
+- `internal/analysis`：内嵌 Python bridge，以子进程调用 TradingAgents；市场、个股报告和看盘问答通过统一运行器选择临时会话、只读沙箱的 Codex CLI，或 OpenAI-compatible、Anthropic、Gemini provider API。运行器只接收已采集的结构化 JSON 与当前股票最近6轮问答，不读取仓库、不搜索网络、不调用交易接口。外部信息由 Go 采集一次并冻结，所有子 Agent 使用同一快照；模型不能自行扩充来源。
 - `internal/domain`：跨模块稳定对象，包括带交易日和沪深京分项的 `MarketAmountSnapshot`、`EvidenceSnapshot`、`MarketScanFacts`、`StockReportFacts` 以及 `AnalysisResult`。凭证按 A 已核验官方披露正文、B 专业观点、C 公告/新闻待核线索、D 市场情绪分层；正文未核验的公告索引使用 `disclosure_index` 且保留 `verified_body=false`。
-- `internal/storage`：自选、最近查看历史、AI咨询历史、缓存和报告归档；采用原子写入。AI问答按股票保存最近100轮，模型上下文只读取最近6轮。智能市场报告按时间戳保存，个股研判再按股票代码分目录保存 Markdown、结构化快照、Agent 结果、独立 `evidence.json` 和元数据；索引按元数据生成时间倒序读取，交互层按日期和日期内时间分组展示，无需迁移旧归档。单次回测与优化实验分目录存储；优化实验包含候选表、入选参数及训练/验证/样本外的独立交易和资金曲线。
+- `internal/storage`：自选、最近查看历史、AI咨询历史、AI 非秘密配置、AI 秘密凭证、缓存和报告归档；采用原子写入。AI问答按股票保存最近100轮，模型上下文只读取最近6轮。智能市场报告按时间戳保存，个股研判再按股票代码分目录保存 Markdown、结构化快照、Agent 结果、独立 `evidence.json` 和元数据；索引按元数据生成时间倒序读取，交互层按日期和日期内时间分组展示，无需迁移旧归档。单次回测与优化实验分目录存储；优化实验包含候选表、入选参数及训练/验证/样本外的独立交易和资金曲线。
 - 自选文件在原有逐行代码格式上增加 `[分组名]` 标题；无标题旧数据归入“默认”，加载“全部”时按分组顺序去重汇总，组内顺序独立持久化。
 - 最近查看历史使用独立的有界 MRU 文件，只记录通过交互式查看命令成功打开的股票。
 - `internal/strategy`：研究信号接口和确定性日线量价策略，不允许直接提交订单。技术信号必须包含方向、条件触发、失效位和仓位计划。

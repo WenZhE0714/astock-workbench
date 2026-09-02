@@ -11,6 +11,12 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 )
 
+// Monster entries deliberately wait through the first ten minutes of the
+// continuous auction.  The radar can still emit observations during that
+// window, but the paper account does not spend entry budget on an opening
+// spike.  Risk exits and pending T rebuys remain responsive.
+const monsterOpeningObservationMinutes = 10
+
 // advanceRealtime applies only point-in-time events from the current trading
 // session. The daily evaluator remains the source of historical replay; this
 // layer never fabricates fills for a quote time that has not arrived.
@@ -36,6 +42,7 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 	report.GeneratedAt = eventNow
 	applyReportCalibrationMetadata(&report, signals)
 	report.Positions = normalizeRealtimePositions(report.Positions, report.Config, calendarDates, date)
+	entryWindowOpen := realtimeEntryWindowOpen(eventNow, report.Config)
 
 	// Risk exits are evaluated before discretionary signal events. Planned
 	// holding-window exits remain at the completed close so the live layer does
@@ -151,6 +158,12 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 			if realtimeEventHandled(report, tEventID) || realtimeTDayRounds(report, symbol, date) >= report.Config.TMaxDailyRounds {
 				continue
 			}
+			if !entryWindowOpen {
+				// A high-sell is an entry-side T operation: keep the core lot
+				// untouched until the opening observation window has elapsed.
+				appendRealtimeDecision(&report, signal, date, "wait", realtimeEntryWindowReason(eventNow, report.Config), position.Quantity, position.TargetPositionPercent, tEventID, quote)
+				continue
+			}
 			quantity := realtimeTReduceQuantity(position, date, report.Config)
 			if quantity <= 0 || realtimeSellBlocked(quote) {
 				continue
@@ -214,6 +227,7 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 					position.SignalDate = date
 					position.SignalScore = newScore
 					position.SignalReasons = append([]string(nil), signal.Reasons...)
+					position.Monster = signal.Monster
 					report.Positions[positionIndex] = position
 					appendRealtimeDecision(&report, signal, date, "reduce", reason, position.Quantity, position.TargetPositionPercent, eventID, quote)
 				}
@@ -221,6 +235,10 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 			}
 			if !shadowSignalEntryEligible(signal, report.Config) || newScore < currentScore+report.Config.AdditionScoreStep {
 				appendRealtimeDecision(&report, signal, date, "hold", "盘中信号尚未显著增强，维持现有仓位", position.Quantity, position.TargetPositionPercent, eventID, quote)
+				continue
+			}
+			if !entryWindowOpen {
+				appendRealtimeDecision(&report, signal, date, "wait", realtimeEntryWindowReason(eventNow, report.Config), position.Quantity, position.TargetPositionPercent, eventID, quote)
 				continue
 			}
 			if len(position.Lots) >= report.Config.MaxEntryTranches {
@@ -234,6 +252,10 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 		}
 
 		if !shadowSignalEntryEligible(signal, report.Config) {
+			continue
+		}
+		if !entryWindowOpen {
+			appendRealtimeDecision(&report, signal, date, "wait", realtimeEntryWindowReason(eventNow, report.Config), 0, targetPositionPercent(signal, report.Config), eventID, quote)
 			continue
 		}
 		if len(report.Positions) >= report.Config.MaxOpenPositions {
@@ -343,6 +365,7 @@ func (e *Evaluator) executeRealtimeBuy(ctx context.Context, report *Report, sign
 		position.SignalID = signal.ID
 		position.SignalDate = date
 		position.SignalScore = shadowSignalScoreForConfig(signal, report.Config)
+		position.Monster = signal.Monster
 		position.SignalClose = signal.Price
 		position.TriggerPrice = signal.TriggerPrice
 		position.InvalidationPrice = signal.InvalidationPrice
@@ -356,7 +379,7 @@ func (e *Evaluator) executeRealtimeBuy(ctx context.Context, report *Report, sign
 			SignalID: signal.ID, Symbol: signal.Symbol, Name: signal.Name, Industry: signal.Industry,
 			SignalDate: date, SignalClose: signal.Price, SignalScore: shadowSignalScoreForConfig(signal, report.Config),
 			TriggerPrice: signal.TriggerPrice, InvalidationPrice: signal.InvalidationPrice,
-			SignalReasons: append([]string(nil), signal.Reasons...), Lots: []ShadowPositionLot{lot},
+			SignalReasons: append([]string(nil), signal.Reasons...), Monster: signal.Monster, Lots: []ShadowPositionLot{lot},
 			TargetPositionPercent: targetPercent,
 		}
 		position = applyRealtimePositionMetrics(position, quote, date)
@@ -808,6 +831,25 @@ func realtimeExecutionWindow(value time.Time) bool {
 	return minutes >= 9*60+30 && minutes <= 11*60+30 || minutes >= 13*60 && minutes < 15*60
 }
 
+// realtimeEntryWindowOpen applies the opening-observation policy only to the
+// independent Monster account. Baseline accounts retain their prior behavior,
+// while risk exits and a pending T rebuy are handled before this gate.
+func realtimeEntryWindowOpen(value time.Time, cfg Config) bool {
+	if !cfg.UseMonsterRadar {
+		return true
+	}
+	local := value.In(shanghaiLocation)
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes >= 9*60+30+monsterOpeningObservationMinutes || minutes >= 13*60
+}
+
+func realtimeEntryWindowReason(value time.Time, cfg Config) string {
+	if !cfg.UseMonsterRadar || realtimeEntryWindowOpen(value, cfg) {
+		return ""
+	}
+	return fmt.Sprintf("抓妖账户处于开盘观察期，09:30 后 %d 分钟内只监控不新开/加仓，等待开盘噪声收敛", monsterOpeningObservationMinutes)
+}
+
 func parseRealtimeTimestamp(value string) (time.Time, bool) {
 	value = strings.TrimSpace(value)
 	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
@@ -1088,7 +1130,7 @@ func positionSignal(position ShadowOpenPosition, at time.Time) realtime.Signal {
 		ID: position.SignalID, Symbol: position.Symbol, Name: position.Name, Industry: position.Industry,
 		Score: position.SignalScore, Price: position.SignalClose, TriggerPrice: position.TriggerPrice,
 		InvalidationPrice: position.InvalidationPrice, Reasons: append([]string(nil), position.SignalReasons...),
-		AsOf: at.In(shanghaiLocation), State: realtime.StateWatching,
+		Monster: position.Monster, AsOf: at.In(shanghaiLocation), State: realtime.StateWatching,
 	}
 	if signal.ID == "" {
 		signal.ID = position.Symbol + "-position"

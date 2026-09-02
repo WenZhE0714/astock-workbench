@@ -271,6 +271,37 @@ func TestRealtimeStrategyEndpointRunsAndReturnsHistory(t *testing.T) {
 	}
 }
 
+func TestRealtimeStrategyScopeIsForwardedToScanner(t *testing.T) {
+	watchlist := filepath.Join(t.TempDir(), "watchlist")
+	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
+		t.Fatal(err)
+	}
+	now := realtimeWebTime(2026, 8, 20, 10, 30)
+	var includeLeaders []bool
+	scanner := realtimeScannerFunc(func(_ context.Context, _ []string, include bool) (realtime.ScanResult, error) {
+		includeLeaders = append(includeLeaders, include)
+		universe := "watchlist"
+		if include {
+			universe = "watchlist+leaders"
+		}
+		return realtime.ScanResult{GeneratedAt: now, Universe: universe}, nil
+	})
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist), WithRealtimeStrategy(scanner, realtimeArchiveStub{}))
+	server.now = func() time.Time { return now }
+
+	for _, scope := range []string{"watchlist", "leaders"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/strategy/realtime?scope="+scope, nil)
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("scope %s returned %d: %s", scope, recorder.Code, recorder.Body.String())
+		}
+	}
+	if len(includeLeaders) != 2 || includeLeaders[0] || !includeLeaders[1] {
+		t.Fatalf("scope was not forwarded correctly: %#v", includeLeaders)
+	}
+}
+
 func TestRealtimeStrategyPausesOnKnownExchangeHoliday(t *testing.T) {
 	watchlist := filepath.Join(t.TempDir(), "watchlist")
 	if err := storage.SaveWatchlist(watchlist, []string{"sh600519"}); err != nil {
@@ -1244,6 +1275,46 @@ func TestShadowExecutionProfilesUseIndependentLedgersAndConfigs(t *testing.T) {
 	}
 	if payload.Account == nil || payload.Account.ID != shadowProfileConservative || payload.Report == nil || payload.Report.Config.MinimumScore != 62 || len(payload.Profiles) != 3 {
 		t.Fatalf("selected profile response mismatch: %+v", payload)
+	}
+}
+
+func TestMonsterShadowExecutionAddsIndependentRadarProfile(t *testing.T) {
+	balanced := &shadowArchiveStub{}
+	conservative := &shadowArchiveStub{}
+	aggressive := &shadowArchiveStub{}
+	monster := &shadowArchiveStub{}
+	configs := make([]paper.Config, 0, 4)
+	server := NewServer(
+		resolverStub{}, nil, nil, nil, "",
+		WithRealtimeStrategy(realtimeScannerStub{}, realtimeArchiveStub{items: []realtime.Signal{{ID: "signal", Symbol: "sh600519"}}}),
+		WithShadowExecutionProfiles(shadowProfileAnalyzerStub{configs: &configs}, balanced, conservative, aggressive),
+		WithMonsterShadowExecution(monster),
+	)
+	server.now = func() time.Time { return realtimeWebTime(2026, 8, 21, 10, 15) }
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/strategy/shadow?profile=all&selected=monster", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected monster profile sync status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if balanced.saves != 1 || conservative.saves != 1 || aggressive.saves != 1 || monster.saves != 1 || len(configs) != 4 {
+		t.Fatalf("monster profile did not run as an independent ledger: saves=%d/%d/%d/%d configs=%d", balanced.saves, conservative.saves, aggressive.saves, monster.saves, len(configs))
+	}
+	if !monster.report.Config.UseMonsterRadar || monster.report.Config.MinimumScore != 58 || monster.report.Config.MaxOpenPositions != 6 {
+		t.Fatalf("monster profile config mismatch: %+v", monster.report.Config)
+	}
+	if balanced.report.Config.UseMonsterRadar || conservative.report.Config.UseMonsterRadar || aggressive.report.Config.UseMonsterRadar {
+		t.Fatal("monster radar leaked into a baseline profile")
+	}
+	var payload shadowResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Account == nil || payload.Account.ID != shadowProfileMonster || payload.Report == nil || !payload.Report.Config.UseMonsterRadar || len(payload.Profiles) != 4 {
+		t.Fatalf("monster profile response mismatch: %+v", payload)
+	}
+	if payload.Profiles[3].ID != shadowProfileMonster {
+		t.Fatalf("monster profile ordering mismatch: %+v", payload.Profiles)
 	}
 }
 

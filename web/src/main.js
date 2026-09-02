@@ -16,6 +16,16 @@ const marketIndexDefinitions = [
   { symbol: "sz399001", name: "深证成指" },
   { symbol: "sz399006", name: "创业板指" },
 ]
+const globalMarketDefinitions = [
+  { symbol: "rt_hkHSI", region: "港股", name: "恒生指数" },
+  { symbol: "rt_hkHSTECH", region: "港股", name: "恒生科技" },
+  { symbol: "b_NKY", region: "日本", name: "日经225" },
+  { symbol: "b_KOSPI", region: "韩国", name: "KOSPI" },
+  { symbol: "b_KOSDAQ", region: "韩国", name: "KOSDAQ" },
+  { symbol: "gb_ixic", region: "美国", name: "纳斯达克" },
+  { symbol: "gb_inx", region: "美国", name: "标普500" },
+  { symbol: "gb_dji", region: "美国", name: "道琼斯" },
+]
 const automationTaskDefinitions = [
   { key: "scan", label: "扫描" },
   { key: "outcomes", label: "验证" },
@@ -28,6 +38,26 @@ const dailyRangeOptions = [
   { key: "6m", label: "6月", count: 120 },
   { key: "1y", label: "1年", count: 250 },
 ]
+const globalRangeOptions = [
+  { key: "1m", label: "1月", count: 22 },
+  { key: "3m", label: "3月", count: 66 },
+  { key: "6m", label: "6月", count: 132 },
+  { key: "1y", label: "1年", count: 252 },
+]
+const defaultAIConfigForm = {
+  enabled: true,
+  execution_mode: "codex",
+  provider: "openai",
+  model: "gpt-5.5",
+  quick_model: "gpt-5.5",
+  deep_model: "gpt-5.5",
+  base_url: "",
+  codex_bin: "",
+  codex_home: "",
+  codex_profile: "",
+  timeout_seconds: 600,
+  reasoning_effort: "",
+}
 const localDate = value => {
   const date = new Date(value)
   const pad = number => String(number).padStart(2, "0")
@@ -67,6 +97,7 @@ createApp({
       realtimeOutcomeHorizon: 5,
       realtimeOutcomeView: "scores",
       realtimeSection: "candidates",
+      realtimeMonsterOnly: false,
       shadowLoading: false,
       shadowError: "",
       shadowPreserveReason: "",
@@ -88,6 +119,52 @@ createApp({
       dailyPanState: null,
       dailyPinchState: null,
       dailyDragging: false,
+      globalRangeOptions,
+      globalChartMode: "intraday",
+      globalSelectedSymbol: globalMarketDefinitions[0].symbol,
+      globalChartData: {},
+      globalChartLoading: false,
+      globalChartError: "",
+      globalChartStatus: "",
+      globalChartFetchedAt: "",
+      globalChartLastRequestedAt: 0,
+      globalChartRequestID: 0,
+      globalDailyRangePreset: "6m",
+      globalDailyVisibleCount: 132,
+      globalCrosshair: null,
+      globalChartGeometry: null,
+      assistantOpen: false,
+      assistantLoading: false,
+      assistantSending: false,
+      assistantContext: null,
+      assistantConversation: [],
+      assistantAlerts: [],
+      assistantDraft: "",
+      assistantError: "",
+      assistantJobID: "",
+      assistantJobStatus: "",
+      assistantJobProgress: "",
+      assistantContextRequestID: 0,
+      assistantAlertsRequestID: 0,
+      assistantAlertsCheckedAt: 0,
+      assistantContextCheckedAt: 0,
+      assistantJobTimer: null,
+      assistantUnread: 0,
+      assistantAlertSeen: new Set(),
+      assistantAlertInitialized: false,
+      aiConfigLoading: false,
+      aiConfigSaving: false,
+      aiConfigTesting: false,
+      aiConfigError: "",
+      aiConfigNotice: "",
+      aiConfigSnapshot: null,
+      aiConfigProviders: [],
+      aiConfigProfiles: [],
+      aiConfigForm: { ...defaultAIConfigForm },
+      aiConfigToken: "",
+      aiConfigClearToken: false,
+      aiConfigTestResult: null,
+      aiConfigLoaded: false,
       watchlistOpen: window.innerWidth > 1100,
       watchlist: { groups: [] },
       selectedWatchlistGroup: "全部",
@@ -97,6 +174,9 @@ createApp({
       watchlistRequestID: 0,
       watchlistError: "",
       marketIndices: marketIndexDefinitions.map(item => ({ ...item })),
+      globalMarkets: [],
+      globalMarketsFetchedAt: "",
+      globalMarketsError: "",
       marketAmount: null,
       indicesLoading: false,
       indicesRequestID: 0,
@@ -145,6 +225,69 @@ createApp({
     isSector() { return this.data.kind === "sector" || String(this.data.symbol || "").toLowerCase().startsWith("bk") },
     bars() { return Array.isArray(this.data.bars) ? this.data.bars : [] },
     minutes() { return Array.isArray(this.data.minutes) ? this.data.minutes : [] },
+    assistantSymbol() {
+      return String(this.data.symbol || this.requestedSymbol || defaultSymbol || "").trim()
+    },
+    assistantName() {
+      return String((this.assistantContext && this.assistantContext.name) || this.quote.name || this.data.name || this.displayCode(this.assistantSymbol) || "当前股票")
+    },
+    assistantFacts() {
+      return this.assistantContext && this.assistantContext.facts ? this.assistantContext.facts : {}
+    },
+    assistantQuote() {
+      return this.assistantFacts.quote || {}
+    },
+    assistantTechnical() {
+      return this.assistantFacts.technical || {}
+    },
+    assistantFundAvailable() {
+      const fund = this.assistantFacts.fund || {}
+      const warnings = Array.isArray(this.assistantFacts.warnings) ? this.assistantFacts.warnings : []
+      return Boolean(fund.symbol) && !warnings.some(item => String(item || "").includes("主力资金"))
+    },
+    assistantContextAge() {
+      if (!this.assistantContextCheckedAt) return "等待上下文"
+      const seconds = Math.max(0, Math.round((Date.now() - this.assistantContextCheckedAt) / 1000))
+      if (seconds < 5) return "刚刚采集"
+      if (seconds < 60) return `${seconds}秒前采集`
+      return `${Math.round(seconds / 60)}分钟前采集`
+    },
+    assistantVisibleAlerts() {
+      return Array.isArray(this.assistantAlerts) ? this.assistantAlerts.slice(0, 12) : []
+    },
+    assistantLevels() {
+      return this.assistantContext && Array.isArray(this.assistantContext.key_levels) ? this.assistantContext.key_levels : []
+    },
+    assistantTurns() {
+      return Array.isArray(this.assistantConversation) ? this.assistantConversation : []
+    },
+    assistantBusy() {
+      return this.assistantSending || ["queued", "running"].includes(this.assistantJobStatus)
+    },
+    aiConfigStatusText() {
+      if (this.aiConfigLoading) return "读取中"
+      if (!this.aiConfigSnapshot) return "未读取"
+      if (!this.aiConfigSnapshot.config || !this.aiConfigSnapshot.config.enabled) return "已停用"
+      return this.aiConfigSnapshot.token_configured ? "已配置" : (this.aiConfigSnapshot.config.execution_mode === "codex" ? "待测试" : "待凭证")
+    },
+    aiConfigTokenStatus() {
+      if (this.aiConfigToken) return "待保存"
+      if (this.aiConfigSnapshot && this.aiConfigSnapshot.token_configured) return this.aiConfigSnapshot.token_hint || "已配置"
+      return this.aiConfigForm.execution_mode === "codex" ? "由 Profile 提供" : "未配置"
+    },
+    assistantRuntimeLabel() {
+      const config = this.aiConfigSnapshot && this.aiConfigSnapshot.config
+      if (!config) return "AI / READ ONLY"
+      if (config.execution_mode === "api") return `${String(config.provider || "API").toUpperCase()} / READ ONLY`
+      return "CODEX / READ ONLY"
+    },
+    globalSelectedMarket() {
+      return this.globalMarkets.find(item => item && item.symbol === this.globalSelectedSymbol) || null
+    },
+    globalBars() { return Array.isArray(this.globalChartData.bars) ? this.globalChartData.bars : [] },
+    globalMinutes() { return Array.isArray(this.globalChartData.minutes) ? this.globalChartData.minutes : [] },
+    globalLatestBar() { return this.globalBars[this.globalBars.length - 1] || {} },
+    globalLatestMinute() { return this.globalMinutes[this.globalMinutes.length - 1] || {} },
     watchlistGroupNames() {
       return ["全部", ...this.watchlist.groups.map(group => group.name).filter(Boolean)]
     },
@@ -187,14 +330,69 @@ createApp({
 	  return this.strategyCandidates.find(item => item && item.experiment_id === this.strategyCandidateID) || this.strategyCandidates[0] || null
 	},
 	strategyCandidateLifecycle() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.lifecycle) || {} },
-	strategyCandidateAssessment() { return this.strategyCandidateLifecycle.assessment || { checks: [] } },
-	strategyCandidateObservationMetrics() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.observation_metrics) || {} },
+    strategyCandidateAssessment() { return this.strategyCandidateLifecycle.assessment || { checks: [] } },
+    strategyCandidateObservationMetrics() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.observation_metrics) || {} },
 	strategyLifecycleHeadline() {
 	  if (!this.strategyCandidatesLoaded) return "候选生命周期"
 	  if (!this.strategyCandidates.length) return "等待持续优化实验"
 	  return this.candidateStatusLabel(this.strategyCandidateLifecycle.status, this.strategyActiveCandidate.research_stage)
 	},
     realtimeSignals() { return this.realtimeResult && Array.isArray(this.realtimeResult.signals) ? this.realtimeResult.signals : [] },
+    realtimeScopeLabel() {
+      return this.realtimeScope === "watchlist" ? "仅自选" : "自选 + 强势候选"
+    },
+    realtimeFilterLabel() {
+      return this.realtimeMonsterOnly ? `${this.realtimeScopeLabel} · 抓妖观察` : this.realtimeScopeLabel
+    },
+    realtimeSnapshotScopeLabel() {
+      const universe = this.realtimeResult && String(this.realtimeResult.universe || "").toLowerCase()
+      if (universe === "watchlist") return "仅自选"
+      if (universe === "watchlist+leaders") return "自选 + 强势候选"
+      return universe || this.realtimeScopeLabel
+    },
+    realtimeScopeSignals() {
+      const signals = this.realtimeSignals
+      if (this.realtimeScope !== "watchlist") return signals
+
+      // The scanner records the source of every candidate. Older archived
+      // snapshots do not have that field, so fall back to the current full
+      // watchlist by code to keep the scope switch useful across upgrades.
+      const watchlistCodes = new Set()
+      const groups = this.watchlist && Array.isArray(this.watchlist.groups) ? this.watchlist.groups : []
+      groups.forEach(group => {
+        const items = Array.isArray(group && group.items) ? group.items : []
+        const symbols = items.length ? items.map(item => item && item.symbol) : (Array.isArray(group && group.symbols) ? group.symbols : [])
+        symbols.forEach(symbol => {
+          const code = this.displayCode(symbol)
+          if (code) watchlistCodes.add(code)
+        })
+      })
+      return signals.filter(item => {
+        if (!item || !item.symbol) return false
+        const sources = Array.isArray(item.candidate_sources) ? item.candidate_sources : []
+        if (sources.some(source => String(source).trim() === "自选")) return true
+        return watchlistCodes.has(this.displayCode(item.symbol))
+      })
+    },
+    realtimeVisibleSignals() {
+      if (!this.realtimeMonsterOnly) return this.realtimeScopeSignals
+      return this.realtimeScopeSignals.filter(item => item && item.monster && item.monster.eligible === true)
+    },
+    realtimeFilterEmptyText() {
+      if (this.realtimeMonsterOnly) return "当前范围没有满足边界条件的抓妖观察候选"
+      if (this.realtimeScope === "watchlist") return "当前快照没有匹配的自选候选"
+      return "当前快照没有候选信号"
+    },
+    realtimeMonsterCandidates() {
+      const threshold = Number(this.realtimeResult && this.realtimeResult.monster_minimum_score) || 58
+      return this.realtimeScopeSignals.filter(item => {
+        const radar = item && item.monster
+        return radar && radar.stage && radar.stage !== "数据不足" && Number(radar.score) >= threshold
+      }).length
+    },
+    realtimeMonsterEligible() {
+      return this.realtimeScopeSignals.filter(item => item && item.monster && item.monster.eligible === true).length
+    },
     realtimeAutomationTasks() {
       const states = this.realtimeAutomation && this.realtimeAutomation.task_states && typeof this.realtimeAutomation.task_states === "object"
         ? this.realtimeAutomation.task_states
@@ -232,9 +430,12 @@ createApp({
     realtimeTuning() {
       return (this.realtimeOutcomeReport && this.realtimeOutcomeReport.tuning) || {}
     },
+    realtimeMonsterAnalysis() {
+      return (this.realtimeOutcomeReport && this.realtimeOutcomeReport.monster_analysis) || {}
+    },
     realtimeOutcomeBreakdowns() {
       if (!this.realtimeOutcomeReport) return []
-      const key = this.realtimeOutcomeView === "strategies" ? "strategies" : this.realtimeOutcomeView === "regimes" ? "market_regimes" : "score_buckets"
+      const key = this.realtimeOutcomeView === "strategies" ? "strategies" : this.realtimeOutcomeView === "regimes" ? "market_regimes" : this.realtimeOutcomeView === "monster" ? "monster_stages" : "score_buckets"
       return Array.isArray(this.realtimeOutcomeReport[key]) ? this.realtimeOutcomeReport[key] : []
     },
     realtimeOutcomeRecent() {
@@ -449,11 +650,377 @@ createApp({
       const number = Number(value)
       return !Number.isFinite(number) || number === 0 ? "flat" : number > 0 ? "up" : "down"
     },
+    intradayWhiteLabel() {
+      return this.isMarketIndex(this.data.symbol) ? "白线·上证指数" : "白线·实时价"
+    },
+    intradayYellowLabel() {
+      return this.isMarketIndex(this.data.symbol) ? "黄线·上证领先" : "黄线·均价"
+    },
     formatDateTime(value) {
       if (!value) return "--"
       const date = new Date(value)
       if (Number.isNaN(date.getTime())) return String(value)
       return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+    },
+    applyAIConfigSnapshot(payload) {
+      if (!payload || typeof payload !== "object") return
+      const config = payload.config && typeof payload.config === "object" ? payload.config : payload
+      this.aiConfigSnapshot = payload
+      this.aiConfigProviders = Array.isArray(payload.providers) ? payload.providers : this.aiConfigProviders
+      this.aiConfigProfiles = Array.isArray(payload.profiles) ? payload.profiles : []
+      this.aiConfigForm = {
+        ...defaultAIConfigForm,
+        ...Object.fromEntries(Object.keys(defaultAIConfigForm).map(key => [key, config[key] !== undefined ? config[key] : defaultAIConfigForm[key]])),
+      }
+      this.aiConfigLoaded = true
+    },
+    aiProviderChanged() {
+      const provider = this.aiConfigProviders.find(item => item && item.id === this.aiConfigForm.provider)
+      if (!provider) return
+      if (!this.aiConfigForm.base_url) this.aiConfigForm.base_url = provider.default_base_url || ""
+      if (!this.aiConfigForm.model && Array.isArray(provider.models) && provider.models.length) this.aiConfigForm.model = provider.models[0]
+      if (!this.aiConfigForm.quick_model) this.aiConfigForm.quick_model = this.aiConfigForm.model
+      if (!this.aiConfigForm.deep_model) this.aiConfigForm.deep_model = this.aiConfigForm.model
+    },
+    selectAIProfile(profile) {
+      if (!profile || !profile.path) return
+      this.aiConfigForm.execution_mode = "codex"
+      this.aiConfigForm.codex_home = profile.path
+      if (profile.model) {
+        this.aiConfigForm.model = profile.model
+        this.aiConfigForm.quick_model = profile.model
+        this.aiConfigForm.deep_model = profile.model
+      }
+      if (profile.base_url) this.aiConfigForm.base_url = profile.base_url
+    },
+    aiConfigPayload() {
+      const config = {
+        ...defaultAIConfigForm,
+        ...this.aiConfigForm,
+        timeout_seconds: Number(this.aiConfigForm.timeout_seconds) || 600,
+      }
+      const payload = { config, clear_token: Boolean(this.aiConfigClearToken) }
+      if (this.aiConfigToken) payload.token = this.aiConfigToken
+      return payload
+    },
+    async loadAIConfig(force = false) {
+      if (this.aiConfigLoading || (this.aiConfigLoaded && !force)) return
+      this.aiConfigLoading = true
+      this.aiConfigError = ""
+      try {
+        const response = await fetch("/api/ai/config", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "AI 配置读取失败")
+        this.applyAIConfigSnapshot(payload)
+      } catch (error) {
+        this.aiConfigError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.aiConfigLoading = false
+      }
+    },
+    async saveAIConfig() {
+      if (this.aiConfigSaving || this.aiConfigTesting) return
+      this.aiConfigSaving = true
+      this.aiConfigError = ""
+      this.aiConfigNotice = ""
+      try {
+        const response = await fetch("/api/ai/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.aiConfigPayload()), cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "AI 配置保存失败")
+        this.applyAIConfigSnapshot(payload)
+        this.aiConfigToken = ""
+        this.aiConfigClearToken = false
+        this.aiConfigNotice = "配置已保存，后续新请求立即使用。"
+      } catch (error) {
+        this.aiConfigError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.aiConfigSaving = false
+      }
+    },
+    async testAIConfig() {
+      if (this.aiConfigTesting || this.aiConfigSaving) return
+      this.aiConfigTesting = true
+      this.aiConfigError = ""
+      this.aiConfigNotice = ""
+      this.aiConfigTestResult = null
+      try {
+        const response = await fetch("/api/ai/config/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.aiConfigPayload()), cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok && !payload.message) throw new Error(payload.error || "AI 连接测试失败")
+        this.aiConfigTestResult = payload
+      } catch (error) {
+        this.aiConfigTestResult = { ok: false, message: error instanceof Error ? error.message : String(error) }
+      } finally {
+        this.aiConfigTesting = false
+      }
+    },
+    async resetAIConfig() {
+      if (this.aiConfigSaving || this.aiConfigTesting || !window.confirm("恢复默认 AI 配置并清除本机 Token？")) return
+      this.aiConfigSaving = true
+      this.aiConfigError = ""
+      this.aiConfigNotice = ""
+      try {
+        const response = await fetch("/api/ai/config/reset", { method: "POST", cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "AI 默认配置恢复失败")
+        this.applyAIConfigSnapshot(payload)
+        this.aiConfigToken = ""
+        this.aiConfigClearToken = false
+        this.aiConfigTestResult = null
+        this.aiConfigNotice = "已恢复默认配置，Token 已清除。"
+      } catch (error) {
+        this.aiConfigError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.aiConfigSaving = false
+      }
+    },
+    setAssistantBodyLock(locked) {
+      if (typeof document === "undefined") return
+      document.documentElement.classList.toggle("assistant-open", Boolean(locked))
+      document.body.classList.toggle("assistant-open", Boolean(locked))
+    },
+    assistantToggle() {
+      this.assistantOpen = !this.assistantOpen
+      this.setAssistantBodyLock(this.assistantOpen)
+      if (this.assistantOpen) {
+        this.assistantUnread = 0
+        this.loadAssistantContext(this.assistantSymbol)
+        this.loadAssistantAlerts(true)
+        this.$nextTick(() => this.$refs.assistantInput?.focus())
+      }
+    },
+    assistantClose() {
+      this.assistantOpen = false
+      this.setAssistantBodyLock(false)
+    },
+    assistantAlertClass(alert) {
+      if (!alert) return "info"
+      return alert.severity === "high" ? "high" : alert.severity === "medium" ? "medium" : "low"
+    },
+    assistantAlertKindLabel(alert) {
+      if (!alert) return "提示"
+      if (alert.kind === "risk") return "风险"
+      if (alert.kind === "level" || alert.kind === "fact-level") return "点位"
+      return alert.state === "triggered" ? "触发" : "观察"
+    },
+    assistantAgentStatusLabel(status) {
+      return ({ ok: "完成", running: "分析中", failed: "失败", unavailable: "不可用" })[status] || status || "--"
+    },
+    assistantMarketStateLabel(state) {
+      return ({ trading: "交易中", auction: "集合竞价", break: "午间休市", closed: "已收盘", weekend: "周末" })[state] || state || "状态未知"
+    },
+    assistantShortHash(value) {
+      const text = String(value || "")
+      return text.length > 18 ? `${text.slice(0, 18)}…` : text
+    },
+    assistantLevelClass(level) {
+      if (!level) return ""
+      if (level.kind === "invalidation" || level.kind === "limit_down") return "risk"
+      if (level.kind === "buy_trigger" || level.kind === "support") return "support"
+      if (level.kind === "limit_up" || level.kind === "resistance") return "resistance"
+      return "observe"
+    },
+    assistantLevelText(level) {
+      return level && level.text ? level.text : "数据暂缺"
+    },
+    assistantSignalName(alert) {
+      if (!alert) return ""
+      return alert.name || this.displayCode(alert.symbol)
+    },
+    assistantPrompt(question) {
+      if (this.assistantBusy) return
+      this.assistantDraft = question
+      this.$nextTick(() => this.$refs.assistantInput?.focus())
+    },
+    scrollAssistantThread() {
+      this.$nextTick(() => {
+        const scroll = this.$refs.assistantScroll
+        const thread = this.$refs.assistantThread
+        const target = scroll || thread
+        if (!target) return
+        const top = target.scrollHeight
+        const reducedMotion = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        if (typeof target.scrollTo === "function") {
+          target.scrollTo({ top, behavior: reducedMotion ? "auto" : "smooth" })
+        } else {
+          target.scrollTop = top
+        }
+      })
+    },
+    async loadAssistantContext(symbol = this.assistantSymbol) {
+      const target = String(symbol || "").trim()
+      if (!target) return
+      const requestID = ++this.assistantContextRequestID
+      this.assistantLoading = true
+      this.assistantError = ""
+      try {
+        const response = await fetch(`/api/assistant/context?symbol=${encodeURIComponent(target)}`, { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "AI上下文读取失败")
+        if (requestID !== this.assistantContextRequestID) return
+        this.assistantContext = payload
+        this.assistantConversation = Array.isArray(payload.history) ? payload.history : []
+        if (Array.isArray(payload.alerts)) this.assistantAlerts = payload.alerts
+        this.assistantContextCheckedAt = Date.now()
+        this.assistantAlertsCheckedAt = Date.now()
+      } catch (error) {
+        if (requestID === this.assistantContextRequestID) this.assistantError = error instanceof Error ? error.message : String(error)
+      } finally {
+        if (requestID === this.assistantContextRequestID) this.assistantLoading = false
+      }
+    },
+    async loadAssistantAlerts(force = false) {
+      if (this.assistantAlertsRequestID && !force && Date.now() - this.assistantAlertsCheckedAt < 7000) return
+      const requestID = ++this.assistantAlertsRequestID
+      try {
+        const response = await fetch("/api/assistant/alerts", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "实时提示读取失败")
+        if (requestID !== this.assistantAlertsRequestID) return
+        const signalAlerts = Array.isArray(payload.alerts) ? payload.alerts : []
+        const contextualAlerts = this.assistantOpen && this.assistantContext && Array.isArray(this.assistantContext.alerts)
+          ? this.assistantContext.alerts.filter(item => item && item.kind === "fact-level" && String(item.symbol || "").toLowerCase() === String(this.assistantContext.symbol || this.assistantSymbol || "").toLowerCase())
+          : []
+        const merged = new Map()
+        ;[...signalAlerts, ...contextualAlerts].forEach(item => { if (item && item.id) merged.set(item.id, item) })
+        const next = [...merged.values()]
+        const nextKeys = next.map(item => item && item.id).filter(Boolean)
+        if (!this.assistantAlertInitialized) {
+          this.assistantAlertSeen = new Set(nextKeys)
+          this.assistantAlertInitialized = true
+        }
+        const newKeys = nextKeys.filter(key => !this.assistantAlertSeen.has(key))
+        newKeys.forEach(key => this.assistantAlertSeen.add(key))
+        const newCount = newKeys.length
+        if (newCount > 0 && !this.assistantOpen) this.assistantUnread += newCount
+        this.assistantAlerts = next
+        this.assistantAlertsCheckedAt = Date.now()
+      } catch (error) {
+        if (requestID === this.assistantAlertsRequestID && !this.assistantContext) this.assistantError = error instanceof Error ? error.message : String(error)
+      }
+    },
+    async sendAssistantMessage() {
+      const question = String(this.assistantDraft || "").trim()
+      if (!question || this.assistantBusy) return
+      const symbol = String((this.assistantContext && this.assistantContext.symbol) || this.assistantSymbol || "").trim()
+      if (!symbol) {
+        this.assistantError = "当前没有可咨询的股票"
+        return
+      }
+      this.assistantSending = true
+      this.assistantError = ""
+      this.assistantJobStatus = "queued"
+      this.assistantJobProgress = "等待Agent启动"
+      try {
+        const response = await fetch("/api/assistant/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol, question }),
+          cache: "no-store",
+        })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (response.status === 409 && payload.job_id) {
+          this.assistantJobID = payload.job_id
+          this.assistantJobStatus = payload.status || "running"
+          this.assistantJobProgress = payload.progress || "已有咨询任务正在处理"
+          this.assistantDraft = ""
+          this.pollAssistantJob()
+          return
+        }
+        if (!response.ok) throw new Error(payload.error || "AI咨询任务提交失败")
+        if (!payload.job_id) throw new Error("AI咨询任务缺少任务编号")
+        this.assistantJobID = payload.job_id || ""
+        this.assistantJobStatus = payload.status || "queued"
+        this.assistantJobProgress = payload.progress || "等待Agent启动"
+        this.assistantDraft = ""
+        this.pollAssistantJob()
+      } catch (error) {
+        this.assistantError = error instanceof Error ? error.message : String(error)
+        this.assistantSending = false
+        this.assistantJobStatus = ""
+      }
+    },
+    async pollAssistantJob() {
+      if (!this.assistantJobID) return
+      const jobID = this.assistantJobID
+      try {
+        const response = await fetch(`/api/assistant/chat?job_id=${encodeURIComponent(jobID)}`, { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "AI咨询状态读取失败")
+        if (jobID !== this.assistantJobID) return
+        this.assistantJobStatus = payload.status || ""
+        this.assistantJobProgress = payload.progress || ""
+        if (["queued", "running"].includes(payload.status)) {
+          this.assistantJobTimer = window.setTimeout(() => this.pollAssistantJob(), 1200)
+          return
+        }
+        this.assistantSending = false
+        if (payload.status === "completed" && payload.response) {
+          const result = payload.response
+          this.assistantConversation = [...this.assistantConversation, {
+            asked_at: result.asked_at,
+            facts_at: result.facts_at,
+            facts_hash: result.facts_hash,
+            question: payload.question,
+            answer: result.answer,
+            fallback: result.fallback === true,
+            agents: result.agents || [],
+          }]
+          if (this.assistantContext) {
+            this.assistantContext.facts_at = result.facts_at || this.assistantContext.facts_at
+            this.assistantContext.facts_hash = result.facts_hash || this.assistantContext.facts_hash
+          }
+          this.assistantError = result.save_warning ? `回答已完成，但历史保存失败：${result.save_warning}` : ""
+          if (!this.assistantOpen) this.assistantUnread += 1
+          this.scrollAssistantThread()
+        } else if (payload.status === "failed" || payload.status === "canceled") {
+          this.assistantError = payload.error || "AI咨询未完成"
+        }
+        this.assistantJobID = ""
+        this.assistantJobStatus = ""
+        this.assistantJobProgress = ""
+      } catch (error) {
+        if (jobID !== this.assistantJobID) return
+        this.assistantSending = false
+        this.assistantError = error instanceof Error ? error.message : String(error)
+        this.assistantJobID = ""
+        this.assistantJobStatus = ""
+      }
+    },
+    async cancelAssistantJob() {
+      if (!this.assistantJobID) return
+      const jobID = this.assistantJobID
+      try {
+        await fetch(`/api/assistant/chat?job_id=${encodeURIComponent(jobID)}`, { method: "DELETE", cache: "no-store" })
+      } finally {
+        if (this.assistantJobTimer != null) window.clearTimeout(this.assistantJobTimer)
+        this.assistantJobTimer = null
+        this.assistantSending = false
+        this.assistantJobID = ""
+        this.assistantJobStatus = ""
+        this.assistantJobProgress = ""
+      }
+    },
+    selectAssistantAlert(alert) {
+      if (!alert || !alert.symbol) return
+      const symbol = alert.symbol
+      this.query = this.displayCode(symbol)
+      this.requestedSymbol = symbol
+      this.workspaceMode = "market"
+      this.load(symbol)
+      this.loadAssistantContext(symbol)
+      this.$nextTick(() => {
+        const scroll = this.$refs.assistantScroll
+        if (scroll) scroll.scrollTop = 0
+      })
     },
     strategyModeLabel(mode) {
       if (mode === "trend-reclaim") return "趋势收复"
@@ -477,7 +1044,7 @@ createApp({
       const first = tickers[0] ? (names[tickers[0]] || this.displayCode(tickers[0])) : "组合"
       return `${first} 等 ${tickers.length} 只`
     },
-    realtimeCount(state) { return this.realtimeSignals.filter(item => item.state === state).length },
+    realtimeCount(state) { return this.realtimeVisibleSignals.filter(item => item.state === state).length },
     shadowValuationLabel(position) {
       if (!position) return "--"
       const quoteTime = position.valuation_time || position.last_date || "--"
@@ -557,6 +1124,19 @@ createApp({
       const item = this.shadowProfiles.find(profile => profile && profile.id === id)
       return item ? item.name : id || "影子账户"
     },
+    shadowAccountSetLabel() {
+      const count = this.shadowProfiles.filter(profile => profile && profile.id).length
+      return count > 0 ? `${count}个影子账户` : "影子账户"
+    },
+    shadowSyncButtonText() {
+      return this.shadowLoading ? `同步${this.shadowAccountSetLabel()}…` : `同步${this.shadowAccountSetLabel()}`
+    },
+    shadowSyncStatusText() {
+      return `正在独立推进${this.shadowAccountSetLabel()}，当前账户详情保持可见`
+    },
+    shadowEmptyHint() {
+      return `点击“${this.shadowSyncButtonText()}”后，会从同一份归档信号分别推进各账户。抓妖实验账户只用于前向观察。`
+    },
     shadowProfileMetricClass(value) {
       return this.metricClass(value)
     },
@@ -585,10 +1165,13 @@ createApp({
       window.scrollTo({ top: 0, behavior: 'auto' })
     },
     switchWorkspace(mode) {
-      if (mode !== "market" && mode !== "strategy" && mode !== "realtime") return
+      if (mode !== "market" && mode !== "global" && mode !== "strategy" && mode !== "realtime" && mode !== "settings") return
       this.workspaceMode = mode
       this.strategyCrosshair = null
-      if (mode === "strategy") {
+      if (mode === "settings") {
+        this.loadAIConfig()
+        window.scrollTo({ top: 0, behavior: "auto" })
+      } else if (mode === "strategy") {
         if (!this.strategyHistoryLoaded) this.loadStrategyHistory()
 		if (!this.strategyCandidatesLoaded) this.loadStrategyCandidates(true)
         this.$nextTick(() => this.drawStrategyChart())
@@ -597,6 +1180,11 @@ createApp({
         this.loadRealtimeHistory()
         this.loadRealtimeOutcomes()
         this.loadShadowReport()
+      } else if (mode === "global") {
+        this.loadIndices()
+        if (!this.globalSelectedSymbol && this.globalMarkets.length) this.globalSelectedSymbol = this.globalMarkets[0].symbol
+        this.loadGlobalChart(this.globalSelectedSymbol, true)
+        this.$nextTick(() => this.drawGlobalChart())
       } else {
         this.$nextTick(() => this.drawChart())
       }
@@ -787,6 +1375,41 @@ createApp({
       if (state === "watching") return "realtime-watching"
       return "realtime-weak"
     },
+    monsterStageClass(stage) {
+      return ({ "潜伏": "monster-dormant", "启动": "monster-starting", "加速": "monster-accelerating", "高位分歧": "monster-diverging", "退潮": "monster-ebbing", "数据不足": "monster-insufficient" })[stage] || "monster-insufficient"
+    },
+    monsterConfidenceClass(confidence) {
+      return confidence === "高" ? "monster-confidence-high" : confidence === "中" ? "monster-confidence-medium" : "monster-confidence-low"
+    },
+    monsterDistanceText(value, ready = true) {
+      if (!ready || value == null || !Number.isFinite(Number(value))) return "--"
+      return `${Number(value).toFixed(2)}%`
+    },
+    monsterGapText(radar) {
+      if (!radar || !radar.opening_gap_ready || !Number.isFinite(Number(radar.opening_gap_percent))) return "--"
+      const value = this.signedPercent(radar.opening_gap_percent)
+      if (Number(radar.opening_gap_percent) >= 0.5) return `${value} · ${radar.opening_gap_held ? "守住" : "失守"}`
+      if (Number(radar.opening_gap_percent) <= -0.5) return `${value} · ${radar.opening_gap_recovered ? "收复" : "未收复"}`
+      return value
+    },
+    monsterOpeningRangeText(radar) {
+      if (!radar || !radar.opening_range_ready) return "--"
+      return radar.opening_range_breakout ? "上破" : "区间内"
+    },
+    monsterStructureText(radar) {
+      if (!radar) return "--"
+      if (radar.breakout_failure) return "突破失败"
+      if (radar.volume_price_divergence) return "量价背离"
+      return "正常"
+    },
+    monsterStructureClass(radar) {
+      if (!radar) return ""
+      return radar.breakout_failure || radar.volume_price_divergence ? "down" : "up"
+    },
+    monsterSourcesText(signal) {
+      const sources = signal && Array.isArray(signal.candidate_sources) ? signal.candidate_sources.filter(Boolean) : []
+      return sources.length ? sources.join(" · ") : "常规扫描"
+    },
     hasSignalOverlay(signal) {
       return Boolean(signal && (Number(signal.risk_multiplier) > 0 || Number(signal.cross_section_total) > 0 || Number(signal.tradable_total) > 0 || signal.market_regime))
     },
@@ -834,6 +1457,16 @@ createApp({
     },
     tuningPriorityClass(priority) {
       return priority === "high" ? "high" : priority === "low" ? "low" : "medium"
+    },
+    monsterMetricStatusClass(status) {
+      if (status === "正向") return "up"
+      if (status === "偏弱") return "down"
+      if (status === "样本不足" || status === "可观察但可执行样本不足") return "warn-text"
+      return ""
+    },
+    monsterMetricReturn(item) {
+      if (!item || !Number(item.eligible_ready)) return "--"
+      return `${this.percentText(item.eligible_average_excess_percent)} · ${this.percentText(item.eligible_hit_rate_percent)}`
     },
     componentCoverageClass(item) {
       if (!item || !Number.isFinite(Number(item.available_percent))) return "flat"
@@ -1055,6 +1688,19 @@ createApp({
         window.scrollTo({ top: scrollY, behavior: 'auto' })
       }
     },
+    setRealtimeScope(scope) {
+      if (scope !== "leaders" && scope !== "watchlist") return
+      if (this.realtimeScope === scope) return
+      this.realtimeScope = scope
+
+      // A broad snapshot already contains the watchlist rows, so narrowing to
+      // "仅自选" can update immediately without another network scan. If the
+      // current snapshot was produced in watchlist-only mode, request a fresh
+      // broad scan when the market is open so the reverse switch is useful too.
+      if (scope === "leaders" && this.realtimeResult && this.realtimeResult.universe !== "watchlist+leaders" && this.realtimeScanAllowed) {
+        this.runRealtimeScan()
+      }
+    },
     async runRealtimeScan() {
       if (this.realtimeLoading || !this.realtimeScanAllowed) return
       this.realtimeLoading = true
@@ -1125,6 +1771,143 @@ createApp({
       if (!Number.isFinite(delta)) return percentText
       return `${percentText}  ${delta > 0 ? "+" : ""}${delta.toFixed(2)}`
     },
+    globalMarketValue(item) {
+      if (!item || !Number.isFinite(Number(item.current))) return "--"
+      return Number(item.current).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    },
+    globalMarketChange(item) {
+      if (!item || item.percent == null || !Number.isFinite(Number(item.percent))) return "--"
+      const percent = Number(item.percent)
+      const delta = Number(item.delta)
+      const text = `${percent > 0 ? "+" : ""}${percent.toFixed(2)}%`
+      if (!Number.isFinite(delta)) return text
+      return `${text}  ${delta > 0 ? "+" : ""}${delta.toFixed(2)}`
+    },
+    globalMarketChangeClass(item) {
+      return this.watchlistChangeClass(item && item.percent)
+    },
+    globalMarketTimeText(item) {
+      if (!item) return "暂无行情时间"
+      const raw = String(item.quote_time || "").trim()
+      return raw || "暂无行情时间"
+    },
+    globalMarketTimeTitle(item) {
+      if (!item) return ""
+      const parts = []
+      if (item.quote_time) parts.push(`指数时间：${item.quote_time}`)
+      if (item.source) parts.push(`来源：${item.source}`)
+      if (item.extended && item.extended.quote_time) parts.push(`${item.extended.session || "延长"}：${item.extended.quote_time}`)
+      return parts.join(" · ")
+    },
+    globalMarketExtendedText(item) {
+      const extended = item && item.extended
+      if (!extended || !Number.isFinite(Number(extended.price))) return ""
+      const change = Number.isFinite(Number(extended.percent))
+        ? `${Number(extended.percent) > 0 ? "+" : ""}${Number(extended.percent).toFixed(2)}%`
+        : ""
+      return `${extended.session || "延长"} ${extended.symbol || "ETF"} ${this.globalMarketValue({ current: extended.price })}${change ? ` ${change}` : ""}`
+    },
+    globalNumber(value, digits = 2) {
+      return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "--"
+    },
+    globalCompact(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return "--"
+      const absolute = Math.abs(number)
+      if (absolute >= 1e8) return (number / 1e8).toFixed(2) + "亿"
+      if (absolute >= 1e4) return (number / 1e4).toFixed(2) + "万"
+      return number.toFixed(0)
+    },
+    globalMarketTimezone(item) {
+      const symbol = String(item && item.symbol || "").toLowerCase()
+      if (symbol === "rt_hkhsi" || symbol === "rt_hkhstech") return "港"
+      if (symbol === "b_nky") return "东京"
+      if (symbol === "b_kospi" || symbol === "b_kosdaq") return "首尔"
+      return "纽约"
+    },
+    globalQuoteTimestamp(item) {
+      if (!item || !item.quote_time) return "暂无报价时间"
+      return String(item.quote_time) + " · " + this.globalMarketTimezone(item) + "时区"
+    },
+    globalDailyWindow() {
+      const total = this.globalBars.length
+      if (!total) return []
+      const count = Math.max(1, Math.min(total, Math.round(this.globalDailyVisibleCount)))
+      return this.globalBars.slice(Math.max(0, total - count))
+    },
+    globalMovingAverage(bars, index, length) {
+      if (index + 1 < length) return null
+      let sum = 0
+      for (let cursor = index - length + 1; cursor <= index; cursor += 1) {
+        const close = Number(bars[cursor] && bars[cursor].close)
+        if (!Number.isFinite(close)) return null
+        sum += close
+      }
+      return sum / length
+    },
+    setGlobalChartMode(mode) {
+      if (mode !== "intraday" && mode !== "daily") return
+      this.globalChartMode = mode
+      this.globalCrosshair = null
+      this.$nextTick(() => this.drawGlobalChart())
+    },
+    setGlobalDailyRange(option) {
+      if (!option || !Number.isFinite(Number(option.count))) return
+      this.globalDailyVisibleCount = Number(option.count)
+      this.globalDailyRangePreset = option.key
+      this.globalCrosshair = null
+      this.$nextTick(() => this.drawGlobalChart())
+    },
+    selectGlobalMarket(item) {
+      if (!item || !item.symbol) return
+      const changed = this.globalSelectedSymbol !== item.symbol
+      this.globalSelectedSymbol = item.symbol
+      if (this.workspaceMode !== "global") this.workspaceMode = "global"
+      if (changed) {
+        this.globalChartData = {}
+        this.globalChartError = ""
+        this.globalCrosshair = null
+      }
+      this.loadGlobalChart(item.symbol, true)
+      window.scrollTo({ top: 0, behavior: "auto" })
+    },
+    async loadGlobalChart(symbol = this.globalSelectedSymbol, force = false) {
+      if (!symbol) return
+      const now = Date.now()
+      if (!force && (this.globalChartLoading || (this.globalSelectedSymbol === symbol && this.globalChartLastRequestedAt > 0 && now - this.globalChartLastRequestedAt < 25000))) return
+      const requestID = ++this.globalChartRequestID
+      this.globalSelectedSymbol = symbol
+      this.globalChartLastRequestedAt = now
+      this.globalChartLoading = true
+      this.globalChartError = ""
+      try {
+        const response = await fetch("/api/global/chart?symbol=" + encodeURIComponent(symbol) + "&mode=all&limit=300", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || payload.warning || "外盘图表暂不可用")
+        if (requestID !== this.globalChartRequestID) return
+        this.globalChartData = payload
+        this.globalChartFetchedAt = payload.fetched_at || new Date().toISOString()
+        const received = payload.market
+        if (received && received.symbol) {
+          this.globalMarkets = globalMarketDefinitions.map(definition => definition.symbol === received.symbol
+            ? { ...definition, ...received }
+            : (this.globalMarkets.find(item => item && item.symbol === definition.symbol) || { ...definition }))
+        }
+        const warnings = [payload.warning, payload.daily_error, payload.minute_error].filter(Boolean)
+        this.globalChartError = warnings.join("；")
+        this.globalChartStatus = this.globalChartError ? "部分数据可用" : "已更新"
+        await this.$nextTick()
+        this.drawGlobalChart()
+      } catch (error) {
+        if (requestID === this.globalChartRequestID) {
+          this.globalChartError = error instanceof Error ? error.message : String(error)
+          this.globalChartStatus = "数据暂不可用"
+        }
+      } finally {
+        if (requestID === this.globalChartRequestID) this.globalChartLoading = false
+      }
+    },
     marketAmountValue(value) {
       const amount = Number(value)
       if (!Number.isFinite(amount) || amount <= 0) return "--"
@@ -1153,12 +1936,22 @@ createApp({
         if (requestID !== this.indicesRequestID) return
         const received = new Map((Array.isArray(payload.items) ? payload.items : []).map(item => [item.symbol, item]))
         this.marketIndices = marketIndexDefinitions.map(definition => ({ ...definition, ...(received.get(definition.symbol) || {}) }))
+        if (Array.isArray(payload.global_markets)) {
+          const globalReceived = new Map(payload.global_markets.map(item => [item.symbol, item]))
+          this.globalMarkets = globalMarketDefinitions.map(definition => ({ ...definition, ...(globalReceived.get(definition.symbol) || {}) }))
+        }
+        this.globalMarketsFetchedAt = payload.global_fetched_at || this.globalMarketsFetchedAt
+        this.globalMarketsError = payload.global_warning || ""
         this.marketAmount = payload.market_amount || this.marketAmount
         const warnings = [payload.warning, payload.amount_warning].filter(Boolean)
         this.indicesError = warnings.join("；")
         if (!response.ok) throw new Error(payload.warning || payload.error || "指数行情暂不可用")
       } catch (error) {
-        if (requestID === this.indicesRequestID) this.indicesError = error instanceof Error ? error.message : String(error)
+        if (requestID === this.indicesRequestID) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.indicesError = message
+          if (!this.globalMarkets.length) this.globalMarketsError = message
+        }
       } finally {
         if (requestID === this.indicesRequestID) this.indicesLoading = false
       }
@@ -1382,8 +2175,17 @@ createApp({
           this.dailyEndIndex = null
           this.dailyRangePreset = "6m"
           this.crosshair = null
+          if (this.assistantOpen) {
+            this.assistantContext = null
+            this.assistantConversation = []
+            this.assistantError = ""
+          }
         }
         if (payload.symbol) this.query = this.isMarketIndex(payload.symbol) || String(payload.symbol).toLowerCase().startsWith("bk") ? payload.symbol : String(payload.symbol).slice(2)
+        if (payload.symbol) {
+          this.loadAssistantAlerts()
+          if (this.assistantOpen) this.loadAssistantContext(payload.symbol)
+        }
         await this.$nextTick()
         this.drawChart()
       } catch (error) {
@@ -1546,7 +2348,329 @@ createApp({
     },
     handleResize() {
       if (this.workspaceMode === "strategy") this.drawStrategyChart()
+      else if (this.workspaceMode === "global") this.drawGlobalChart()
       else this.drawChart()
+    },
+    prepareGlobalCanvas() {
+      const canvas = this.$refs.globalChart
+      if (!canvas) return null
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const pixelWidth = Math.max(1, Math.floor(rect.width * dpr))
+      const pixelHeight = Math.max(1, Math.floor(rect.height * dpr))
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth
+        canvas.height = pixelHeight
+      }
+      const context = canvas.getContext("2d")
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.fillStyle = "#171d21"
+      context.fillRect(0, 0, rect.width, rect.height)
+      return { context, width: rect.width, height: rect.height }
+    },
+    drawGlobalChart() {
+      const canvas = this.prepareGlobalCanvas()
+      if (!canvas) return
+      this.globalChartGeometry = null
+      if (this.globalChartMode === "intraday") this.drawGlobalIntradayChart(canvas.context, canvas.width, canvas.height)
+      else this.drawGlobalDailyChart(canvas.context, canvas.width, canvas.height)
+      this.drawGlobalCrosshair(canvas.context, canvas.width, canvas.height)
+    },
+    drawGlobalEmpty(context, message) {
+      context.fillStyle = "#91a0a7"
+      context.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      context.fillText(message, 18, 28)
+    },
+    drawGlobalIntradayChart(context, width, height) {
+      const raw = this.globalMinutes.filter(point => Number.isFinite(Number(point.price)) && Number(point.price) > 0)
+      if (!raw.length) { this.drawGlobalEmpty(context, "暂无外盘分时数据"); return }
+      const left = width < 560 ? 58 : 70
+      const right = width < 560 ? 18 : 28
+      const top = 18
+      const bottom = 52
+      const volumeHeight = 72
+      const plotBottom = height - bottom - volumeHeight
+      const plotHeight = Math.max(24, plotBottom - top)
+      const plotWidth = Math.max(20, width - left - right)
+      let previousClose = Number((this.globalSelectedMarket || {}).previous_close)
+      const values = raw.flatMap(point => [Number(point.price), Number(point.average)]).filter(value => Number.isFinite(value) && value > 0)
+      const seriesMinimum = Math.min(...values)
+      const seriesMaximum = Math.max(...values)
+      if (Number.isFinite(previousClose) && previousClose > 0 && previousClose >= seriesMinimum * 0.5 && previousClose <= seriesMaximum * 1.5) values.push(previousClose)
+      else previousClose = NaN
+      let minimum = Math.min(...values)
+      let maximum = Math.max(...values)
+      const padding = (maximum - minimum) * 0.08 || Math.max(0.1, maximum * 0.002)
+      minimum -= padding
+      maximum += padding
+      const x = index => left + (raw.length === 1 ? plotWidth / 2 : index / (raw.length - 1) * plotWidth)
+      const y = value => top + (maximum - value) / Math.max(0.000001, maximum - minimum) * plotHeight
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      context.textAlign = "right"
+      context.fillStyle = "#91a0a7"
+      context.strokeStyle = "#2b363c"
+      for (let index = 0; index < 5; index += 1) {
+        const lineY = top + index * plotHeight / 4
+        context.beginPath()
+        context.moveTo(left, lineY)
+        context.lineTo(width - right, lineY)
+        context.stroke()
+        context.fillText((maximum - (maximum - minimum) * index / 4).toFixed(2), left - 8, lineY + 4)
+      }
+      const maxVolume = Math.max(...raw.map(point => Number(point.volume) || 0), 0)
+      const colorReference = Number.isFinite(previousClose) ? previousClose : Number(raw[0].price)
+      raw.forEach((point, index) => {
+        const volume = Number(point.volume) || 0
+        if (!maxVolume || !volume) return
+        const barWidth = Math.max(1, Math.min(10, plotWidth / Math.max(1, raw.length) * 0.72))
+        const barHeight = volume / maxVolume * volumeHeight
+        context.globalAlpha = 0.42
+        context.fillStyle = Number(point.price) >= colorReference ? "#ef6b6b" : "#48c5a0"
+        context.fillRect(x(index) - barWidth / 2, plotBottom + volumeHeight - barHeight, barWidth, barHeight)
+        context.globalAlpha = 1
+      })
+      const drawLine = (field, color, widthValue) => {
+        context.beginPath()
+        raw.forEach((point, index) => {
+          const value = Number(point[field])
+          if (!Number.isFinite(value) || value <= 0) return
+          if (index === 0) context.moveTo(x(index), y(value))
+          else context.lineTo(x(index), y(value))
+        })
+        context.strokeStyle = color
+        context.lineWidth = widthValue
+        context.stroke()
+      }
+      drawLine("price", "#58b9d7", 1.8)
+      drawLine("average", "#f0b768", 1.25)
+      if (Number.isFinite(previousClose) && previousClose >= minimum && previousClose <= maximum) {
+        const referenceY = y(previousClose)
+        context.setLineDash([5, 4])
+        context.strokeStyle = "#91a0a7"
+        context.lineWidth = 1
+        context.beginPath()
+        context.moveTo(left, referenceY)
+        context.lineTo(width - right, referenceY)
+        context.stroke()
+        context.setLineDash([])
+        context.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+        context.textAlign = "right"
+        const label = "0%"
+        const labelWidth = context.measureText(label).width + 8
+        const labelX = width - right
+        const labelY = Math.max(top + 7, Math.min(plotBottom - 7, referenceY))
+        context.fillStyle = "#171d21"
+        context.fillRect(labelX - labelWidth, labelY - 7, labelWidth, 14)
+        context.strokeStyle = "#66757d"
+        context.strokeRect(labelX - labelWidth, labelY - 7, labelWidth, 14)
+        context.fillStyle = "#cbd5d9"
+        context.fillText(label, labelX - 4, labelY + 3)
+      }
+      context.strokeStyle = "#2b363c"
+      context.beginPath()
+      context.moveTo(left, plotBottom)
+      context.lineTo(width - right, plotBottom)
+      context.stroke()
+      context.textAlign = "center"
+      context.fillStyle = "#91a0a7"
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      const labels = width < 560 ? [0, Math.max(0, raw.length - 1)] : [0, Math.floor((raw.length - 1) / 2), raw.length - 1]
+      labels.forEach(index => {
+        const point = raw[index]
+        context.fillText(String(point.trade_date || "") + " " + String(point.time || ""), x(index), height - 24)
+      })
+      this.globalChartGeometry = {
+        mode: "intraday", items: raw, left, right: width - right, top, plotBottom,
+        volumeBottom: plotBottom + volumeHeight, xOf: (_item, index) => x(index), yOf: y,
+        valueAtY: position => maximum - (position - top) / plotHeight * (maximum - minimum),
+        referenceOf: () => previousClose,
+      }
+    },
+    drawGlobalDailyChart(context, width, height) {
+      const allBars = this.globalBars
+      const bars = this.globalDailyWindow()
+      if (!bars.length) { this.drawGlobalEmpty(context, "暂无外盘日 K 数据"); return }
+      const firstIndex = Math.max(0, allBars.length - bars.length)
+      const left = width < 560 ? 58 : 70
+      const right = width < 560 ? 68 : 88
+      const top = 18
+      const bottom = 52
+      const volumeHeight = 72
+      const plotBottom = height - bottom - volumeHeight
+      const plotHeight = Math.max(24, plotBottom - top)
+      const values = []
+      bars.forEach((bar, index) => {
+        ;[bar.high, bar.low, bar.open, bar.close].forEach(value => {
+          if (Number.isFinite(Number(value)) && Number(value) > 0) values.push(Number(value))
+        })
+        ;[5, 20, 60].forEach(length => {
+          const average = this.globalMovingAverage(allBars, firstIndex + index, length)
+          if (Number.isFinite(average) && average > 0) values.push(average)
+        })
+      })
+      if (!values.length) { this.drawGlobalEmpty(context, "暂无有效外盘日 K 数据"); return }
+      const minimum = Math.min(...values)
+      const maximum = Math.max(...values)
+      const padding = (maximum - minimum) * 0.08 || Math.max(0.1, maximum * 0.002)
+      const low = minimum - padding
+      const high = maximum + padding
+      const xStep = (width - left - right) / Math.max(1, bars.length)
+      const bodyWidth = Math.max(2, xStep * 0.58)
+      const x = index => left + (index + 0.5) * xStep
+      const y = value => top + (high - value) / Math.max(0.000001, high - low) * plotHeight
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      context.textAlign = "right"
+      context.fillStyle = "#91a0a7"
+      context.strokeStyle = "#2b363c"
+      for (let index = 0; index < 5; index += 1) {
+        const lineY = top + index * plotHeight / 4
+        context.beginPath()
+        context.moveTo(left, lineY)
+        context.lineTo(width - right, lineY)
+        context.stroke()
+        context.fillText((high - (high - low) * index / 4).toFixed(2), left - 8, lineY + 4)
+      }
+      const maxVolume = Math.max(...bars.map(bar => Number(bar.volume) || 0), 0)
+      bars.forEach((bar, index) => {
+        const candleX = x(index)
+        const open = y(Number(bar.open))
+        const close = y(Number(bar.close))
+        const rising = Number(bar.close) >= Number(bar.open)
+        const color = rising ? "#ef6b6b" : "#48c5a0"
+        context.strokeStyle = color
+        context.fillStyle = color
+        context.lineWidth = 1
+        context.beginPath()
+        context.moveTo(candleX, y(Number(bar.high)))
+        context.lineTo(candleX, y(Number(bar.low)))
+        context.stroke()
+        context.fillRect(candleX - bodyWidth / 2, Math.min(open, close), bodyWidth, Math.max(1, Math.abs(close - open)))
+        const volume = Number(bar.volume) || 0
+        if (maxVolume && volume) {
+          const volumeHeight = volume / maxVolume * 72
+          context.globalAlpha = 0.5
+          context.fillRect(candleX - bodyWidth / 2, plotBottom + 72 - volumeHeight, bodyWidth, volumeHeight)
+          context.globalAlpha = 1
+        }
+      })
+      const drawAverage = (length, color) => {
+        context.beginPath()
+        let started = false
+        bars.forEach((bar, index) => {
+          const value = this.globalMovingAverage(allBars, firstIndex + index, length)
+          if (!Number.isFinite(value)) return
+          if (started) context.lineTo(x(index), y(value))
+          else { context.moveTo(x(index), y(value)); started = true }
+        })
+        context.strokeStyle = color
+        context.lineWidth = 1.25
+        context.stroke()
+      }
+      drawAverage(5, "#58b9d7")
+      drawAverage(20, "#f0b768")
+      drawAverage(60, "#b28ee8")
+      context.strokeStyle = "#2b363c"
+      context.beginPath()
+      context.moveTo(left, plotBottom)
+      context.lineTo(width - right, plotBottom)
+      context.stroke()
+      context.textAlign = "center"
+      context.fillStyle = "#91a0a7"
+      const labelEvery = Math.max(1, Math.ceil(bars.length / 7))
+      bars.forEach((bar, index) => {
+        if (index % labelEvery === 0) context.fillText(String(bar.date || "").slice(5), x(index), height - 24)
+      })
+      this.globalChartGeometry = {
+        mode: "daily", items: bars, left, right: width - right, top, plotBottom,
+        volumeBottom: plotBottom + 72, xOf: (_item, index) => x(index), yOf: y,
+        valueAtY: position => high - (position - top) / plotHeight * (high - low),
+        referenceOf: (_item, index) => index > 0 ? Number(bars[index - 1].close) : NaN,
+      }
+    },
+    handleGlobalChartPointer(event) {
+      const geometry = this.globalChartGeometry
+      const canvas = this.$refs.globalChart
+      if (!geometry || !canvas || !geometry.items.length) return
+      const rect = canvas.getBoundingClientRect()
+      const pointerX = event.clientX - rect.left
+      const pointerY = event.clientY - rect.top
+      if (pointerX < geometry.left || pointerX > geometry.right || pointerY < geometry.top || pointerY > geometry.volumeBottom) return this.clearGlobalChartCrosshair()
+      let nearestIndex = 0
+      let nearestDistance = Number.POSITIVE_INFINITY
+      geometry.items.forEach((item, index) => {
+        const distance = Math.abs(geometry.xOf(item, index) - pointerX)
+        if (distance < nearestDistance) { nearestDistance = distance; nearestIndex = index }
+      })
+      const item = geometry.items[nearestIndex]
+      const indexChart = this.isMarketIndex(this.data.symbol)
+      this.globalCrosshair = { mode: geometry.mode, x: geometry.xOf(item, nearestIndex), y: Math.max(geometry.top, Math.min(geometry.plotBottom, pointerY)), item, index: nearestIndex }
+      this.drawGlobalChart()
+    },
+    clearGlobalChartCrosshair() {
+      if (this.globalCrosshair == null) return
+      this.globalCrosshair = null
+      this.drawGlobalChart()
+    },
+    drawGlobalCrosshair(context, width, height) {
+      const geometry = this.globalChartGeometry
+      const crosshair = this.globalCrosshair
+      if (!geometry || !crosshair || geometry.mode !== crosshair.mode) return
+      const index = Math.max(0, Math.min(geometry.items.length - 1, Number(crosshair.index)))
+      const item = geometry.items[index]
+      const x = geometry.xOf(item, index)
+      const y = Math.max(geometry.top, Math.min(geometry.plotBottom, crosshair.y))
+      context.save()
+      context.setLineDash([3, 4])
+      context.strokeStyle = "#71838c"
+      context.lineWidth = 1
+      context.beginPath()
+      context.moveTo(x, geometry.top)
+      context.lineTo(x, geometry.volumeBottom)
+      context.moveTo(geometry.left, y)
+      context.lineTo(geometry.right, y)
+      context.stroke()
+      context.setLineDash([])
+      const value = Number(geometry.mode === "intraday" ? item.price : item.close)
+      const reference = Number(geometry.referenceOf ? geometry.referenceOf(item, index) : NaN)
+      const change = value - reference
+      const percent = Number.isFinite(reference) && reference > 0 ? change / reference * 100 : NaN
+      const label = geometry.mode === "intraday" ? String(item.trade_date || "") + " " + String(item.time || "") : String(item.date || "--")
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      context.textAlign = "center"
+      const labelWidth = Math.max(58, context.measureText(label).width + 14)
+      const labelX = Math.max(geometry.left, Math.min(geometry.right - labelWidth, x - labelWidth / 2))
+      context.fillStyle = "#344249"
+      context.fillRect(labelX, height - 41, labelWidth, 18)
+      context.fillStyle = "#edf3f5"
+      context.fillText(label, labelX + labelWidth / 2, height - 28)
+      const rows = geometry.mode === "intraday"
+        ? [["现价", this.globalNumber(item.price)], ["涨跌", Number.isFinite(percent) ? (change > 0 ? "+" : "") + this.globalNumber(change) + "  " + (percent > 0 ? "+" : "") + this.globalNumber(percent) + "%" : "--"], ["均价", this.globalNumber(item.average)], ["分钟量", this.globalCompact(item.volume)]]
+        : [["开", this.globalNumber(item.open)], ["高", this.globalNumber(item.high)], ["低", this.globalNumber(item.low)], ["收", this.globalNumber(item.close)], ["成交量", this.globalCompact(item.volume)]]
+      const boxWidth = 174
+      const boxHeight = 30 + rows.length * 19
+      let boxX = x + 13
+      if (boxX + boxWidth > geometry.right) boxX = x - boxWidth - 13
+      boxX = Math.max(geometry.left + 5, Math.min(geometry.right - boxWidth - 5, boxX))
+      const boxY = Math.max(geometry.top + 5, Math.min(geometry.volumeBottom - boxHeight - 5, y - boxHeight / 2))
+      context.fillStyle = "rgba(16, 22, 26, .94)"
+      context.fillRect(boxX, boxY, boxWidth, boxHeight)
+      context.strokeStyle = "#50626b"
+      context.strokeRect(boxX + .5, boxY + .5, boxWidth - 1, boxHeight - 1)
+      context.textAlign = "left"
+      context.fillStyle = "#58b9d7"
+      context.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      context.fillText(label, boxX + 10, boxY + 19)
+      context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      rows.forEach((row, rowIndex) => {
+        const rowY = boxY + 39 + rowIndex * 19
+        context.fillStyle = "#91a0a7"
+        context.textAlign = "left"
+        context.fillText(row[0], boxX + 10, rowY)
+        context.fillStyle = row[0] === "涨跌" ? (change > 0 ? "#ef6b6b" : change < 0 ? "#48c5a0" : "#edf3f5") : "#edf3f5"
+        context.textAlign = "right"
+        context.fillText(row[1], boxX + boxWidth - 10, rowY)
+      })
+      context.restore()
     },
     prepareCanvas() {
       const canvas = this.$refs.chart
@@ -1653,7 +2777,7 @@ createApp({
       if (Number.isFinite(pointValue)) {
         context.beginPath()
         context.arc(x, geometry.yOf(pointValue), 3.5, 0, Math.PI * 2)
-        context.fillStyle = "#58b9d7"
+        context.fillStyle = "#edf3f5"
         context.fill()
         context.strokeStyle = "#d9f2fa"
         context.stroke()
@@ -1677,7 +2801,7 @@ createApp({
       context.fillText(xLabel, xLabelX + xLabelWidth / 2, height - 28)
 
       const rows = geometry.mode === "intraday"
-        ? [{ label: "现价", value: this.number(item.price) }, { label: "涨跌", value: changeText, color: changeColor }, { label: "均价", value: this.number(item.average) }, { label: "分钟量", value: this.compact(item.volume) }]
+        ? [{ label: this.intradayWhiteLabel(), value: this.number(item.price) }, { label: "涨跌", value: changeText, color: changeColor }, { label: this.intradayYellowLabel(), value: this.number(indexChart ? item.leading : item.average) }, { label: "分钟量", value: this.compact(item.volume) }]
         : [{ label: "开", value: this.number(item.open) }, { label: "高", value: this.number(item.high) }, { label: "低", value: this.number(item.low) }, { label: "收", value: this.number(item.close) }, { label: "涨跌", value: changeText, color: changeColor }, { label: "成交量", value: this.compact(item.volume) }]
       const boxWidth = geometry.mode === "intraday" ? 174 : 184
       const boxHeight = 30 + rows.length * 19
@@ -1749,8 +2873,9 @@ createApp({
         return left + sessionWidth + lunchGap + (slot - morningSlots) / (afternoonSlots - 1) * sessionWidth
       }
       const priceValues = points.map(point => Number(point.price)).filter(value => Number.isFinite(value) && value > 0)
+      const leadingValues = points.map(point => Number(point.leading)).filter(value => Number.isFinite(value) && value > 0)
       const values = indexChart
-        ? [...priceValues, Number(this.quote.high), Number(this.quote.low)].filter(value => Number.isFinite(value) && value > 0)
+        ? [...priceValues, ...leadingValues, Number(this.quote.high), Number(this.quote.low)].filter(value => Number.isFinite(value) && value > 0)
         : points.flatMap(point => [Number(point.price), Number(point.average)]).filter(value => Number.isFinite(value) && value > 0)
       const previousClose = Number(this.quote.previous_close)
       if (!indexChart && Number.isFinite(previousClose) && previousClose > 0) values.push(previousClose)
@@ -1806,8 +2931,12 @@ createApp({
         context.lineWidth = widthValue
         context.stroke()
       }
-      drawLine("price", "#58b9d7", 1.8)
-      drawLine("average", "#f0b768", 1.3)
+      drawLine("price", "#edf3f5", 1.8)
+      if (indexChart) {
+        if (leadingValues.length) drawLine("leading", "#f0b768", 1.3)
+      } else {
+        drawLine("average", "#f0b768", 1.3)
+      }
       if (Number.isFinite(previousClose) && previousClose >= minimum && previousClose <= maximum) {
 		const referenceY = y(previousClose)
         context.setLineDash([5, 4])
@@ -2116,18 +3245,28 @@ createApp({
   mounted() {
     this.load(this.requestedSymbol)
     this.loadIndices()
+    this.loadGlobalChart(this.globalSelectedSymbol, true)
     this.loadWatchlist()
+    this.loadAIConfig()
     this.timer = window.setInterval(() => {
-      this.load(this.requestedSymbol)
+      if (this.workspaceMode === "market") this.load(this.requestedSymbol)
       this.loadIndices()
+      if (this.workspaceMode === "global") this.loadGlobalChart(this.globalSelectedSymbol)
       this.loadWatchlist()
       this.pollRealtimeSession()
+      if (this.assistantOpen) {
+        this.loadAssistantAlerts()
+        if (!this.assistantLoading && Date.now() - this.assistantContextCheckedAt >= 30000) this.loadAssistantContext(this.assistantSymbol)
+        if (this.assistantJobID && !this.assistantJobTimer) this.pollAssistantJob()
+      }
     }, 10000)
     window.addEventListener("resize", this.handleResize)
   },
   beforeUnmount() {
     window.clearInterval(this.timer)
+    if (this.assistantJobTimer != null) window.clearTimeout(this.assistantJobTimer)
     if (this.crosshairFrame != null) window.cancelAnimationFrame(this.crosshairFrame)
+    this.setAssistantBodyLock(false)
     window.removeEventListener("resize", this.handleResize)
   },
 }).mount("#app")

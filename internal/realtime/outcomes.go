@@ -44,6 +44,9 @@ const (
 	minimumCalibrationHitRateUplift         = -2.0
 	maximumCalibrationExcessDrawdown        = -0.20
 	maximumCalibrationHitRateDrawdown       = -5.0
+	minimumMonsterStageSamples              = 20
+	minimumMonsterStageDates                = 5
+	minimumMonsterEligibleSamples           = 10
 )
 
 const (
@@ -334,7 +337,8 @@ func labelSignal(signal Signal, bars, benchmark []domain.DailyBar, horizon int, 
 		CalibrationID: signal.CalibrationID, CalibratedScore: signal.CalibratedScore,
 		CalibratedRiskAdjustedScore: signal.CalibratedRiskAdjustedScore, CalibratedMinimumScore: signal.CalibrationMinimumScore,
 		CalibratedState: signal.CalibratedState,
-		EvaluatedAt:     evaluatedAt, DataSource: signal.DataSource,
+		MonsterScore:    signal.Monster.Score, MonsterStage: signal.Monster.Stage, MonsterEligible: signal.Monster.Eligible,
+		EvaluatedAt: evaluatedAt, DataSource: signal.DataSource,
 		StrategyScores: make(map[string]float64), StrategyStates: make(map[string]string), StrategyNames: make(map[string]string),
 	}
 	for _, component := range signal.Components {
@@ -464,6 +468,29 @@ func BuildOutcomeReport(outcomes []SignalOutcome, now time.Time, warnings []stri
 		}
 		return []string{regime}
 	})
+	monsterItems := make([]SignalOutcome, 0)
+	for _, item := range outcomes {
+		if strings.TrimSpace(string(item.MonsterStage)) != "" {
+			monsterItems = append(monsterItems, item)
+		}
+	}
+	if len(monsterItems) > 0 {
+		report.MonsterStages = breakdownOutcomesWithScores(monsterItems, horizons, func(item SignalOutcome) []OutcomeBreakdown {
+			stage := item.MonsterStage
+			if strings.TrimSpace(string(stage)) == "" {
+				stage = MonsterStageInsufficient
+			}
+			return []OutcomeBreakdown{{Key: string(stage), Label: string(stage)}}
+		}, func(item SignalOutcome) []string {
+			stage := item.MonsterStage
+			if strings.TrimSpace(string(stage)) == "" {
+				stage = MonsterStageInsufficient
+			}
+			return []string{string(stage)}
+		}, func(item SignalOutcome) (float64, bool) {
+			return item.MonsterScore, finite(item.MonsterScore)
+		})
+	}
 	report.ComponentAnalysis = buildComponentAnalysis(outcomes, horizons)
 	report.WalkForward = buildComponentWalkForwardAnalysis(outcomes, horizons)
 	report.Portfolio = buildPortfolioConstraintAnalysis(outcomes, horizons, report.ComponentAnalysis)
@@ -471,6 +498,8 @@ func BuildOutcomeReport(outcomes []SignalOutcome, now time.Time, warnings []stri
 	report.Calibration = buildCalibrationAnalysis(outcomes, horizons)
 	report.Tuning = buildTuningAnalysis(outcomes, horizons, report.Assessment, report.ComponentAnalysis, report.WalkForward)
 	report.Tuning.DataThrough = report.DataThrough
+	report.MonsterAnalysis = buildMonsterForwardAnalysis(outcomes, horizons)
+	report.MonsterAnalysis.DataThrough = report.DataThrough
 	report.Recent = recentOutcomes(outcomes, 24)
 	return report
 }
@@ -748,6 +777,209 @@ func buildTuningAnalysis(outcomes []SignalOutcome, horizons []int, assessment Ou
 		add("observe", "low", "继续观察新的成熟结果和市场状态分层表现", "当前没有足够证据支持新的参数动作")
 	}
 	return analysis
+}
+
+// buildMonsterForwardAnalysis keeps the high-volatility radar on its own
+// research track. A stage is not considered actionable merely because it has
+// many rows: it needs enough mature observations, enough distinct trading
+// dates, and enough rows that actually passed the radar gate. This mirrors the
+// time-sliced validation discipline used by the main model without allowing a
+// Monster result to alter Champion weights.
+func buildMonsterForwardAnalysis(outcomes []SignalOutcome, horizons []int) MonsterForwardAnalysis {
+	horizon := OutcomeHorizon5D
+	if !containsInt(horizons, horizon) && len(horizons) > 0 {
+		horizon = horizons[len(horizons)-1]
+	}
+	analysis := MonsterForwardAnalysis{
+		Horizon: horizon, MinimumSamples: minimumMonsterStageSamples,
+		MinimumDates: minimumMonsterStageDates, MinimumEligible: minimumMonsterEligibleSamples,
+		Stages: make([]MonsterStageMetric, 0), Status: "样本收集中",
+	}
+	rows := uniqueMonsterOutcomeRowsForHorizon(outcomes, horizon)
+	byStage := make(map[MonsterStage][]SignalOutcome)
+	for _, row := range rows {
+		stage := row.MonsterStage
+		if strings.TrimSpace(string(stage)) == "" {
+			stage = MonsterStageInsufficient
+		}
+		byStage[stage] = append(byStage[stage], row)
+	}
+	orderedStages := []MonsterStage{
+		MonsterStageDormant, MonsterStageStarting, MonsterStageAccelerating,
+		MonsterStageDiverging, MonsterStageEbbing, MonsterStageInsufficient,
+	}
+	catalogCount := len(orderedStages)
+	seen := make(map[MonsterStage]bool, len(orderedStages))
+	for _, stage := range orderedStages {
+		seen[stage] = true
+	}
+	for stage := range byStage {
+		if !seen[stage] {
+			orderedStages = append(orderedStages, stage)
+		}
+	}
+	// Unknown future enum values remain visible but deterministic after the
+	// current stage catalog.
+	sort.SliceStable(orderedStages[catalogCount:], func(left, right int) bool {
+		return orderedStages[catalogCount+left] < orderedStages[catalogCount+right]
+	})
+
+	readyForStage := func(items []SignalOutcome) []SignalOutcome {
+		ready := make([]SignalOutcome, 0, len(items))
+		for _, item := range items {
+			if item.Status == OutcomeReady && item.BenchmarkAvailable {
+				ready = append(ready, item)
+			}
+		}
+		return ready
+	}
+	for _, stage := range orderedStages {
+		items := byStage[stage]
+		metric := MonsterStageMetric{Stage: stage, Signals: len(items), Status: "无样本"}
+		ready := readyForStage(items)
+		metric.Ready = len(ready)
+		metric.MatureDates = len(distinctOutcomeDates(ready))
+		eligible := make([]SignalOutcome, 0, len(ready))
+		for _, item := range ready {
+			if item.MonsterEligible {
+				eligible = append(eligible, item)
+			}
+		}
+		metric.EligibleReady = len(eligible)
+		allSummary := summarizeWithScores(ready, horizon, func(item SignalOutcome) (float64, bool) {
+			return item.MonsterScore, finite(item.MonsterScore)
+		})
+		metric.HitRate = allSummary.HitRatePercent
+		metric.AverageReturn = allSummary.AverageReturn
+		metric.AverageExcess = allSummary.AverageExcess
+		metric.AverageFavorable = allSummary.AverageFavorable
+		metric.AverageAdverse = allSummary.AverageAdverse
+		metric.RankIC = allSummary.RankInformationCoefficient
+		eligibleSummary := summarizeWithScores(eligible, horizon, func(item SignalOutcome) (float64, bool) {
+			return item.MonsterScore, finite(item.MonsterScore)
+		})
+		metric.EligibleHitRate = eligibleSummary.HitRatePercent
+		metric.EligibleReturn = eligibleSummary.AverageReturn
+		metric.EligibleExcess = eligibleSummary.AverageExcess
+		metric.EligibleRankIC = eligibleSummary.RankInformationCoefficient
+
+		if metric.Ready < analysis.MinimumSamples || metric.MatureDates < analysis.MinimumDates {
+			metric.Status = "样本不足"
+			metric.Recommendation = fmt.Sprintf("继续积累%d日窗口，至少需要%d个成熟样本和%d个不同交易日；暂不调整该阶段门槛", horizon, analysis.MinimumSamples, analysis.MinimumDates)
+		} else if metric.EligibleReady < analysis.MinimumEligible {
+			metric.Status = "可观察但可执行样本不足"
+			metric.Recommendation = fmt.Sprintf("该阶段成熟样本已够但仅%d个通过雷达门控，先扩大候选覆盖，不据此改变仓位规则", metric.EligibleReady)
+		} else {
+			metric.SampleSufficient = true
+			scoreExcess := metric.EligibleExcess
+			scoreHit := metric.EligibleHitRate
+			switch {
+			case scoreExcess < 0 || scoreHit < 45:
+				metric.Status = "偏弱"
+				metric.Recommendation = "该阶段可执行结果偏弱，降低观察优先级并复核失效位、市场状态和量价门槛；保留 Champion 不自动改参"
+			case scoreExcess > 0 && scoreHit >= 55:
+				metric.Status = "正向"
+				metric.Recommendation = "该阶段出现稳定正向证据，保持现有门槛并进入更长的非重叠前向复核"
+			default:
+				metric.Status = "混合"
+				metric.Recommendation = "该阶段收益与命中率信号不一致，维持当前参数，等待新的独立交易日"
+			}
+		}
+		analysis.Stages = append(analysis.Stages, metric)
+	}
+
+	sufficient, positive, weak := 0, 0, 0
+	for _, stage := range analysis.Stages {
+		if !stage.SampleSufficient {
+			continue
+		}
+		sufficient++
+		if stage.Status == "正向" {
+			positive++
+		}
+		if stage.Status == "偏弱" {
+			weak++
+		}
+	}
+	if sufficient == 0 {
+		analysis.Status = "样本收集中"
+		analysis.Summary = fmt.Sprintf("当前%d日抓妖阶段尚无满足成熟样本、独立交易日和可执行样本三重门槛的阶段", horizon)
+		analysis.Recommendations = []TuningRecommendation{{
+			Key: "monster-sample", Priority: "high",
+			Action:   fmt.Sprintf("继续积累抓妖阶段的%d日前向结果，不自动调整雷达分数或仓位", horizon),
+			Evidence: fmt.Sprintf("每个阶段至少%d个成熟样本、%d个交易日、%d个已通过门控样本", analysis.MinimumSamples, analysis.MinimumDates, analysis.MinimumEligible),
+		}}
+	} else {
+		analysis.Status = "阶段复核中"
+		analysis.Summary = fmt.Sprintf("%d日抓妖阶段已有%d个充分单元，其中正向%d个、偏弱%d个；结果只用于人工复核", horizon, sufficient, positive, weak)
+		for _, stage := range analysis.Stages {
+			if stage.SampleSufficient && stage.Recommendation != "" {
+				priority := "medium"
+				if stage.Status == "偏弱" {
+					priority = "high"
+				}
+				analysis.Recommendations = append(analysis.Recommendations, TuningRecommendation{
+					Key: "monster-stage:" + string(stage.Stage), Priority: priority,
+					Action:   string(stage.Stage) + "：" + stage.Recommendation,
+					Evidence: fmt.Sprintf("成熟%d个、可执行%d个、覆盖%d个交易日、可执行平均超额%+.2f%%", stage.Ready, stage.EligibleReady, stage.MatureDates, stage.EligibleExcess),
+				})
+			}
+		}
+	}
+	if len(analysis.Stages) == 0 {
+		analysis.Summary = fmt.Sprintf("当前%d日窗口暂无抓妖阶段归档", horizon)
+	}
+	return analysis
+}
+
+func uniqueMonsterOutcomeRowsForHorizon(outcomes []SignalOutcome, horizon int) []SignalOutcome {
+	latest := make(map[string]SignalOutcome)
+	quality := func(item SignalOutcome) int {
+		switch {
+		case item.Status == OutcomeReady && item.BenchmarkAvailable:
+			return 3
+		case item.Status == OutcomePending:
+			return 2
+		case item.Status == OutcomeReady:
+			return 1
+		default:
+			return 0
+		}
+	}
+	for _, item := range outcomes {
+		if item.Horizon != horizon {
+			continue
+		}
+		// Legacy outcome rows predate the independent radar. Do not classify
+		// those rows as "数据不足" and accidentally present them as Monster
+		// evidence; only rows carrying an explicit stage belong to this report.
+		if strings.TrimSpace(string(item.MonsterStage)) == "" {
+			continue
+		}
+		date := outcomeDate(item)
+		key := strings.TrimSpace(item.Symbol) + "|" + date
+		if strings.Trim(key, "|") == "" {
+			key = strings.TrimSpace(item.SignalID)
+		}
+		if key == "" {
+			continue
+		}
+		previous, found := latest[key]
+		if !found || quality(item) > quality(previous) || (quality(item) == quality(previous) && item.EvaluatedAt.After(previous.EvaluatedAt)) {
+			latest[key] = item
+		}
+	}
+	result := make([]SignalOutcome, 0, len(latest))
+	for _, item := range latest {
+		result = append(result, item)
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		if outcomeDate(result[left]) == outcomeDate(result[right]) {
+			return result[left].Symbol < result[right].Symbol
+		}
+		return outcomeDate(result[left]) < outcomeDate(result[right])
+	})
+	return result
 }
 
 func calibratedOutcomeScore(item SignalOutcome) float64 {
@@ -1527,6 +1759,16 @@ func largestShare(values map[string]int, total int) (string, float64) {
 }
 
 func breakdownOutcomes(outcomes []SignalOutcome, horizons []int, groups func(SignalOutcome) []OutcomeBreakdown, keys func(SignalOutcome) []string) []OutcomeBreakdown {
+	return breakdownOutcomesWithScores(outcomes, horizons, groups, keys, func(item SignalOutcome) (float64, bool) {
+		return item.Score, finite(item.Score)
+	})
+}
+
+// breakdownOutcomesWithScores keeps grouping and score attribution separate.
+// Most historical breakdowns use the immutable composite score, while an
+// auxiliary model (such as the Monster radar) can supply its own point-in-time
+// score without contaminating the baseline statistics.
+func breakdownOutcomesWithScores(outcomes []SignalOutcome, horizons []int, groups func(SignalOutcome) []OutcomeBreakdown, keys func(SignalOutcome) []string, scoreFor func(SignalOutcome) (float64, bool)) []OutcomeBreakdown {
 	labels := make(map[string]string)
 	for _, item := range outcomes {
 		for _, group := range groups(item) {
@@ -1549,7 +1791,17 @@ func breakdownOutcomes(outcomes []SignalOutcome, horizons []int, groups func(Sig
 				}
 			}
 		}
-		result = append(result, OutcomeBreakdown{Key: key, Label: labels[key], Signals: uniqueOutcomeSignals(items), Summaries: summarizeOutcomes(items, horizons)})
+		summaries := make([]OutcomeSummary, 0, len(horizons))
+		for _, horizon := range horizons {
+			horizonItems := make([]SignalOutcome, 0)
+			for _, item := range items {
+				if item.Horizon == horizon {
+					horizonItems = append(horizonItems, item)
+				}
+			}
+			summaries = append(summaries, summarizeWithScores(horizonItems, horizon, scoreFor))
+		}
+		result = append(result, OutcomeBreakdown{Key: key, Label: labels[key], Signals: uniqueOutcomeSignals(items), Summaries: summaries})
 	}
 	return result
 }

@@ -283,6 +283,27 @@ func effectiveVolumeRatio(input Snapshot, fallback float64) float64 {
 	return fallback
 }
 
+// estimatedMinuteSpeed supplies a transparent fallback when a ranking feed
+// omits its speed field. It uses the latest two valid minute points rather than
+// inventing a value from the daily percentage change, so the fallback remains
+// a short-horizon observation and can be disclosed in the signal warnings.
+func estimatedMinuteSpeed(points []domain.MinutePoint) (float64, bool) {
+	valid := make([]domain.MinutePoint, 0, len(points))
+	for _, point := range points {
+		if point.Price > 0 && finite(point.Price) {
+			valid = append(valid, point)
+		}
+	}
+	if len(valid) < 2 {
+		return 0, false
+	}
+	previous, latest := valid[len(valid)-2].Price, valid[len(valid)-1].Price
+	if previous <= 0 || latest <= 0 || !finite(previous) || !finite(latest) {
+		return 0, false
+	}
+	return (latest/previous - 1) * 100, true
+}
+
 func evaluateTrendBreakout(input Snapshot) Component {
 	value, ok := calculateIndicators(input)
 	if !ok {

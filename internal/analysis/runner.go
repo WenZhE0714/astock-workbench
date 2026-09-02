@@ -30,6 +30,8 @@ type Options struct {
 	DeepModel  string
 	QuickModel string
 	BackendURL string
+	APIKey     string
+	APIKeyEnv  string
 	Checkpoint bool
 }
 
@@ -142,6 +144,7 @@ func (runner *Runner) invoke(ctx context.Context, options Options, check bool, t
 		arguments = append(arguments, "--checkpoint")
 	}
 	command := exec.CommandContext(ctx, python, arguments...)
+	command.Env = commandEnvironment(options)
 	var checkOutput bytes.Buffer
 	if check {
 		command.Stdout = &checkOutput
@@ -179,6 +182,27 @@ func (runner *Runner) invoke(ctx context.Context, options Options, check bool, t
 		return fmt.Errorf("分析结果格式无效: %w", err)
 	}
 	return nil
+}
+
+func commandEnvironment(options Options) []string {
+	env := append([]string(nil), os.Environ()...)
+	key := strings.TrimSpace(options.APIKey)
+	keyEnv := strings.TrimSpace(options.APIKeyEnv)
+	if key != "" && keyEnv != "" {
+		prefix := keyEnv + "="
+		updated := false
+		for index, item := range env {
+			if strings.HasPrefix(item, prefix) {
+				env[index] = prefix + key
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			env = append(env, prefix+key)
+		}
+	}
+	return env
 }
 
 func (runner *Runner) Run(ctx context.Context, options Options) (domain.AnalysisResult, error) {

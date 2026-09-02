@@ -553,6 +553,9 @@ func (client *TDXClient) FetchMinutePoints(ctx context.Context, symbol string) (
 	valid := points[:0]
 	for _, point := range points {
 		if validTDXMinutePoint(point) {
+			if IsBroadMarketSymbol(symbol) {
+				point.Leading = point.Average
+			}
 			valid = append(valid, point)
 		}
 	}

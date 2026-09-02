@@ -35,3 +35,17 @@ func TestParseTencentMinutePayloadRejectsInvalidRows(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEastmoneyMinutePayloadUsesProviderAverageAsYellowLine(t *testing.T) {
+	raw := `{"data":{"prePrice":10,"trends":["2026-08-17 09:30,10,10.10,10.20,9.90,100,1000,10.00","2026-08-17 09:31,10.10,10.20,10.30,10.00,150,1525,10.05"]}}`
+	points := ParseEastmoneyMinutePayload(raw, "sh600519")
+	if len(points) != 2 {
+		t.Fatalf("unexpected point count %d: %+v", len(points), points)
+	}
+	if points[0].Time != "09:30" || points[0].Price != 10.10 || points[0].Average != 10 || points[0].Leading != 10 {
+		t.Fatalf("unexpected first point: %+v", points[0])
+	}
+	if points[1].Volume != 50 || points[1].Amount != 525 || points[1].Average != 10.05 {
+		t.Fatalf("cumulative values or average not parsed: %+v", points[1])
+	}
+}

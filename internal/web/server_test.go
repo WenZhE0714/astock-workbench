@@ -85,6 +85,60 @@ func TestIndicesEndpointReturnsThreeOrderedMarketQuotes(t *testing.T) {
 	}
 }
 
+func TestIndicesEndpointIncludesKeyGlobalMarketsAndCachesThem(t *testing.T) {
+	calls := 0
+	global := globalIndexStub{
+		calls: &calls,
+		items: []domain.GlobalIndex{
+			{Symbol: "gb_dji", Region: "美国", Name: "道琼斯", Current: 43000.25, Delta: 120.5, Percent: .28, QuoteTime: "2026-08-28 04:00:00", Source: "测试外盘"},
+			{Symbol: "rt_hkHSI", Region: "港股", Name: "恒生指数", Current: 25000.1, Delta: -80.2, Percent: -.32, QuoteTime: "2026-08-29 16:00:00", Source: "测试外盘"},
+			{Symbol: "rt_hkHSTECH", Region: "港股", Name: "恒生科技", Current: 5600.2, Delta: 15.1, Percent: .27, QuoteTime: "2026-08-29 16:00:00", Source: "测试外盘"},
+			{Symbol: "b_NKY", Region: "日本", Name: "日经225", Current: 41000.4, Delta: 300.2, Percent: .74, QuoteTime: "2026-08-29 15:30:00", Source: "测试外盘"},
+			{Symbol: "b_KOSPI", Region: "韩国", Name: "KOSPI", Current: 2700.4, Delta: 12.2, Percent: .45, QuoteTime: "2026-08-29 15:30:00", Source: "测试外盘"},
+			{Symbol: "b_KOSDAQ", Region: "韩国", Name: "KOSDAQ", Current: 760.8, Delta: -3.4, Percent: -.44, QuoteTime: "2026-08-29 15:30:00", Source: "测试外盘"},
+			{Symbol: "gb_ixic", Region: "美国", Name: "纳斯达克", Current: 18000.8, Delta: 90.3, Percent: .5, QuoteTime: "2026-08-28 04:00:00", Source: "测试外盘"},
+			{Symbol: "gb_inx", Region: "美国", Name: "标普500", Current: 5600.6, Delta: 20.4, Percent: .36, QuoteTime: "2026-08-28 04:00:00", Source: "测试外盘", Extended: &domain.GlobalExtendedQuote{Session: "盘后", Symbol: "SPY", Price: 560.7, Percent: .02, QuoteTime: "Aug 28 07:41PM EDT", Source: "测试延长"}},
+		},
+	}
+	server := NewServer(
+		resolverStub{}, marketQuoteStub{}, historyStub{}, minuteStub{}, "600519",
+		WithMarketAmount(marketAmountStub{}), WithGlobalMarkets(global),
+	)
+	for attempt := 0; attempt < 2; attempt++ {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/indices", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var response marketIndicesResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.GlobalMarkets) != len(globalMarketDefinitions) || response.GlobalFetchedAt == "" || response.GlobalWarning != "" {
+			t.Fatalf("unexpected global response: %+v", response)
+		}
+		for index, definition := range globalMarketDefinitions {
+			item := response.GlobalMarkets[index]
+			if item.Symbol != definition.Symbol || item.Region != definition.Region || item.Name != definition.Name || item.Current == "--" {
+				t.Fatalf("global market order/fields mismatch at %d: %+v", index, item)
+			}
+		}
+		var spx globalMarketResponse
+		for _, item := range response.GlobalMarkets {
+			if item.Symbol == "gb_inx" {
+				spx = item
+				break
+			}
+		}
+		if spx.Extended == nil || spx.Extended.Session != "盘后" || spx.Extended.Price != "560.7" {
+			t.Fatalf("extended-hours quote was not preserved: %+v", spx)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("global index cache did not suppress duplicate fetches: %d", calls)
+	}
+}
+
 func TestPreviousMarketAmountBarSkipsCurrentDayWhenAmountMatches(t *testing.T) {
 	bars := []domain.DailyBar{
 		{Date: "2026-08-15", Amount: 900e9},
@@ -119,6 +173,19 @@ func (quoteStub) Fetch(_ context.Context, symbols []string) ([]domain.Quote, err
 }
 
 type marketQuoteStub struct{}
+
+type globalIndexStub struct {
+	items []domain.GlobalIndex
+	err   error
+	calls *int
+}
+
+func (stub globalIndexStub) FetchGlobalIndices(context.Context) ([]domain.GlobalIndex, error) {
+	if stub.calls != nil {
+		(*stub.calls)++
+	}
+	return append([]domain.GlobalIndex(nil), stub.items...), stub.err
+}
 
 func (marketQuoteStub) Fetch(_ context.Context, symbols []string) ([]domain.Quote, error) {
 	amounts := map[string]float64{

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 type ViewOptions struct {
@@ -178,6 +179,14 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 	high, highOK := parsePrice(item.High)
 	current, currentOK := parsePrice(item.Current)
 	previousClose, previousCloseOK := parsePrice(item.PreviousClose)
+	yellowValue := item.AveragePrice
+	if market.IsBroadMarketSymbol(item.Symbol) {
+		yellowValue = ""
+		if item.Leading > 0 && !math.IsNaN(item.Leading) && !math.IsInf(item.Leading, 0) {
+			yellowValue = fmt.Sprintf("%.2f", item.Leading)
+		}
+	}
+	yellow, yellowOK := parsePrice(yellowValue)
 	label := style("日内", "90", color)
 	if !lowOK || !highOK || !currentOK {
 		return []string{fmt.Sprintf("%s  %s — %s", label, item.Low, item.High)}
@@ -206,6 +215,10 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 		return position
 	}
 	position := positionAt(current)
+	yellowPosition := -1
+	if yellowOK {
+		yellowPosition = positionAt(yellow)
+	}
 	zeroPosition := -1
 	if previousCloseOK {
 		zeroPosition = positionAt(previousClose)
@@ -219,6 +232,13 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 	} else {
 		rail[position] = '●'
 	}
+	if yellowPosition >= 0 {
+		if yellowPosition == position && position != zeroPosition {
+			rail[yellowPosition] = '◉'
+		} else if yellowPosition != position {
+			rail[yellowPosition] = '◇'
+		}
+	}
 	railText := "├" + string(rail) + "┤"
 	if color {
 		markerCode := trendCode(item.Delta, true)
@@ -227,7 +247,13 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 		for index, character := range rail {
 			switch {
 			case index == position:
-				builder.WriteString(style(string(character), markerCode, true))
+				if index == yellowPosition {
+					builder.WriteString(style(string(character), markerCode+";1", true))
+				} else {
+					builder.WriteString(style(string(character), markerCode, true))
+				}
+			case index == yellowPosition:
+				builder.WriteString(style(string(character), "33;1", true))
 			case index == zeroPosition:
 				builder.WriteString(style(string(character), "1;37", true))
 			default:
@@ -243,7 +269,8 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 		if labelStart < 0 {
 			labelStart = 0
 		}
-		lines = append(lines, strings.Repeat(" ", labelStart)+style("0%", "1;37", color))
+		legend := style("白线● 黄线◇", "90", color)
+		lines = append(lines, strings.Repeat(" ", labelStart)+style("0%", "1;37", color)+"  "+legend)
 	}
 	return lines
 }
@@ -845,7 +872,7 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 	if !math.IsNaN(item.Delta) && !math.IsNaN(item.Percent) {
 		change = fmt.Sprintf("%+.2f  %+.2f%%", item.Delta, item.Percent)
 	}
-	priceLine := style("现价", "90", color) + "  " + style(item.Current, trendCode(item.Delta, true), color) +
+	priceLine := style("白线现价", "90", color) + "  " + style(item.Current, trendCode(item.Delta, true), color) +
 		"   " + style(change, trendCode(item.Delta, false), color)
 	bid := firstLevel(item.Bids)
 	ask := firstLevel(item.Asks)
@@ -857,13 +884,22 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 	lines = append(lines, priceRail(item, innerWidth, color)...)
 	lines = append(lines, "\x00separator")
 
+	yellowLabel := "黄线均价"
+	yellowValue := item.AveragePrice
+	if market.IsBroadMarketSymbol(item.Symbol) {
+		yellowLabel = "黄线领先"
+		yellowValue = "--"
+		if item.Leading > 0 && !math.IsNaN(item.Leading) && !math.IsInf(item.Leading, 0) {
+			yellowValue = fmt.Sprintf("%.2f", item.Leading)
+		}
+	}
 	metrics := []metric{
 		{Label: "成交量", Value: humanVolume(item.Volume)},
 		{Label: "成交额", Value: humanAmount(item.Amount)},
 		{Label: "换手", Value: withUnit(item.Turnover, "%")},
 		{Label: "振幅", Value: withUnit(item.Amplitude, "%")},
 		{Label: "量比", Value: item.VolumeRatio},
-		{Label: "均价", Value: item.AveragePrice},
+		{Label: yellowLabel, Value: yellowValue},
 		{Label: "PE(TTM)", Value: item.PETTM},
 		{Label: "PB", Value: item.PB},
 		{Label: "总市值", Value: humanMarketCap(item.MarketCap)},

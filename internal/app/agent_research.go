@@ -101,7 +101,7 @@ func (app *App) runResearchAgents(
 				Role: role.ID, Label: role.Label, Status: "running", StartedAt: startedAt, FactsHash: factsHash,
 			}
 			synthesizer := app.marketReportAI
-			if _, ok := synthesizer.(*analysis.CodexRunner); ok {
+			if runner, ok := synthesizer.(*analysis.CodexRunner); ok {
 				temporary, tempError := os.MkdirTemp("", "astock-research-agent-*")
 				if tempError != nil {
 					run.Status, run.Error = "failed", tempError.Error()
@@ -110,7 +110,7 @@ func (app *App) runResearchAgents(
 					return
 				}
 				defer os.RemoveAll(temporary)
-				synthesizer = analysis.NewCodexRunner(temporary)
+				synthesizer = runner.CloneForWorkDir(temporary)
 			} else {
 				nonCodexMu.Lock()
 				defer nonCodexMu.Unlock()

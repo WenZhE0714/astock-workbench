@@ -19,10 +19,11 @@ const (
 	shadowProfileBalanced     = "balanced"
 	shadowProfileConservative = "conservative"
 	shadowProfileAggressive   = "aggressive"
+	shadowProfileMonster      = "monster"
 	shadowProfileAdaptive     = "adaptive"
 )
 
-var shadowProfileOrder = []string{shadowProfileBalanced, shadowProfileConservative, shadowProfileAggressive, shadowProfileAdaptive}
+var shadowProfileOrder = []string{shadowProfileBalanced, shadowProfileConservative, shadowProfileAggressive, shadowProfileMonster, shadowProfileAdaptive}
 
 type shadowProfileSummary struct {
 	ID                 string       `json:"id"`
@@ -325,6 +326,44 @@ func adaptiveShadowExecutionProfile(archive shadowArchive) shadowExecutionProfil
 	return shadowExecutionProfile{
 		ID: shadowProfileAdaptive, Name: "自适应校准型", Strategy: "滚动验证门控 · Champion/Challenger",
 		Description: "使用通过时间留出门禁的候选分数与组件权重，和均衡型并行观察，不直接改写基线。",
+		Config:      cfg, Archive: archive,
+	}
+}
+
+func monsterShadowExecutionProfile(archive shadowArchive) shadowExecutionProfile {
+	cfg := paper.DefaultConfig()
+	// The radar is deliberately observed in its own, lower-capacity ledger. It
+	// gets enough cash and tranches to measure the signal, while retaining a
+	// larger reserve because high-volatility candidates have wider slippage.
+	cfg.UseMonsterRadar = true
+	cfg.MinimumScore = 58
+	cfg.MaxPositionPercent = 15
+	cfg.MaxIndustryPercent = 25
+	cfg.MaxPortfolioPercent = 70
+	cfg.CashReservePercent = 30
+	cfg.MaxDailyDeploymentPercent = 30
+	cfg.InitialEntryPercent = 40
+	cfg.MaxEntryTranches = 3
+	cfg.AdditionScoreStep = 5
+	cfg.MaxOpenPositions = 6
+	cfg.MaxDailyRotations = 2
+	cfg.RotationScoreGap = 8
+	cfg.RotationMinimumHoldDays = 2
+	cfg.MaxPortfolioRiskPercent = 5
+	cfg.MaxPositionRiskPercent = 1.25
+	cfg.MaxLossPercent = 9
+	cfg.MinimumRiskDistancePercent = 3
+	cfg.RiskCooldownDays = 3
+	cfg.MaxParticipationPercent = 8
+	cfg.HoldingDays = 4
+	cfg.TMaxDailyRounds = 2
+	cfg.TVWAPDeviationPercent = .8
+	cfg.TMinimumPriceGapPercent = .8
+	cfg.TMinimumNetProfitPercent = .2
+	cfg.TCooldownMinutes = 15
+	return shadowExecutionProfile{
+		ID: shadowProfileMonster, Name: "抓妖实验型", Strategy: "雷达≥58 · 09:40后入场 · 6持仓",
+		Description: "仅使用抓妖雷达的独立纸面账本；开盘前10分钟只观察，09:40后验证潜伏、启动和加速阶段，不影响基线账户。",
 		Config:      cfg, Archive: archive,
 	}
 }

@@ -266,6 +266,47 @@ func TestBuildOutcomeReportBreaksDownMarketRegimes(t *testing.T) {
 	}
 }
 
+func TestMonsterForwardAnalysisRequiresExecutableStageSamples(t *testing.T) {
+	items := make([]SignalOutcome, 0, 42)
+	for index := 0; index < 20; index++ {
+		date := fmt.Sprintf("2026-07-%02d", index+1)
+		items = append(items, SignalOutcome{
+			Key: "starting-" + date, Symbol: fmt.Sprintf("sh600%03d", index), SignalDate: date,
+			Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true,
+			ReturnPercent: 2, ExcessReturn: 1, MonsterScore: 76,
+			MonsterStage: MonsterStageStarting, MonsterEligible: true,
+		})
+		items = append(items, SignalOutcome{
+			Key: "dormant-" + date, Symbol: fmt.Sprintf("sz000%03d", index), SignalDate: date,
+			Horizon: OutcomeHorizon5D, Status: OutcomeReady, BenchmarkAvailable: true,
+			ReturnPercent: 1, ExcessReturn: .5, MonsterScore: 62,
+			MonsterStage: MonsterStageDormant, MonsterEligible: false,
+		})
+	}
+	// A duplicate pending row must not inflate the stage sample count once the
+	// mature, benchmark-covered revision is present.
+	items = append(items, SignalOutcome{
+		Key: "starting-pending", Symbol: "sh600000", SignalDate: "2026-07-01",
+		Horizon: OutcomeHorizon5D, Status: OutcomePending, MonsterStage: MonsterStageStarting,
+	})
+	analysis := buildMonsterForwardAnalysis(items, []int{OutcomeHorizon5D})
+	if analysis.Status != "阶段复核中" || len(analysis.Stages) < 2 {
+		t.Fatalf("unexpected monster analysis status: %+v", analysis)
+	}
+	byStage := make(map[MonsterStage]MonsterStageMetric, len(analysis.Stages))
+	for _, stage := range analysis.Stages {
+		byStage[stage.Stage] = stage
+	}
+	starting := byStage[MonsterStageStarting]
+	if !starting.SampleSufficient || starting.Ready != 20 || starting.EligibleReady != 20 || starting.Status != "正向" || starting.EligibleExcess <= 0 {
+		t.Fatalf("eligible starting stage was not promoted correctly: %+v", starting)
+	}
+	dormant := byStage[MonsterStageDormant]
+	if dormant.SampleSufficient || dormant.Ready != 20 || dormant.EligibleReady != 0 || dormant.Status != "可观察但可执行样本不足" {
+		t.Fatalf("ineligible dormant stage bypassed executable gate: %+v", dormant)
+	}
+}
+
 func TestComponentAnalysisDeduplicatesHorizonsAndClassifiesRelations(t *testing.T) {
 	items := make([]SignalOutcome, 0, 48)
 	for index := 0; index < 24; index++ {
@@ -442,7 +483,7 @@ func TestOutcomeTuningRequiresIndependentTradingDates(t *testing.T) {
 			Key: fmt.Sprintf("sh%04d:%s:5", index, day), SignalID: fmt.Sprintf("date-gate-%d", index),
 			Symbol: fmt.Sprintf("sh%04d", index), SignalDate: day,
 			SignalAsOf: time.Date(2026, 8, asOfDay, 10, index%60, 0, 0, time.Local),
-			Score: 70, State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady,
+			Score:      70, State: StateTriggered, Horizon: OutcomeHorizon5D, Status: OutcomeReady,
 			BenchmarkAvailable: true, ReturnPercent: 1, ExcessReturn: .5,
 		})
 	}

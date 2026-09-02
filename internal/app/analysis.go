@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/analysis"
+	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 )
 
@@ -50,11 +51,36 @@ func (app *App) runAnalyze(ctx context.Context, arguments []string) error {
 			fmt.Fprintf(app.out, "实时快照  %s %s  %s  %+.2f%%  %s\n", quotes[0].Code, quotes[0].Name, quotes[0].Current, quotes[0].Percent, quotes[0].QuoteTime)
 		}
 	}
+	apiKey, apiKeyEnv := "", ""
+	// The Web AI settings are also the default source for the Python
+	// TradingAgents bridge when the caller did not provide explicit CLI flags.
+	// Codex-only profiles are intentionally not projected into the bridge: that
+	// gateway speaks a private CLI protocol and must continue through Codex.
+	service := webAIConfigService{app: app}
+	if app.aiConfig != nil {
+		if record, configErr := service.loadRecord(); configErr == nil && record.Config.ExecutionMode == domain.AIExecutionAPI {
+			if *provider == "" {
+				*provider = record.Config.Provider
+			}
+			if *deepModel == "" {
+				*deepModel = record.Config.DeepModel
+			}
+			if *quickModel == "" {
+				*quickModel = record.Config.QuickModel
+			}
+			if *backendURL == "" {
+				*backendURL = record.Config.BaseURL
+			}
+			apiKey = record.Token
+			apiKeyEnv = domain.AIProviderTokenEnv(*provider)
+		}
+	}
 	fmt.Fprintf(app.errOut, "正在分析 %s %s（这通常会产生多次模型调用）...\n", symbol[2:], name)
 	result, err := app.analyzer.Run(ctx, analysis.Options{
 		Repo: *repo, Python: *python, WorkDir: app.paths.TradingAgentsDir,
 		Ticker: symbol[2:], TradeDate: *tradeDate, Provider: *provider,
 		DeepModel: *deepModel, QuickModel: *quickModel, BackendURL: *backendURL,
+		APIKey: apiKey, APIKeyEnv: apiKeyEnv,
 		Checkpoint: *checkpoint,
 	})
 	if err != nil {

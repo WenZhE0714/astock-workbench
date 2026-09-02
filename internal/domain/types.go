@@ -73,6 +73,7 @@ type Quote struct {
 	LimitDown      string       `json:"limit_down"`
 	VolumeRatio    string       `json:"volume_ratio"`
 	AveragePrice   string       `json:"average_price"`
+	Leading        float64      `json:"leading,omitempty"`
 	Bids           []DepthLevel `json:"bids,omitempty"`
 	Asks           []DepthLevel `json:"asks,omitempty"`
 }
@@ -138,12 +139,16 @@ type DailyBar struct {
 // day. Volume and Amount are minute increments derived from Tencent's
 // cumulative fields; Average is the intraday volume-weighted average price.
 type MinutePoint struct {
-	Symbol           string  `json:"symbol"`
-	Source           string  `json:"source"`
-	TradeDate        string  `json:"trade_date"`
-	Time             string  `json:"time"`
-	Price            float64 `json:"price"`
-	Average          float64 `json:"average"`
+	Symbol    string  `json:"symbol"`
+	Source    string  `json:"source"`
+	TradeDate string  `json:"trade_date"`
+	Time      string  `json:"time"`
+	Price     float64 `json:"price"`
+	Average   float64 `json:"average"`
+	// Leading is the broad-market yellow line (上证领先) when the source
+	// provides it. It is intentionally separate from Average because an
+	// individual stock's yellow line is its VWAP.
+	Leading          float64 `json:"leading,omitempty"`
 	Volume           float64 `json:"volume"`
 	Amount           float64 `json:"amount_yuan"`
 	CumulativeVolume float64 `json:"cumulative_volume"`

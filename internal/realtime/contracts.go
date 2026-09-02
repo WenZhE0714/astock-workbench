@@ -28,6 +28,69 @@ type Component struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+type MonsterStage string
+
+const (
+	MonsterStageDormant      MonsterStage = "潜伏"
+	MonsterStageStarting     MonsterStage = "启动"
+	MonsterStageAccelerating MonsterStage = "加速"
+	MonsterStageDiverging    MonsterStage = "高位分歧"
+	MonsterStageEbbing       MonsterStage = "退潮"
+	MonsterStageInsufficient MonsterStage = "数据不足"
+)
+
+// MonsterRadar is an independent high-volatility observation model. Its
+// score and eligibility never participate in the nine-factor composite score,
+// calibrated challenger or baseline portfolio gate. The opt-in Monster shadow
+// account may consume this field as an explicitly separate experiment.
+type MonsterRadar struct {
+	Score      float64      `json:"score"`
+	Stage      MonsterStage `json:"stage"`
+	Label      string       `json:"label"`
+	Eligible   bool         `json:"eligible"`
+	Confidence string       `json:"confidence"`
+	// QuoteAgeSeconds is the elapsed time between the exchange quote timestamp
+	// and the scan clock. A same-day quote can still be stale, so the radar
+	// keeps this value beside QuoteFresh for audit and UI diagnostics.
+	QuoteAgeSeconds       int     `json:"quote_age_seconds,omitempty"`
+	RecentStrongDays      int     `json:"recent_strong_days"`
+	ConsecutiveStrongDays int     `json:"consecutive_strong_days"`
+	QuoteFresh            bool    `json:"quote_fresh"`
+	LimitBoundaryReady    bool    `json:"limit_boundary_ready"`
+	BreakoutLevelReady    bool    `json:"breakout_level_ready"`
+	LimitUpDistance       float64 `json:"limit_up_distance_percent,omitempty"`
+	BreakoutDistance      float64 `json:"breakout_distance_percent,omitempty"`
+	IntradayPullback      float64 `json:"intraday_pullback_percent,omitempty"`
+	// OpeningGapPercent compares the current session open with the prior
+	// completed close. It is only populated when both prices are valid.
+	OpeningGapReady   bool    `json:"opening_gap_ready,omitempty"`
+	OpeningGapPercent float64 `json:"opening_gap_percent"`
+	// OpeningGapHeld indicates that a meaningful gap-up was still above the
+	// opening price at the scan time. It is evidence of opening acceptance, not
+	// an order instruction.
+	OpeningGapHeld      bool `json:"opening_gap_held,omitempty"`
+	OpeningGapRecovered bool `json:"opening_gap_recovered,omitempty"`
+	// OpeningRangeReady/Breakout describe the first 15 minutes of continuous
+	// auction when minute data is available.
+	OpeningRangeReady     bool    `json:"opening_range_ready,omitempty"`
+	OpeningRangeBreakout  bool    `json:"opening_range_breakout,omitempty"`
+	IntradayPosition      float64 `json:"intraday_position_percent"`
+	IntradayPositionReady bool    `json:"intraday_position_ready,omitempty"`
+	// BreakoutFailure means price crossed or touched the prior 20-day high and
+	// then fell back below it. VolumePriceDivergence marks high-volume weakness
+	// near the lower part of the intraday range or below VWAP.
+	BreakoutFailure       bool     `json:"breakout_failure,omitempty"`
+	VolumePriceDivergence bool     `json:"volume_price_divergence,omitempty"`
+	MinuteMomentum        float64  `json:"minute_momentum_percent,omitempty"`
+	MinuteDataReady       bool     `json:"minute_data_ready"`
+	VWAPSupport           bool     `json:"vwap_support"`
+	TriggerPrice          float64  `json:"trigger_price,omitempty"`
+	InvalidationPrice     float64  `json:"invalidation_price,omitempty"`
+	Reasons               []string `json:"reasons,omitempty"`
+	Risks                 []string `json:"risks,omitempty"`
+	Warnings              []string `json:"warnings,omitempty"`
+}
+
 type Signal struct {
 	ID                string      `json:"id"`
 	Symbol            string      `json:"symbol"`
@@ -71,20 +134,25 @@ type Signal struct {
 	InvalidationPrice           float64     `json:"invalidation_price,omitempty"`
 	// EntryShape is an explanatory setup classification. It is independent of
 	// the nine-factor composite score and is never an execution instruction.
-	EntryShape                  string      `json:"entry_shape,omitempty"`
-	EntryShapeLabel             string      `json:"entry_shape_label,omitempty"`
-	EntryShapeScore             float64     `json:"entry_shape_score,omitempty"`
-	EntryShapeEvidence          []string    `json:"entry_shape_evidence,omitempty"`
-	EntryShapeTriggerPrice      float64     `json:"entry_shape_trigger_price,omitempty"`
-	EntryShapeInvalidationPrice float64     `json:"entry_shape_invalidation_price,omitempty"`
-	AsOf                        time.Time   `json:"as_of"`
-	QuoteTime                   string      `json:"quote_time,omitempty"`
-	DataDate                    string      `json:"data_date,omitempty"`
-	DataSource                  string      `json:"data_source,omitempty"`
-	Components                  []Component `json:"components"`
-	Reasons                     []string    `json:"reasons"`
-	Risks                       []string    `json:"risks"`
-	Warnings                    []string    `json:"warnings,omitempty"`
+	EntryShape                  string   `json:"entry_shape,omitempty"`
+	EntryShapeLabel             string   `json:"entry_shape_label,omitempty"`
+	EntryShapeScore             float64  `json:"entry_shape_score,omitempty"`
+	EntryShapeEvidence          []string `json:"entry_shape_evidence,omitempty"`
+	EntryShapeTriggerPrice      float64  `json:"entry_shape_trigger_price,omitempty"`
+	EntryShapeInvalidationPrice float64  `json:"entry_shape_invalidation_price,omitempty"`
+	// Monster is a parallel observation radar. It is deliberately separate from
+	// Components so existing component coverage, IC and calibration remain
+	// comparable with archived nine-factor signals.
+	Monster          MonsterRadar `json:"monster"`
+	CandidateSources []string     `json:"candidate_sources,omitempty"`
+	AsOf             time.Time    `json:"as_of"`
+	QuoteTime        string       `json:"quote_time,omitempty"`
+	DataDate         string       `json:"data_date,omitempty"`
+	DataSource       string       `json:"data_source,omitempty"`
+	Components       []Component  `json:"components"`
+	Reasons          []string     `json:"reasons"`
+	Risks            []string     `json:"risks"`
+	Warnings         []string     `json:"warnings,omitempty"`
 }
 
 const (
@@ -132,6 +200,9 @@ type SignalOutcome struct {
 	CalibratedRiskAdjustedScore float64            `json:"calibrated_risk_adjusted_score,omitempty"`
 	CalibratedMinimumScore      float64            `json:"calibrated_minimum_score,omitempty"`
 	CalibratedState             SignalState        `json:"calibrated_state,omitempty"`
+	MonsterScore                float64            `json:"monster_score,omitempty"`
+	MonsterStage                MonsterStage       `json:"monster_stage,omitempty"`
+	MonsterEligible             bool               `json:"monster_eligible,omitempty"`
 	StrategyScores              map[string]float64 `json:"strategy_scores,omitempty"`
 	StrategyStates              map[string]string  `json:"strategy_states,omitempty"`
 	StrategyNames               map[string]string  `json:"strategy_names,omitempty"`
@@ -333,6 +404,8 @@ type OutcomeReport struct {
 	Scores            []OutcomeBreakdown           `json:"score_buckets"`
 	States            []OutcomeBreakdown           `json:"states"`
 	Regimes           []OutcomeBreakdown           `json:"market_regimes"`
+	MonsterStages     []OutcomeBreakdown           `json:"monster_stages,omitempty"`
+	MonsterAnalysis   MonsterForwardAnalysis       `json:"monster_analysis"`
 	ComponentAnalysis ComponentAnalysis            `json:"component_analysis"`
 	WalkForward       ComponentWalkForwardAnalysis `json:"component_walk_forward"`
 	Portfolio         PortfolioConstraintAnalysis  `json:"portfolio_analysis"`
@@ -341,6 +414,47 @@ type OutcomeReport struct {
 	Tuning            TuningAnalysis               `json:"tuning"`
 	Recent            []SignalOutcome              `json:"recent,omitempty"`
 	Warnings          []string                     `json:"warnings,omitempty"`
+}
+
+// MonsterStageMetric is the point-in-time forward result for one independent
+// radar stage. It deliberately reports both all archived observations and the
+// subset that was eligible for the Monster shadow account; a strong result
+// among ineligible observations must not be mistaken for executable evidence.
+type MonsterStageMetric struct {
+	Stage            MonsterStage `json:"stage"`
+	Signals          int          `json:"signals"`
+	Ready            int          `json:"ready"`
+	MatureDates      int          `json:"mature_dates"`
+	EligibleReady    int          `json:"eligible_ready"`
+	HitRate          float64      `json:"hit_rate_percent"`
+	AverageReturn    float64      `json:"average_return_percent"`
+	AverageExcess    float64      `json:"average_excess_percent"`
+	AverageFavorable float64      `json:"average_max_favorable_percent"`
+	AverageAdverse   float64      `json:"average_max_adverse_percent"`
+	RankIC           float64      `json:"rank_information_coefficient"`
+	EligibleHitRate  float64      `json:"eligible_hit_rate_percent"`
+	EligibleReturn   float64      `json:"eligible_average_return_percent"`
+	EligibleExcess   float64      `json:"eligible_average_excess_percent"`
+	EligibleRankIC   float64      `json:"eligible_rank_information_coefficient"`
+	SampleSufficient bool         `json:"sample_sufficient"`
+	Status           string       `json:"status"`
+	Recommendation   string       `json:"recommendation,omitempty"`
+}
+
+// MonsterForwardAnalysis is a separate research surface for the high-
+// volatility radar. It does not feed the nine-factor tuning or mutate the
+// shadow account; it only says whether each stage has enough time and outcome
+// evidence to justify a human review.
+type MonsterForwardAnalysis struct {
+	Horizon         int                    `json:"horizon"`
+	DataThrough     string                 `json:"data_through,omitempty"`
+	MinimumSamples  int                    `json:"minimum_samples"`
+	MinimumDates    int                    `json:"minimum_dates"`
+	MinimumEligible int                    `json:"minimum_eligible"`
+	Stages          []MonsterStageMetric   `json:"stages"`
+	Status          string                 `json:"status"`
+	Summary         string                 `json:"summary"`
+	Recommendations []TuningRecommendation `json:"recommendations,omitempty"`
 }
 
 // TuningRecommendation is a deterministic, evidence-linked next action. It
@@ -466,14 +580,19 @@ type ScoreCalibration struct {
 }
 
 type ScanResult struct {
-	GeneratedAt   time.Time `json:"generated_at"`
-	Universe      string    `json:"universe"`
-	MarketState   string    `json:"market_state"`
-	TradingDate   string    `json:"trading_date,omitempty"`
-	TradingDay    bool      `json:"trading_day,omitempty"`
-	CalendarKnown bool      `json:"calendar_known,omitempty"`
-	Signals       []Signal  `json:"signals"`
-	Warnings      []string  `json:"warnings,omitempty"`
+	GeneratedAt         time.Time      `json:"generated_at"`
+	Universe            string         `json:"universe"`
+	MarketState         string         `json:"market_state"`
+	TradingDate         string         `json:"trading_date,omitempty"`
+	TradingDay          bool           `json:"trading_day,omitempty"`
+	CalendarKnown       bool           `json:"calendar_known,omitempty"`
+	CandidateSources    map[string]int `json:"candidate_sources,omitempty"`
+	MonsterMinimumScore float64        `json:"monster_minimum_score"`
+	MonsterCandidates   int            `json:"monster_candidates,omitempty"`
+	MonsterEligible     int            `json:"monster_eligible,omitempty"`
+	MonsterStages       map[string]int `json:"monster_stages,omitempty"`
+	Signals             []Signal       `json:"signals"`
+	Warnings            []string       `json:"warnings,omitempty"`
 }
 
 type Snapshot struct {
@@ -484,6 +603,9 @@ type Snapshot struct {
 	Minutes   []domain.MinutePoint
 	Board     *domain.BoardFlow
 	Benchmark []domain.DailyBar
+	// CandidateSources records why the symbol entered this scan. It is audit
+	// metadata only and does not affect any strategy score.
+	CandidateSources []string
 	// CalendarDates is the immutable benchmark-date snapshot used for
 	// point-in-time session classification. It is optional; nil preserves the
 	// weekday fallback for embedders that do not provide a calendar.

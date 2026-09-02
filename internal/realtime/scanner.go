@@ -16,6 +16,7 @@ import (
 
 const (
 	defaultLeaderLimit            = 20
+	defaultMonsterCandidateLimit  = 30
 	maximumUniverse               = 50
 	maximumMinuteLoads            = 6
 	historyMemoryTTL              = 15 * time.Minute
@@ -184,17 +185,48 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 		warnings = append(warnings, "交易日历未覆盖当前日期，当前会话按工作日规则降级")
 	}
 	symbols := stockSymbols(watchlist)
+	candidateSources := make(map[string][]string)
+	for _, symbol := range symbols {
+		appendCandidateSource(candidateSources, symbol, "自选")
+	}
+	rankingStocks := make(map[string]domain.MarketStockSnapshot)
 	if includeLeaders {
-		leaders, err := scanner.market.FetchStockRanking(ctx, domain.MarketScanByAmount, true, defaultLeaderLimit)
-		if err != nil {
-			warnings = append(warnings, "强势候选获取失败: "+err.Error())
-		} else {
-			for _, item := range leaders {
-				if item.Percent > 0 || item.Speed > 0 || item.MainNet > 0 {
-					symbols = append(symbols, item.Symbol)
+		// Keep the ranking feeds separate. A pure turnover ranking tends to
+		// discover already crowded leaders, while percent and main-net feeds
+		// surface earlier moves that have not reached the turnover list yet.
+		requests := []struct {
+			metric domain.MarketScanMetric
+			source string
+			limit  int
+		}{
+			{metric: domain.MarketScanByPercent, source: "涨幅榜", limit: defaultMonsterCandidateLimit},
+			{metric: domain.MarketScanByAmount, source: "成交额榜", limit: defaultLeaderLimit},
+			{metric: domain.MarketScanByMainNet, source: "主力净流入榜", limit: defaultMonsterCandidateLimit},
+		}
+		rankingSymbols := make([][]string, len(requests))
+		for requestIndex, request := range requests {
+			items, err := scanner.market.FetchStockRanking(ctx, request.metric, true, request.limit)
+			if err != nil {
+				warnings = append(warnings, request.source+"获取失败: "+err.Error())
+				continue
+			}
+			for _, item := range items {
+				if !monsterRankingCandidate(item, request.metric) {
+					continue
 				}
+				item.Symbol = normalizeCandidateSymbol(item.Symbol)
+				if len(stockSymbols([]string{item.Symbol})) == 0 {
+					continue
+				}
+				appendCandidateSource(candidateSources, item.Symbol, request.source)
+				rankingStocks[item.Symbol] = item
+				rankingSymbols[requestIndex] = append(rankingSymbols[requestIndex], item.Symbol)
 			}
 		}
+		// Interleave the feeds so the universe cannot be filled entirely by one
+		// already-crowded ranking before the main-net and early-gain candidates
+		// get a chance to enter.
+		symbols = append(symbols, interleaveCandidateSymbols(rankingSymbols)...)
 	}
 	symbols = uniqueSymbols(symbols, maximumUniverse)
 	if len(symbols) == 0 {
@@ -207,7 +239,23 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 	}
 	stockBySymbol := make(map[string]domain.MarketStockSnapshot, len(stocks))
 	for _, stock := range stocks {
+		stock.Symbol = normalizeCandidateSymbol(stock.Symbol)
 		stockBySymbol[stock.Symbol] = stock
+	}
+	// Some ranking endpoints can return a row that the point lookup endpoint
+	// drops transiently. Retain that row as a clearly auditable fallback so a
+	// promising radar candidate is not silently removed from the scan.
+	fallbackSymbols := make([]string, 0, len(rankingStocks))
+	for symbol := range rankingStocks {
+		fallbackSymbols = append(fallbackSymbols, symbol)
+	}
+	sort.Strings(fallbackSymbols)
+	for _, symbol := range fallbackSymbols {
+		stock := rankingStocks[symbol]
+		if _, found := stockBySymbol[symbol]; !found {
+			stockBySymbol[symbol] = stock
+			warnings = append(warnings, symbol+"点查行情缺失，暂使用榜单快照")
+		}
 	}
 	quotes := scanner.fetchQuotes(ctx, symbols, &warnings)
 	boards := scanner.fetchBoards(ctx, &warnings)
@@ -248,7 +296,17 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 		histories[result.symbol] = result.bars
 	}
 
-	minutes := scanner.fetchMinutes(ctx, rankedMinuteSymbols(stocks, maximumMinuteLoads), &warnings)
+	// Rank the same canonical stock universe that will be evaluated below. The
+	// point lookup may omit a ranking row, so use the fallback-enriched map as
+	// well; otherwise a candidate can appear in the scan without any minute
+	// evidence simply because its point lookup was transiently incomplete.
+	minuteStocks := make([]domain.MarketStockSnapshot, 0, len(symbols))
+	for _, symbol := range symbols {
+		if stock, found := stockBySymbol[symbol]; found {
+			minuteStocks = append(minuteStocks, stock)
+		}
+	}
+	minutes := scanner.fetchMinutes(ctx, rankedMinuteSymbols(minuteStocks, maximumMinuteLoads), &warnings)
 	signals := make([]Signal, 0, len(histories))
 	for _, symbol := range symbols {
 		stock, ok := stockBySymbol[symbol]
@@ -264,16 +322,11 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 			copied := item
 			board = &copied
 		}
-		input := Snapshot{Now: now, Stock: stock, Bars: bars, Minutes: minutes[symbol], Board: board, Benchmark: benchmark, CalendarDates: calendarDates}
+		input := Snapshot{Now: now, Stock: stock, Bars: bars, Minutes: minutes[symbol], Board: board, Benchmark: benchmark, CalendarDates: calendarDates, CandidateSources: append([]string(nil), candidateSources[symbol]...)}
 		if quote, found := quotes[symbol]; found {
 			copied := quote
 			input.Quote = &copied
-			if price := parseQuoteNumber(quote.Current); price > 0 {
-				input.Stock.Price = price
-			}
-			if finite(quote.Percent) {
-				input.Stock.Percent = quote.Percent
-			}
+			input.Stock = mergeRealtimeQuote(input.Stock, quote)
 		}
 		signals = append(signals, scanner.evaluate(input))
 	}
@@ -286,7 +339,13 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 	if stale > 0 && current > 0 {
 		warnings = append(warnings, fmt.Sprintf("行情日期混杂：%d个信号为当前交易日，%d个信号仍为旧交易日", current, stale))
 	}
-	result := ScanResult{GeneratedAt: now, Universe: "watchlist+leaders", MarketState: session.State, TradingDate: session.TradingDate, TradingDay: session.TradingDay, CalendarKnown: session.CalendarKnown, Signals: signals, Warnings: uniqueStrings(warnings, 30)}
+	monsterCandidates, monsterEligible, monsterStages := summarizeMonsterRadar(signals)
+	sourceCounts := summarizeCandidateSources(signals)
+	universe := "watchlist"
+	if includeLeaders {
+		universe = "watchlist+leaders"
+	}
+	result := ScanResult{GeneratedAt: now, Universe: universe, MarketState: session.State, TradingDate: session.TradingDate, TradingDay: session.TradingDay, CalendarKnown: session.CalendarKnown, CandidateSources: sourceCounts, MonsterMinimumScore: monsterMinimumScore, MonsterCandidates: monsterCandidates, MonsterEligible: monsterEligible, MonsterStages: monsterStages, Signals: signals, Warnings: uniqueStrings(warnings, 30)}
 	if scanner.store != nil {
 		if saveError := scanner.store.Append(result); saveError != nil {
 			result.Warnings = append(result.Warnings, "信号留痕失败: "+saveError.Error())
@@ -331,6 +390,13 @@ func (scanner *Scanner) fetchHistory(ctx context.Context, symbol string) ([]doma
 }
 
 func (scanner *Scanner) evaluate(input Snapshot) Signal {
+	speedEstimated := false
+	if !finite(input.Stock.Speed) {
+		if speed, ok := estimatedMinuteSpeed(input.Minutes); ok {
+			input.Stock.Speed = speed
+			speedEstimated = true
+		}
+	}
 	components := make([]Component, 0, len(scanner.strategies))
 	warnings := make([]string, 0)
 	for _, item := range scanner.strategies {
@@ -392,6 +458,7 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 	entryShape, entryShapeLabel, entryShapeScore := "", "", 0.0
 	entryShapeEvidence := []string(nil)
 	entryShapeTriggerPrice, entryShapeInvalidationPrice := 0.0, 0.0
+	monster := MonsterRadar{}
 	if hasIndicators {
 		if price <= 0 {
 			price = indicators.latest.Close
@@ -402,6 +469,10 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 		triggerPrice = math.Max(indicators.prior20High, indicators.ma5)
 		invalidationPrice = math.Max(indicators.ma20, indicators.prior20Low)
 		dataDate, source = indicators.latest.Date, indicators.latest.Source
+	}
+	monster = classifyMonsterRadar(input, indicators, hasIndicators)
+	if speedEstimated {
+		warnings = append(warnings, "涨速字段缺失，已按最近两条有效分时价格估算")
 	}
 	reasons := topReasons(components, contributions, 5)
 	risks := signalRisks(input, indicators, hasIndicators)
@@ -424,6 +495,7 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 		TriggerPrice: triggerPrice, InvalidationPrice: invalidationPrice,
 		EntryShape: entryShape, EntryShapeLabel: entryShapeLabel, EntryShapeScore: entryShapeScore, EntryShapeEvidence: entryShapeEvidence,
 		EntryShapeTriggerPrice: entryShapeTriggerPrice, EntryShapeInvalidationPrice: entryShapeInvalidationPrice,
+		Monster: monster, CandidateSources: append([]string(nil), input.CandidateSources...),
 		AsOf: input.Now, QuoteTime: quoteTime, DataDate: dataDate, DataSource: source,
 		Components: components, Reasons: reasons, Risks: uniqueStrings(risks, 8), Warnings: uniqueStrings(warnings, 10),
 	}
@@ -857,9 +929,54 @@ func (scanner *Scanner) fetchQuotes(ctx context.Context, symbols []string, warni
 		return result
 	}
 	for _, item := range items {
+		item.Symbol = normalizeCandidateSymbol(item.Symbol)
 		result[item.Symbol] = item
 	}
 	return result
+}
+
+// mergeRealtimeQuote overlays the point-in-time quote on the market snapshot
+// used by the scanner. Ranking/point-lookup feeds can lag or omit a field even
+// when the quote endpoint has it, so leaving the old values in place can make a
+// live radar claim that volume, turnover or the intraday range is unavailable.
+// Quote.Amount is expressed in ten-thousand yuan and Quote market caps in
+// hundred-million yuan; MarketStockSnapshot keeps both values in yuan.
+func mergeRealtimeQuote(stock domain.MarketStockSnapshot, quote domain.Quote) domain.MarketStockSnapshot {
+	if symbol := normalizeCandidateSymbol(quote.Symbol); symbol != "" {
+		stock.Symbol = symbol
+	}
+	if strings.TrimSpace(stock.Name) == "" && strings.TrimSpace(quote.Name) != "" {
+		stock.Name = strings.TrimSpace(quote.Name)
+	}
+	setPositive := func(target *float64, value float64) {
+		if target == nil || !finite(value) || value <= 0 {
+			return
+		}
+		*target = value
+	}
+	if value := parseQuoteNumber(quote.Current); value > 0 {
+		stock.Price = value
+	}
+	if finite(quote.Percent) {
+		stock.Percent = quote.Percent
+	}
+	setPositive(&stock.PreviousClose, parseQuoteNumber(quote.PreviousClose))
+	setPositive(&stock.Open, parseQuoteNumber(quote.Open))
+	setPositive(&stock.High, parseQuoteNumber(quote.High))
+	setPositive(&stock.Low, parseQuoteNumber(quote.Low))
+	if finite(quote.Amount) && quote.Amount > 0 {
+		stock.Amount = quote.Amount * 10000
+	}
+	if value := parseQuoteNumber(quote.Turnover); value > 0 {
+		stock.Turnover = value
+	}
+	if value := parseQuoteNumber(quote.VolumeRatio); value > 0 {
+		stock.VolumeRatio = value
+	}
+	if finite(quote.MarketCap) && quote.MarketCap > 0 {
+		stock.MarketCap = quote.MarketCap * 1e8
+	}
+	return stock
 }
 
 func (scanner *Scanner) fetchBoards(ctx context.Context, warnings *[]string) map[string]domain.BoardFlow {
@@ -974,24 +1091,56 @@ func industryMatchScore(industry, board string) int {
 		return 0
 	}
 	if industry == board {
+		return 4
+	}
+	industryLevel, boardLevel := normalizeIndustryLevel(industry), normalizeIndustryLevel(board)
+	if industryLevel == boardLevel {
 		return 3
 	}
-	if normalizeIndustryLevel(industry) == normalizeIndustryLevel(board) {
+	industryName, boardName := normalizeIndustryName(industry), normalizeIndustryName(board)
+	if industryName == boardName {
 		return 2
 	}
-	if normalizeIndustryName(industry) == normalizeIndustryName(board) {
+	// Some providers prepend a taxonomy label (for example “申万行业-”) or
+	// use the legacy “电气设备” name. A narrow alias pass repairs those rows
+	// without treating unrelated broad industries as equivalent.
+	if industryName == industryAlias(boardName) || industryAlias(industryName) == boardName || industryAlias(industryName) == industryAlias(boardName) {
 		return 1
 	}
 	return 0
 }
 
 func normalizeIndustryLevel(value string) string {
-	return strings.TrimRight(strings.TrimSpace(value), "ⅠⅡⅢIV")
+	value = normalizeIndustryText(value)
+	value = strings.TrimPrefix(value, "申万")
+	value = strings.TrimPrefix(value, "行业")
+	value = strings.TrimSuffix(value, "行业")
+	value = strings.TrimSuffix(value, "板块")
+	return strings.TrimRight(value, "ⅠⅡⅢIV")
 }
 
 func normalizeIndustryName(value string) string {
 	value = normalizeIndustryLevel(value)
 	return strings.TrimSuffix(value, "设备")
+}
+
+func normalizeIndustryText(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.NewReplacer(" ", "", "　", "", "（", "(", "）", ")", "-", "", "_", "").Replace(value)
+	return value
+}
+
+func industryAlias(value string) string {
+	switch value {
+	case "电气":
+		return "电力设备"
+	case "电气设备":
+		return "电力设备"
+	case "电力":
+		return "电力设备"
+	default:
+		return value
+	}
 }
 
 func removeString(items []string, target string) []string {
@@ -1031,7 +1180,7 @@ func rankedMinuteSymbols(stocks []domain.MarketStockSnapshot, limit int) []strin
 	}
 	result := make([]string, 0, len(items))
 	for _, item := range items {
-		result = append(result, item.Symbol)
+		result = append(result, normalizeCandidateSymbol(item.Symbol))
 	}
 	return result
 }
@@ -1168,7 +1317,8 @@ func signalRisks(input Snapshot, value indicators, ok bool) []string {
 
 func stockSymbols(input []string) []string {
 	result := make([]string, 0, len(input))
-	for _, symbol := range input {
+	for _, raw := range input {
+		symbol := normalizeCandidateSymbol(raw)
 		if len(symbol) == 8 && (strings.HasPrefix(symbol, "sh") || strings.HasPrefix(symbol, "sz") || strings.HasPrefix(symbol, "bj")) {
 			result = append(result, symbol)
 		}
@@ -1179,7 +1329,8 @@ func stockSymbols(input []string) []string {
 func uniqueSymbols(input []string, limit int) []string {
 	seen := make(map[string]bool)
 	result := make([]string, 0, len(input))
-	for _, item := range input {
+	for _, raw := range input {
+		item := normalizeCandidateSymbol(raw)
 		if item == "" || seen[item] {
 			continue
 		}
@@ -1190,6 +1341,102 @@ func uniqueSymbols(input []string, limit int) []string {
 		}
 	}
 	return result
+}
+
+func normalizeCandidateSymbol(symbol string) string {
+	return strings.ToLower(strings.TrimSpace(symbol))
+}
+
+func appendCandidateSource(sources map[string][]string, symbol, source string) {
+	if sources == nil {
+		return
+	}
+	symbol = normalizeCandidateSymbol(symbol)
+	source = strings.TrimSpace(source)
+	if symbol == "" || source == "" {
+		return
+	}
+	for _, item := range sources[symbol] {
+		if item == source {
+			return
+		}
+	}
+	sources[symbol] = append(sources[symbol], source)
+}
+
+func monsterRankingCandidate(item domain.MarketStockSnapshot, metric domain.MarketScanMetric) bool {
+	symbol := normalizeCandidateSymbol(item.Symbol)
+	if len(stockSymbols([]string{symbol})) == 0 || strings.TrimSpace(item.Name) == "" {
+		return false
+	}
+	switch metric {
+	case domain.MarketScanByPercent:
+		return (finite(item.Percent) && item.Percent > 0) || (finite(item.Speed) && item.Speed > 0) || (finite(item.VolumeRatio) && item.VolumeRatio >= 1)
+	case domain.MarketScanByMainNet:
+		return (finite(item.MainNet) && item.MainNet > 0) || (finite(item.Percent) && item.Percent > 0)
+	case domain.MarketScanByAmount:
+		return finite(item.Amount) && item.Amount > 0 && ((finite(item.Percent) && item.Percent > 0) || (finite(item.Speed) && item.Speed > 0) || (finite(item.MainNet) && item.MainNet > 0))
+	default:
+		return false
+	}
+}
+
+func interleaveCandidateSymbols(lists [][]string) []string {
+	result := make([]string, 0)
+	for offset := 0; ; offset++ {
+		added := false
+		for _, list := range lists {
+			if offset >= len(list) {
+				continue
+			}
+			result = append(result, list[offset])
+			added = true
+		}
+		if !added {
+			return result
+		}
+	}
+}
+
+func summarizeCandidateSources(signals []Signal) map[string]int {
+	result := make(map[string]int)
+	for _, signal := range signals {
+		seen := make(map[string]bool)
+		for _, source := range signal.CandidateSources {
+			source = strings.TrimSpace(source)
+			if source == "" || seen[source] {
+				continue
+			}
+			seen[source] = true
+			result[source]++
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func summarizeMonsterRadar(signals []Signal) (candidates, eligible int, stages map[string]int) {
+	stages = make(map[string]int)
+	for _, signal := range signals {
+		radar := signal.Monster
+		stage := strings.TrimSpace(string(radar.Stage))
+		if stage == "" {
+			continue
+		}
+		stages[stage]++
+		if radar.Stage != MonsterStageInsufficient && radar.Score >= monsterMinimumScore {
+			candidates++
+		}
+		if radar.Eligible {
+			eligible++
+		}
+	}
+	if len(stages) == 0 {
+		stages = nil
+	}
+	return candidates, eligible, stages
 }
 
 func uniqueStrings(input []string, limit int) []string {

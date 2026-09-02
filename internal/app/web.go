@@ -89,7 +89,14 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 	serverOptions := []web.ServerOption{
 		web.WithWatchlist(app.paths.WatchlistFile),
 		web.WithNameCache(app.paths.NameCacheFile),
+		web.WithAIChatService(webAIChatService{app: app}),
+		web.WithAIConfigService(webAIConfigService{app: app}),
 		web.WithMarketAmount(app.amounts),
+		web.WithGlobalMarkets(app.globalMarkets),
+		web.WithGlobalCharts(market.NewFallbackGlobalChartClient(
+			market.YahooGlobalChartClient{},
+			market.EastmoneyGlobalChartClient{},
+		)),
 		web.WithBoardDetails(market.EastmoneyClient{}),
 		web.WithStrategyResearch(
 			strategyEngine,
@@ -109,6 +116,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 			storage.NewShadowStore(app.paths.ShadowAggressiveFile),
 		),
 		web.WithAdaptiveShadowExecution(storage.NewShadowStore(app.paths.ShadowAdaptiveFile)),
+		web.WithMonsterShadowExecution(storage.NewShadowStore(app.paths.ShadowMonsterFile)),
 		web.WithAutomaticStrategyResearch(func(ctx context.Context, symbols []string, end time.Time) (web.AutomaticResearchResult, error) {
 			id, message, ran, err := app.runAutomaticContinuousOptimization(ctx, symbols, end)
 			return web.AutomaticResearchResult{Ran: ran, ExperimentID: id, Message: message}, err

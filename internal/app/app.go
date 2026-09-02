@@ -52,6 +52,7 @@ type App struct {
 	marketReports   *storage.MarketReportStore
 	stockReports    *storage.StockReportStore
 	aiChats         *storage.AIChatStore
+	aiConfig        *storage.AIConfigStore
 	marketSource    string
 	tdxMarket       *market.TDXClient
 	continuousMu    sync.Mutex
@@ -70,7 +71,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	primaryScanHistory := market.TencentClient{}
 	quoteClient := market.TencentClient{}
 	historyClient := market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history-execution"))
-	return &App{
+	app := &App{
 		out:             output,
 		errOut:          errorOutput,
 		paths:           paths,
@@ -87,8 +88,10 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		history:         historyClient,
 		backtestHistory: historyClient,
 		httpHistory:     historyClient,
-		minutes:         market.TencentClient{},
-		httpMinutes:     market.TencentClient{},
+		// Keep CLI and Web on the same preferred minute-data path so both
+		// surfaces can expose the Shanghai leading yellow line when available.
+		minutes:         market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
+		httpMinutes:     market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
 		rankings:        market.EastmoneyClient{},
 		marketScan:      market.EastmoneyClient{},
 		industryLeaders: market.EastmoneyClient{},
@@ -96,13 +99,16 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		research:        market.EastmoneyClient{},
 		scanHistory:     market.NewCachedDailyHistoryClient(primaryScanHistory, filepath.Join(paths.CacheDir, "daily-history-scan")),
 		analyzer:        analysis.NewRunner(errorOutput),
-		marketReportAI:  analysis.NewCodexRunner(""),
 		reports:         storage.NewReportStore(paths.ReportsDir),
 		marketReports:   storage.NewMarketReportStore(paths.MarketReportsDir),
 		stockReports:    storage.NewStockReportStore(paths.StockReportsDir),
 		aiChats:         storage.NewAIChatStore(paths.AIChatsDir),
 		marketSource:    "http",
-	}, nil
+		aiConfig:        storage.NewAIConfigStore(paths.AIConfigFile, paths.AITokenFile),
+	}
+	aiConfigService := webAIConfigService{app: app}
+	app.marketReportAI = analysis.NewConfiguredCodexRunner("", aiConfigService.runnerSettings)
+	return app, nil
 }
 
 // Close releases optional long-lived data-source processes such as the TDX
