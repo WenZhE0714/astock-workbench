@@ -1562,6 +1562,28 @@ func TestShadowCanAdvanceV8LedgerWithNewRotationControls(t *testing.T) {
 	}
 }
 
+func TestShadowCanAdvanceV9LedgerToCurrentEngine(t *testing.T) {
+	legacy := paper.DefaultConfig()
+	legacy.EnableIntradayT = false
+	legacy.TCorePositionPercent = 0
+	legacy.TTranchePercent = 0
+	legacy.TMaxDailyRounds = 0
+	legacy.TVWAPDeviationPercent = 0
+	legacy.TMinimumPriceGapPercent = 0
+	legacy.TMinimumNetProfitPercent = 0
+	legacy.TCooldownMinutes = 0
+	legacy.SignalRebalanceCooldownMinutes = 0
+	legacy.MaxPortfolioRiskPercent = 0
+	legacy.MaxPositionRiskPercent = 0
+	legacy.MaxLossPercent = 0
+	legacy.MinimumRiskDistancePercent = 0
+	legacy.RiskCooldownDays = 0
+	report := paper.Report{EngineVersion: "tplus1-v9", Config: legacy, Orders: []paper.ShadowOrder{{ID: "v9-buy", Symbol: "sh600000", Side: "buy", Status: paper.OrderFilled}}}
+	if !shadowCanAdvance(report, paper.Options{Config: paper.DefaultConfig()}) {
+		t.Fatal("v9 ledger should migrate to current engine when legacy config normalizes to defaults")
+	}
+}
+
 func TestServerRestoresDurableRealtimeCalibration(t *testing.T) {
 	scanner := &calibratableRealtimeScannerStub{}
 	store := storage.NewRealtimeCalibrationStore(filepath.Join(t.TempDir(), "calibration.json"))

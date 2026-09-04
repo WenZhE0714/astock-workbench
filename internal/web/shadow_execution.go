@@ -470,8 +470,50 @@ func (s *Server) syncShadowProfileSignals(ctx context.Context, request *http.Req
 	if err != nil {
 		return false, false, "", err
 	}
-	if err := paper.ValidateTransition(previous, report); err != nil {
-		reason := "账户连续性保护：本次同步未覆盖持仓，" + err.Error()
+	if transitionErr := paper.ValidateTransition(previous, report); transitionErr != nil {
+		// A stale realtime snapshot can select the fast path while the account
+		// is still catching up from an older checkpoint. Retry once through the
+		// complete daily incremental path before preserving the ledger. This
+		// keeps historical orders immutable without freezing all future trades.
+		fallbackOptions := options
+		fallbackOptions.Realtime = false
+		fallbackOptions.RealtimeAt = time.Time{}
+		fallbackOptions.RealtimeQuotes = nil
+		if fullSignals, loadErr := loadSignals(0); loadErr == nil {
+			if advancer, ok := s.shadowEvaluator.(shadowAdvancer); ok {
+				if fallbackReport, fallbackErr := advancer.Advance(ctx, previous, fullSignals, fallbackOptions); fallbackErr == nil {
+					if validateErr := paper.ValidateTransition(previous, fallbackReport); validateErr == nil {
+						report = fallbackReport
+						transitionErr = nil
+					}
+				}
+			}
+		}
+		if transitionErr != nil && !shadowRebuildRequested(request) &&
+			(strings.Contains(transitionErr.Error(), "成交单数量从") || strings.Contains(transitionErr.Error(), "账户现金、费用或成交统计被改写")) {
+			// Some early v11 realtime snapshots were written before all daily
+			// events had landed. Never replace that durable history with a shorter
+			// replay. Keep the previous ledger and move only the checkpoint forward;
+			// the next cycle can append new events from this preserved state.
+			preserved := previous
+			preserved.Config = options.Config
+			preserved.ConfigFingerprint = paper.OptionsFingerprint(options.Config, options.Limit)
+			if report.AsOf > preserved.AsOf {
+				preserved.AsOf = report.AsOf
+			}
+			preserved.CheckpointPhase = report.CheckpointPhase
+			preserved.GeneratedAt = report.GeneratedAt
+			preserved.SignalLimit = options.Limit
+			report = preserved
+			transitionErr = nil
+		}
+		if transitionErr == nil {
+			if err := profile.Archive.Save(report); err != nil {
+				return false, false, "", fmt.Errorf("保存账户失败: %w", err)
+			}
+			return false, false, "", nil
+		}
+		reason := "账户连续性保护：本次同步未覆盖持仓，" + transitionErr.Error()
 		previous.Warnings = appendUniqueShadowWarning(previous.Warnings, reason)
 		return true, true, reason, nil
 	}
@@ -753,15 +795,39 @@ func shadowReportMatches(report paper.Report, options paper.Options, checkpoint 
 func shadowCanAdvance(report paper.Report, options paper.Options) bool {
 	hasLedger := len(report.Orders) > 0 || len(report.Positions) > 0 || len(report.Trades) > 0
 	if report.EngineVersion != paper.ShadowEngineVersion && hasLedger {
+		// Shadow engine upgrades are forward-compatible when the persisted
+		// ledger uses the same effective risk configuration. Canonicalizing the
+		// old config fills fields introduced by v9-v11 with current defaults,
+		// allowing Advance to migrate the ledger instead of replaying history.
 		previousConfig := report.Config
 		if report.EngineVersion == "tplus1-v8" {
-			// v9 adds only forward-looking rotation controls. A v8 ledger can
-			// adopt them without replaying or rewriting any settled order.
+			// v9 introduced the rotation controls; adopt the configured values
+			// while preserving all earlier ledger-affecting parameters.
 			previousConfig.MaxOpenPositions = options.Config.MaxOpenPositions
 			previousConfig.MaxDailyRotations = options.Config.MaxDailyRotations
 			previousConfig.RotationScoreGap = options.Config.RotationScoreGap
 			previousConfig.RotationMinimumHoldDays = options.Config.RotationMinimumHoldDays
+		} else if report.EngineVersion != "" {
+			// v9/v10 reports predate the realtime-T and risk-budget fields. Their
+			// zero values mean "field absent", so adopt the current profile's
+			// values during migration rather than treating them as intentional
+			// overrides that would force a rebuild.
+			previousConfig.EnableIntradayT = options.Config.EnableIntradayT
+			previousConfig.TCorePositionPercent = options.Config.TCorePositionPercent
+			previousConfig.TTranchePercent = options.Config.TTranchePercent
+			previousConfig.TMaxDailyRounds = options.Config.TMaxDailyRounds
+			previousConfig.TVWAPDeviationPercent = options.Config.TVWAPDeviationPercent
+			previousConfig.TMinimumPriceGapPercent = options.Config.TMinimumPriceGapPercent
+			previousConfig.TMinimumNetProfitPercent = options.Config.TMinimumNetProfitPercent
+			previousConfig.TCooldownMinutes = options.Config.TCooldownMinutes
+			previousConfig.SignalRebalanceCooldownMinutes = options.Config.SignalRebalanceCooldownMinutes
+			previousConfig.MaxPortfolioRiskPercent = options.Config.MaxPortfolioRiskPercent
+			previousConfig.MaxPositionRiskPercent = options.Config.MaxPositionRiskPercent
+			previousConfig.MaxLossPercent = options.Config.MaxLossPercent
+			previousConfig.MinimumRiskDistancePercent = options.Config.MinimumRiskDistancePercent
+			previousConfig.RiskCooldownDays = options.Config.RiskCooldownDays
 		}
+		previousConfig = paper.CanonicalConfigForMigration(previousConfig)
 		return paper.ConfigFingerprint(previousConfig) == paper.ConfigFingerprint(options.Config)
 	}
 	if report.ConfigFingerprint != "" && report.ConfigFingerprint != paper.OptionsFingerprint(options.Config, options.Limit) {

@@ -116,6 +116,12 @@ func thsStockSymbol(code string) string {
 // page provides the index snapshot, industry breadth, net flow and a sorted
 // constituent table without requiring a browser runtime.
 func ParseTHSIndustryDetail(raw, requestedCode string) (domain.BoardFlow, []domain.MarketStockSnapshot, error) {
+	return ParseTHSIndustryDetailLimit(raw, requestedCode, 10)
+}
+
+// ParseTHSIndustryDetailLimit parses the constituent table up to limit rows.
+// A non-positive limit keeps every valid constituent returned by the source.
+func ParseTHSIndustryDetailLimit(raw, requestedCode string, limit int) (domain.BoardFlow, []domain.MarketStockSnapshot, error) {
 	heading := thsIndustryHeadingPattern.FindStringSubmatch(raw)
 	if len(heading) != 3 || heading[2] != requestedCode {
 		return domain.BoardFlow{}, nil, fmt.Errorf("未找到同花顺行业代码 %s", requestedCode)
@@ -173,7 +179,11 @@ func ParseTHSIndustryDetail(raw, requestedCode string) (domain.BoardFlow, []doma
 		}
 	}
 
-	leaders := make([]domain.MarketStockSnapshot, 0, 10)
+	capacity := limit
+	if capacity <= 0 {
+		capacity = 64
+	}
+	leaders := make([]domain.MarketStockSnapshot, 0, capacity)
 	body := thsIndustryBodyPattern.FindStringSubmatch(raw)
 	if len(body) == 2 {
 		for _, row := range thsIndustryRowPattern.FindAllStringSubmatch(body[1], -1) {
@@ -194,7 +204,7 @@ func ParseTHSIndustryDetail(raw, requestedCode string) (domain.BoardFlow, []doma
 				Turnover: parseTHSFloat(values[7]), VolumeRatio: parseTHSFloat(values[8]), Amount: parseTHSMoney(values[10]),
 				MainNet: math.NaN(), MainRatio: math.NaN(),
 			})
-			if len(leaders) == 10 {
+			if limit > 0 && len(leaders) >= limit {
 				break
 			}
 		}
@@ -274,5 +284,5 @@ func (THSIndustryClient) FetchBoard(ctx context.Context, symbol string) (domain.
 	if err != nil {
 		return domain.BoardFlow{}, nil, err
 	}
-	return ParseTHSIndustryDetail(raw, code)
+	return ParseTHSIndustryDetailLimit(raw, code, 100)
 }

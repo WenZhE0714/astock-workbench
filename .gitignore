@@ -7,4 +7,10 @@
 *.log
 __pycache__/
 .env
+/ths-quantapi.json
+/ths-quantapi-token
+/ths-quantapi-refresh-token
+**/ths-quantapi.json
+**/ths-quantapi-token
+**/ths-quantapi-refresh-token
 /web/node_modules/

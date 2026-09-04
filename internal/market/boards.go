@@ -663,7 +663,9 @@ func (client EastmoneyClient) FetchBoard(ctx context.Context, boardCode string) 
 	if flow.Kind == "" {
 		flow.Kind = domain.BoardKindIndustry
 	}
-	leaders, leaderErr := client.FetchIndustryLeaders(ctx, code, 5)
+	// Keep enough constituents for the board detail view. The UI virtualizes
+	// the list, while the ranking endpoint still caps the payload defensively.
+	leaders, leaderErr := client.FetchIndustryLeaders(ctx, code, 100)
 	if leaderErr == nil && len(leaders) > 0 {
 		flow.LeaderCode = strings.TrimPrefix(leaders[0].Symbol, "sh")
 		flow.LeaderName = leaders[0].Name

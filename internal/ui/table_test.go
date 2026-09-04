@@ -724,3 +724,17 @@ func TestPlaceholderUsesUnavailableValues(t *testing.T) {
 		t.Fatalf("unexpected placeholder: %#v", quote)
 	}
 }
+
+func TestLiveHeaderFormatsMissingNorthboundLegAndColorsFlow(t *testing.T) {
+	frame := BuildLiveFrame(LiveData{
+		Quotes:     []domain.Quote{dashboardQuote()},
+		Indices:    []domain.Quote{{Symbol: "sh000001", Current: "3000", Percent: 1}, {Symbol: "sz399001", Current: "9000", Percent: 1}, {Symbol: "sz399006", Current: "1800", Percent: 1}},
+		Northbound: domain.NorthboundFlowSnapshot{Available: true, Shanghai: -9.28, Shenzhen: math.NaN(), Total: -9.28},
+	}, ViewOptions{Color: true}, 120, 30)
+	if !strings.Contains(frame, "深 --") || strings.Contains(frame, "NaN") {
+		t.Fatalf("missing northbound leg was not normalized:\n%s", frame)
+	}
+	if !strings.Contains(frame, "\x1b[") {
+		t.Fatalf("northbound flow is not colored:\n%s", frame)
+	}
+}

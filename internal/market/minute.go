@@ -16,6 +16,7 @@ import (
 
 const tencentMinuteAPIURL = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
 const eastmoneyMinuteAPIURL = "https://push2.eastmoney.com/api/qt/stock/trends2/get"
+const eastmoneyMinuteFallbackAPIURL = "https://push2delay.eastmoney.com/api/qt/stock/trends2/get"
 
 type MinuteClient interface {
 	FetchMinutePoints(context.Context, string) ([]domain.MinutePoint, error)
@@ -25,6 +26,60 @@ type MinuteClient interface {
 // existing Tencent/TDX adapters. Eastmoney supplies the same f58 average
 // field used by its chart, including the Shanghai leading yellow line.
 type FallbackMinuteClient struct{ clients []MinuteClient }
+
+// MarketMinuteClient keeps the preferred source for stocks while allowing
+// broad indices to use the HTTP source that exposes the leading line.
+type MarketMinuteClient struct {
+	primary  MinuteClient
+	fallback MinuteClient
+}
+
+func NewMarketMinuteClient(primary, fallback MinuteClient) MarketMinuteClient {
+	return MarketMinuteClient{primary: primary, fallback: fallback}
+}
+
+func (client MarketMinuteClient) FetchMinutePoints(ctx context.Context, symbol string) ([]domain.MinutePoint, error) {
+	if IsBroadMarketSymbol(symbol) {
+		var best []domain.MinutePoint
+		var lastError error
+		for _, source := range []MinuteClient{client.fallback, client.primary} {
+			if source == nil {
+				continue
+			}
+			points, err := source.FetchMinutePoints(ctx, symbol)
+			if err != nil {
+				lastError = err
+				continue
+			}
+			if len(points) == 0 {
+				continue
+			}
+			if hasLeadingSeries(points) {
+				return points, nil
+			}
+			if len(best) == 0 {
+				best = points
+			}
+		}
+		if len(best) > 0 {
+			return best, nil
+		}
+		if lastError == nil {
+			lastError = fmt.Errorf("%s 未返回有效指数分时行情", symbol)
+		}
+		return nil, lastError
+	}
+	return NewFallbackMinuteClient(client.primary, client.fallback).FetchMinutePoints(ctx, symbol)
+}
+
+func hasLeadingSeries(points []domain.MinutePoint) bool {
+	for _, point := range points {
+		if point.Leading > 0 && !math.IsNaN(point.Leading) && !math.IsInf(point.Leading, 0) {
+			return true
+		}
+	}
+	return false
+}
 
 func NewFallbackMinuteClient(clients ...MinuteClient) FallbackMinuteClient {
 	usable := make([]MinuteClient, 0, len(clients))
@@ -77,11 +132,15 @@ func ParseEastmoneyMinutePayload(raw, symbol string) []domain.MinutePoint {
 			continue
 		}
 		stamp := strings.TrimSpace(fields[0])
-		if len(stamp) < 16 {
+		clock := stamp
+		if len(stamp) >= 16 {
+			tradeDate = stamp[:10]
+			clock = stamp[11:16]
+		} else if len(stamp) >= 5 {
+			clock = stamp[:5]
+		} else {
 			continue
 		}
-		tradeDate = stamp[:10]
-		clock := stamp[11:16]
 		if !validMinuteTime(strings.ReplaceAll(clock, ":", "")) {
 			continue
 		}
@@ -118,30 +177,40 @@ func (EastmoneyMinuteClient) FetchMinutePoints(ctx context.Context, symbol strin
 	if securityID == "" {
 		return nil, fmt.Errorf("无效股票代码 %q", symbol)
 	}
-	base := os.Getenv("ASTOCK_MINUTE_EASTMONEY_API_URL")
-	if base == "" {
-		base = eastmoneyMinuteAPIURL
+	bases := []string{os.Getenv("ASTOCK_MINUTE_EASTMONEY_API_URL")}
+	if bases[0] == "" {
+		bases = []string{eastmoneyMinuteAPIURL, eastmoneyMinuteFallbackAPIURL}
 	}
 	values := url.Values{
 		"fields1": {"f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f17"},
-		"fields2": {"f51,f52,f53,f54,f55,f58"}, "dect": {"1"}, "mpi": {"1000"},
+		// Keep f56/f57 in the response: the parser maps them to cumulative
+		// volume/amount before reading f58 as the leading yellow line.
+		"fields2": {"f51,f52,f53,f54,f55,f56,f57,f58"}, "dect": {"1"}, "mpi": {"1000"},
 		"ut": {"bd1d9ddb04089700cf9c27f6f7426281"}, "secid": {securityID}, "ndays": {"1"},
-	}
-	separator := "?"
-	if strings.Contains(base, "?") {
-		separator = "&"
 	}
 	requestContext, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	raw, err := fetchDecoded(requestContext, base+separator+values.Encode(), nil)
-	if err != nil {
-		return nil, err
+	var lastError error
+	for _, base := range bases {
+		separator := "?"
+		if strings.Contains(base, "?") {
+			separator = "&"
+		}
+		raw, err := fetchDecoded(requestContext, base+separator+values.Encode(), nil)
+		if err != nil {
+			lastError = err
+			continue
+		}
+		points := ParseEastmoneyMinutePayload(raw, symbol)
+		if len(points) > 0 {
+			return points, nil
+		}
+		lastError = fmt.Errorf("%s 未返回有效东方财富分时行情", symbol)
 	}
-	points := ParseEastmoneyMinutePayload(raw, symbol)
-	if len(points) == 0 {
-		return nil, fmt.Errorf("%s 未返回有效东方财富分时行情", symbol)
+	if lastError == nil {
+		lastError = fmt.Errorf("%s 未返回有效东方财富分时行情", symbol)
 	}
-	return points, nil
+	return nil, lastError
 }
 
 type tencentMinutePayload struct {

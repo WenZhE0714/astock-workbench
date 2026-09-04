@@ -55,6 +55,8 @@ type App struct {
 	aiConfig        *storage.AIConfigStore
 	marketSource    string
 	tdxMarket       *market.TDXClient
+	thsMarket       *market.THSQuantClient
+	thsSignals      *market.THSSignalClient
 	continuousMu    sync.Mutex
 }
 
@@ -105,6 +107,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		aiChats:         storage.NewAIChatStore(paths.AIChatsDir),
 		marketSource:    "http",
 		aiConfig:        storage.NewAIConfigStore(paths.AIConfigFile, paths.AITokenFile),
+		thsSignals:      func() *market.THSSignalClient { client := market.NewTHSSignalClientFromEnv(); return &client }(),
 	}
 	aiConfigService := webAIConfigService{app: app}
 	app.marketReportAI = analysis.NewConfiguredCodexRunner("", aiConfigService.runnerSettings)
@@ -207,7 +210,7 @@ const usageText = `A 股实时行情与策略研究工作台
   astock scan [--full] [--no-ai]
 	astock stock-report [--full] [--no-ai] 股票代码或名称
 	astock web [--listen 地址] [--symbol 代码或名称]
-	astock service [install | uninstall | status] [--listen 地址] [--source http|tdx] [--symbol 代码]
+	astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]
 	astock backtest run [选项] 股票代码或名称 ...
   astock backtest optimize [选项] 股票代码或名称 ...
   astock backtest continuous [选项] 股票代码或名称 ...
@@ -217,7 +220,7 @@ const usageText = `A 股实时行情与策略研究工作台
 实时行情:
   -1, --once              只获取一次，不持续刷新
 	-i, --interval 秒数     刷新间隔，默认 1 秒
-	    --source http|tdx    行情源；CLI 默认 tdx，失败时自动回退 HTTP
+	    --source http|tdx|ths 行情源；CLI 默认 tdx，失败时自动回退 HTTP
   -d, --depth             显示买卖五档盘口
   -m, --moyu              无色带框摸鱼表格
   -p, --pinyin            股票、板块和外盘指数显示无声调拼音，自动开启 --moyu
@@ -253,7 +256,7 @@ const usageText = `A 股实时行情与策略研究工作台
 	astock web              启动行情 Web（默认打开自选第一只，监听 127.0.0.1:8765）
 	--listen 地址           修改 Web 监听地址
 	--symbol 代码或名称     设置页面首次打开的股票
-	--source http|tdx       选择 HTTP 或通达信 TCP 行情源
+	--source http|tdx|ths   选择 HTTP、通达信 TCP 或同花顺 Quant API 行情源
 	astock service install  macOS 登录后自动拉起只读 Web 服务（launchd）
 	astock service status   查看 launchd 服务状态
 	astock service uninstall 删除 launchd 服务配置

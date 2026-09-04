@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,14 +31,16 @@ import (
 var assets embed.FS
 
 const (
-	quoteCacheTTL         = 5 * time.Second
-	minuteCacheTTL        = 5 * time.Second
-	boardCacheTTL         = 5 * time.Second
-	historyCacheTTL       = time.Minute
-	amountCacheTTL        = 10 * time.Minute
-	globalMarketCacheTTL  = 30 * time.Second
-	globalHistoryCacheTTL = 5 * time.Minute
-	globalMinuteCacheTTL  = 30 * time.Second
+	quoteCacheTTL           = 5 * time.Second
+	minuteCacheTTL          = 5 * time.Second
+	boardCacheTTL           = 5 * time.Second
+	historyCacheTTL         = time.Minute
+	amountCacheTTL          = 10 * time.Minute
+	globalMarketCacheTTL    = 30 * time.Second
+	globalHistoryCacheTTL   = 5 * time.Minute
+	globalMinuteCacheTTL    = 30 * time.Second
+	sentimentExtrasCacheTTL = 30 * time.Second
+	limitStatsCacheTTL      = 30 * time.Second
 )
 
 type marketIndexDefinition struct {
@@ -189,13 +192,30 @@ type realtimeCalibrationStateStore interface {
 	Save(storage.RealtimeCalibrationState) error
 }
 
+type sentimentHistoryStore interface {
+	Load() ([]domain.MarketSentimentPoint, error)
+	Save([]domain.MarketSentimentPoint) error
+}
+
 type Server struct {
 	resolver                  SymbolResolver
 	quotes                    QuoteClient
 	history                   DailyHistoryClient
 	minutes                   MinuteClient
 	boardDetails              BoardDetailClient
+	relatedBoards             market.BoardFlowClient
+	stockNews                 market.StockNewsClient
 	marketAmounts             MarketAmountClient
+	industryFlows             marketIndustryFlowClient
+	sentimentSignals          marketSentimentSignalClient
+	limitStats                market.LimitStatsClient
+	sentimentExtrasMu         sync.Mutex
+	sentimentExtrasCache      sentimentExtrasCacheEntry
+	limitStatsMu              sync.Mutex
+	limitStatsCache           limitStatsCacheEntry
+	sentimentMu               sync.Mutex
+	sentimentHistory          []domain.MarketSentimentPoint
+	sentimentHistoryStore     sentimentHistoryStore
 	globalMarkets             GlobalIndexClient
 	globalCharts              GlobalChartClient
 	strategyEngine            backtest.Engine
@@ -355,6 +375,21 @@ type globalMarketCacheEntry struct {
 	valid     bool
 }
 
+type sentimentExtrasCacheEntry struct {
+	northbound domain.NorthboundFlowSnapshot
+	hot        domain.HotStockSnapshot
+	northErr   error
+	hotErr     error
+	fetchedAt  time.Time
+}
+
+type limitStatsCacheEntry struct {
+	tradeDate string
+	snapshot  domain.LimitStatsSnapshot
+	err       error
+	fetchedAt time.Time
+}
+
 type boardCacheEntry struct {
 	flow      domain.BoardFlow
 	leaders   []domain.MarketStockSnapshot
@@ -362,18 +397,21 @@ type boardCacheEntry struct {
 }
 
 type stockResponse struct {
-	Symbol       string                `json:"symbol"`
-	Kind         domain.AssetKind      `json:"kind"`
-	Name         string                `json:"name,omitempty"`
-	Quote        *quoteResponse        `json:"quote,omitempty"`
-	Bars         []chartBar            `json:"bars,omitempty"`
-	Minutes      []minutePointResponse `json:"minutes,omitempty"`
-	FetchedAt    string                `json:"fetched_at"`
-	QuoteError   string                `json:"quote_error,omitempty"`
-	HistoryError string                `json:"history_error,omitempty"`
-	MinuteError  string                `json:"minute_error,omitempty"`
-	BoardError   string                `json:"board_error,omitempty"`
-	Board        *boardResponse        `json:"board,omitempty"`
+	Symbol        string                 `json:"symbol"`
+	Kind          domain.AssetKind       `json:"kind"`
+	Name          string                 `json:"name,omitempty"`
+	Quote         *quoteResponse         `json:"quote,omitempty"`
+	Bars          []chartBar             `json:"bars,omitempty"`
+	Minutes       []minutePointResponse  `json:"minutes,omitempty"`
+	FetchedAt     string                 `json:"fetched_at"`
+	QuoteError    string                 `json:"quote_error,omitempty"`
+	HistoryError  string                 `json:"history_error,omitempty"`
+	MinuteError   string                 `json:"minute_error,omitempty"`
+	BoardError    string                 `json:"board_error,omitempty"`
+	Board         *boardResponse         `json:"board,omitempty"`
+	RelatedBoards []boardResponse        `json:"related_boards,omitempty"`
+	News          []domain.StockNewsItem `json:"news,omitempty"`
+	NewsError     string                 `json:"news_error,omitempty"`
 }
 
 type boardResponse struct {
@@ -621,6 +659,28 @@ func WithMarketAmount(client MarketAmountClient) ServerOption {
 	}
 }
 
+// WithIndustryFlows enables the market sentiment cockpit. The client is
+// intentionally independent from the stock quote client so a premium quote
+// source can be combined with the existing broad industry feed.
+func WithIndustryFlows(client marketIndustryFlowClient) ServerOption {
+	return func(server *Server) { server.industryFlows = client }
+}
+
+// WithSentimentSignals connects optional northbound-flow and hot-theme data.
+func WithSentimentSignals(client marketSentimentSignalClient) ServerOption {
+	return func(server *Server) { server.sentimentSignals = client }
+}
+
+// WithLimitStats connects market-wide limit-up/limit-down structure data.
+func WithLimitStats(client market.LimitStatsClient) ServerOption {
+	return func(server *Server) { server.limitStats = client }
+}
+
+// WithSentimentHistoryStore persists the rolling cockpit chart history.
+func WithSentimentHistoryStore(store sentimentHistoryStore) ServerOption {
+	return func(server *Server) { server.sentimentHistoryStore = store }
+}
+
 // WithGlobalMarkets connects the compact Web market strip to the existing
 // read-only overseas-index adapter. It is optional so lightweight embedders
 // can keep serving domestic quotes without configuring an external source.
@@ -642,6 +702,15 @@ func WithGlobalCharts(client GlobalChartClient) ServerOption {
 func WithBoardDetails(client BoardDetailClient) ServerOption {
 	return func(server *Server) {
 		server.boardDetails = client
+	}
+}
+
+// WithRelatedData enables the stock-page context panel without coupling the
+// quote adapter to news or board-directory APIs.
+func WithRelatedData(boards market.BoardFlowClient, news market.StockNewsClient) ServerOption {
+	return func(server *Server) {
+		server.relatedBoards = boards
+		server.stockNews = news
 	}
 }
 
@@ -786,6 +855,11 @@ func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistory
 	for _, option := range options {
 		if option != nil {
 			option(server)
+		}
+	}
+	if server.sentimentHistoryStore != nil {
+		if points, err := server.sentimentHistoryStore.Load(); err == nil {
+			server.sentimentHistory = normalizeSentimentHistory(points, server.now())
 		}
 	}
 	server.restoreRealtimeCalibration()
@@ -941,6 +1015,8 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/indices", s.handleIndices)
+	mux.HandleFunc("/api/sentiment", s.handleSentiment)
+	mux.HandleFunc("/api/boards", s.handleBoards)
 	mux.HandleFunc("/api/global/markets", s.handleGlobalMarkets)
 	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
 	mux.HandleFunc("/api/stock", s.handleStock)
@@ -2371,11 +2447,71 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 	} else {
 		response.Minutes = newMinutePoints(minuteResult.points)
 	}
+	if s.relatedBoards != nil || s.stockNews != nil {
+		relatedCtx, cancelRelated := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelRelated()
+		boardsCh := make(chan []domain.BoardFlow, 1)
+		newsCh := make(chan []domain.StockNewsItem, 1)
+		if s.relatedBoards != nil {
+			go func() { boards, _ := s.relatedBoards.FetchBoards(relatedCtx, symbol); boardsCh <- boards }()
+		} else {
+			boardsCh <- nil
+		}
+		if s.stockNews != nil {
+			go func() {
+				news, err := s.stockNews.FetchStockNews(relatedCtx, symbol, 8)
+				if err != nil {
+					response.NewsError = err.Error()
+				}
+				newsCh <- news
+			}()
+		} else {
+			newsCh <- nil
+		}
+		for _, flow := range <-boardsCh {
+			var leaders []domain.MarketStockSnapshot
+			if s.boardDetails != nil && flow.Code != "" {
+				_, leaders, _ = s.fetchBoard(relatedCtx, flow.Code)
+				if len(leaders) > 3 {
+					leaders = leaders[:3]
+				}
+			}
+			response.RelatedBoards = append(response.RelatedBoards, *newBoardResponse(flow, leaders))
+		}
+		response.News = sortNewsByTime(<-newsCh)
+	}
 	status := http.StatusOK
 	if response.Quote == nil && len(response.Bars) == 0 && len(response.Minutes) == 0 {
 		status = http.StatusBadGateway
 	}
 	writeJSON(writer, status, response)
+}
+
+func sortNewsByTime(items []domain.StockNewsItem) []domain.StockNewsItem {
+	result := append([]domain.StockNewsItem(nil), items...)
+	parse := func(value string) time.Time {
+		value = strings.TrimSpace(value)
+		for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"} {
+			if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+				return parsed
+			}
+		}
+		return time.Time{}
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		lt, rt := parse(result[left].Date), parse(result[right].Date)
+		if lt.IsZero() && rt.IsZero() {
+			return false
+		}
+		if lt.IsZero() {
+			return false
+		}
+		if rt.IsZero() {
+			return true
+		}
+		return lt.After(rt)
+	})
+	return result
 }
 
 func (s *Server) handleBoard(writer http.ResponseWriter, ctx context.Context, symbol string) {

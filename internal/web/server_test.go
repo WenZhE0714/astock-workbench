@@ -40,6 +40,17 @@ func (resolverStub) Resolve(_ context.Context, input string) (string, error) {
 
 type boardDetailStub struct{}
 
+func TestSortNewsByTimePutsNewestFirstAndUnknownLast(t *testing.T) {
+	items := sortNewsByTime([]domain.StockNewsItem{
+		{Title: "old", Date: "2026-09-01 09:30:00"},
+		{Title: "unknown", Date: ""},
+		{Title: "new", Date: "2026-09-03 20:00:00"},
+	})
+	if len(items) != 3 || items[0].Title != "new" || items[1].Title != "old" || items[2].Title != "unknown" {
+		t.Fatalf("unexpected news order: %+v", items)
+	}
+}
+
 func (boardDetailStub) FetchBoard(_ context.Context, code string) (domain.BoardFlow, []domain.MarketStockSnapshot, error) {
 	return domain.BoardFlow{
 			Code: code, Name: "半导体", Kind: domain.BoardKindIndustry, Percent: 2.35,

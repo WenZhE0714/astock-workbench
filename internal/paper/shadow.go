@@ -1524,7 +1524,28 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		}
 		active[position.Symbol] = shadowPosition{plan: shadowPlan{signal: signal, bars: bars, signalClose: position.SignalClose}, lots: lots, fallback: nil, lastSignalDate: position.SignalDate, lastSignalScore: position.SignalScore, targetPercent: targetPercent, riskExitReason: position.RiskExitReason}
 	}
-	newPlans, err := e.plansAfter(ctx, signals, cfg, previous.AsOf, checkpoint, calendarDates, active)
+	// An open checkpoint has already crossed the day's entry boundary. Replaying
+	// signals from that same date would duplicate settled orders when the next
+	// scheduler cycle advances the account. Same-day events belong to the
+	// realtime layer; daily incrementals start at the following trading date.
+	afterDate := previous.AsOf
+	if previous.CheckpointPhase == CheckpointOpen {
+		// Do not depend on the benchmark calendar containing future dates. Data
+		// providers often lag by one or more sessions; a date immediately after
+		// the persisted checkpoint is still sufficient because signal dates are
+		// exchange trading dates and non-trading dates simply have no signals.
+		if parsed, parseErr := time.ParseInLocation("2006-01-02", previous.AsOf, shanghaiLocation); parseErr == nil {
+			afterDate = parsed.AddDate(0, 0, 1).Format("2006-01-02")
+		} else {
+			for _, candidateDate := range calendarDates {
+				if candidateDate > previous.AsOf {
+					afterDate = candidateDate
+					break
+				}
+			}
+		}
+	}
+	newPlans, err := e.plansAfter(ctx, signals, cfg, afterDate, checkpoint, calendarDates, active)
 	if err != nil {
 		return previous, err
 	}
@@ -3239,6 +3260,13 @@ func canonicalConfig(cfg Config) Config {
 		cfg.LotSize = defaults.LotSize
 	}
 	return cfg
+}
+
+// CanonicalConfigForMigration exposes the same zero-value/default normalization
+// used by the evaluator to callers that need to upgrade an older persisted
+// shadow ledger without replaying its settled history.
+func CanonicalConfigForMigration(cfg Config) Config {
+	return canonicalConfig(cfg)
 }
 
 func representativeSignals(signals []realtime.Signal, limit int) []realtime.Signal {

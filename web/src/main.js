@@ -75,6 +75,32 @@ createApp({
       requestedSymbol: defaultSymbol,
       data: {},
       workspaceMode: "market",
+      boardsLoading: false,
+      boardsError: "",
+      boardItems: [],
+      boardSort: "hot",
+      boardSortField: "percent",
+      boardSortDirection: "desc",
+      boardSelectedCode: "",
+      boardHistory: [],
+      boardMembers: [],
+      boardMembersLoading: false,
+      boardMembersError: "",
+      boardsFetchedAt: 0,
+      sentimentSnapshot: null,
+      sentimentHistory: [],
+      sentimentLoading: false,
+      sentimentError: "",
+      sentimentRequestID: 0,
+      sentimentFetchedAt: 0,
+      sentimentComponents: [
+        { key: "index_signal", label: "指数环境", note: "上证、深证、创业板综合", tone: "index" },
+        { key: "turnover_signal", label: "成交额动能", note: "相对上一交易日成交额", tone: "turnover" },
+        { key: "industry_breadth", label: "行业广度", note: "行业样本涨跌扩散", tone: "breadth" },
+        { key: "positive_industry_rate", label: "上涨行业占比", note: "上涨行业 / 行业样本", tone: "positive" },
+        { key: "industry_flow_signal", label: "行业资金方向", note: "主力净流入行业占比", tone: "flow" },
+        { key: "northbound_signal", label: "北向资金信号", note: "盘中累计净流入标准化", tone: "northbound" },
+      ],
       realtimeScope: "leaders",
       realtimeLoading: false,
       realtimeSnapshotLoading: false,
@@ -264,6 +290,25 @@ createApp({
     assistantBusy() {
       return this.assistantSending || ["queued", "running"].includes(this.assistantJobStatus)
     },
+    sentimentReadout() {
+      const snapshot = this.sentimentSnapshot || {}
+      const score = Number(snapshot.score)
+      const index = Number(snapshot.index_signal)
+      const breadth = Number(snapshot.industry_breadth)
+      const positiveRate = Number(snapshot.positive_industry_rate)
+      const tags = []
+      if (Number.isFinite(index) && Number.isFinite(breadth) && Math.abs(index - breadth) >= 12) {
+        tags.push({ text: index > breadth ? "权重强于小票" : "小票扩散领先", tone: index > breadth ? "warn" : "up" })
+      }
+      if (Number.isFinite(positiveRate)) tags.push({ text: `上涨行业 ${positiveRate.toFixed(0)}%`, tone: positiveRate >= 50 ? "up" : "down" })
+      if (Number.isFinite(Number(snapshot.industry_flow_signal))) tags.push({ text: Number(snapshot.industry_flow_signal) >= 50 ? "资金偏流入" : "资金偏流出", tone: Number(snapshot.industry_flow_signal) >= 50 ? "up" : "down" })
+      if (!tags.length) tags.push({ text: "等待更多盘中样本", tone: "muted" })
+      if (!Number.isFinite(score)) return { title: "数据不足，暂不判断", detail: "当前行情源尚未形成有效的情绪合成结果。", tags }
+      if (score >= 75) return { title: "情绪偏热，注意追高风险", detail: "综合分已进入强势区间，优先观察量能是否继续放大以及强势行业是否扩散。", tags }
+      if (score >= 55) return { title: "市场处于修复或强势段", detail: "指数与行业扩散大体同向，回撤时关注行业广度能否保持在中轴上方。", tags }
+      if (score >= 40) return { title: "情绪在中轴附近震荡", detail: "市场尚未形成一致方向，适合等待行业扩散和资金方向同时改善。", tags }
+      return { title: "情绪偏弱，等待止跌信号", detail: "当前分数位于弱势区间，避免仅凭单一指数上涨判断市场已经反转。", tags }
+    },
     aiConfigStatusText() {
       if (this.aiConfigLoading) return "读取中"
       if (!this.aiConfigSnapshot) return "未读取"
@@ -288,6 +333,28 @@ createApp({
     globalMinutes() { return Array.isArray(this.globalChartData.minutes) ? this.globalChartData.minutes : [] },
     globalLatestBar() { return this.globalBars[this.globalBars.length - 1] || {} },
     globalLatestMinute() { return this.globalMinutes[this.globalMinutes.length - 1] || {} },
+    sortedBoardItems() {
+      const items = Array.isArray(this.boardItems) ? [...this.boardItems] : []
+      const field = this.boardSortField
+      const direction = this.boardSortDirection === "asc" ? 1 : -1
+      const value = item => {
+        if (field === "name") return String(item && item.name || "")
+        if (field === "rise") return Number(item && item.rise_count) || 0
+        if (field === "fall") return Number(item && item.fall_count) || 0
+        if (field === "flow") return Number(item && item.main_net_yuan)
+        return Number(item && item.percent)
+      }
+      items.sort((left, right) => {
+        const lv = value(left); const rv = value(right)
+        if (typeof lv === "string" || typeof rv === "string") return direction * String(lv).localeCompare(String(rv), "zh-CN")
+        const lFinite = Number.isFinite(lv); const rFinite = Number.isFinite(rv)
+        if (!lFinite && !rFinite) return 0
+        if (!lFinite) return 1
+        if (!rFinite) return -1
+        return (lv - rv) * direction
+      })
+      return items
+    },
     watchlistGroupNames() {
       return ["全部", ...this.watchlist.groups.map(group => group.name).filter(Boolean)]
     },
@@ -621,6 +688,9 @@ createApp({
   methods: {
     number(value, digits = 2) {
       return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "--"
+    },
+    priceText(value) {
+      return Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "--"
     },
     percentText(value) {
       const number = Number(value)
@@ -1165,7 +1235,7 @@ createApp({
       window.scrollTo({ top: 0, behavior: 'auto' })
     },
     switchWorkspace(mode) {
-      if (mode !== "market" && mode !== "global" && mode !== "strategy" && mode !== "realtime" && mode !== "settings") return
+      if (!["market", "sentiment", "boards", "global", "strategy", "realtime", "settings"].includes(mode)) return
       this.workspaceMode = mode
       this.strategyCrosshair = null
       if (mode === "settings") {
@@ -1185,6 +1255,10 @@ createApp({
         if (!this.globalSelectedSymbol && this.globalMarkets.length) this.globalSelectedSymbol = this.globalMarkets[0].symbol
         this.loadGlobalChart(this.globalSelectedSymbol, true)
         this.$nextTick(() => this.drawGlobalChart())
+      } else if (mode === "sentiment") {
+        this.loadSentiment(true)
+      } else if (mode === "boards") {
+        this.loadBoards(true)
       } else {
         this.$nextTick(() => this.drawChart())
       }
@@ -1956,6 +2030,235 @@ createApp({
         if (requestID === this.indicesRequestID) this.indicesLoading = false
       }
     },
+    sentimentValue(value) {
+      const number = Number(value)
+      return Number.isFinite(number) ? number.toFixed(1) : "--"
+    },
+    sentimentNumber(value) {
+      return this.sentimentValue(value)
+    },
+    sentimentPercent(value) {
+      const number = Number(value)
+      return Number.isFinite(number) ? `${number >= 0 ? "+" : ""}${number.toFixed(1)}%` : "--"
+    },
+    sentimentBarWidth(value) {
+      const number = Number(value)
+      return Number.isFinite(number) ? `${Math.max(0, Math.min(100, number))}%` : "0%"
+    },
+    sentimentTrendDelta(key) {
+      const current = this.sentimentSnapshot ? Number(this.sentimentSnapshot[key]) : NaN
+      const points = this.sentimentHistory || []
+      if (!Number.isFinite(current) || points.length < 2) return "暂无前值"
+      const latestAt = Date.parse(points[points.length - 1].at || "")
+      const previous = [...points].reverse().find(item => Number.isFinite(Number(item[key])) && Date.parse(item.at || "") < latestAt)
+      if (!previous) return "暂无前值"
+      const delta = current - Number(previous[key])
+      return `${delta >= 0 ? "较前次 +" : "较前次 "}${delta.toFixed(1)}`
+    },
+    async loadSentiment(force = false) {
+      const now = Date.now()
+      if (!force && (this.sentimentLoading || now - this.sentimentFetchedAt < 8000)) return
+      const requestID = ++this.sentimentRequestID
+      this.sentimentLoading = true
+      this.sentimentError = ""
+      try {
+        const response = await fetch("/api/sentiment", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "市场情绪暂不可用")
+        if (requestID !== this.sentimentRequestID) return
+        this.sentimentSnapshot = payload.snapshot || null
+        this.sentimentHistory = Array.isArray(payload.history) ? payload.history : []
+        this.sentimentFetchedAt = now
+        await this.$nextTick()
+        this.drawSentimentChart()
+      } catch (error) {
+        if (requestID === this.sentimentRequestID) this.sentimentError = error instanceof Error ? error.message : String(error)
+      } finally {
+        if (requestID === this.sentimentRequestID) this.sentimentLoading = false
+      }
+    },
+    async loadBoards(force = false) {
+      const now = Date.now()
+      if (!force && (this.boardsLoading || now - this.boardsFetchedAt < 20000)) return
+      this.boardsLoading = true
+      this.boardsError = ""
+      try {
+        const response = await fetch(`/api/boards?sort=${encodeURIComponent(this.boardSort)}`, { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.warning || payload.error || "板块行情暂不可用")
+        this.boardItems = Array.isArray(payload.items) ? payload.items : []
+        this.boardsFetchedAt = now
+        if (this.boardSort === "flow") { this.boardSortField = "flow"; this.boardSortDirection = "desc" }
+        else if (this.boardSort === "weak") { this.boardSortField = "percent"; this.boardSortDirection = "asc" }
+        else if (this.boardSort === "hot") { this.boardSortField = "percent"; this.boardSortDirection = "desc" }
+        if (!this.boardSelectedCode && this.boardItems.length) this.boardSelectedCode = this.boardItems[0].code
+        const selected = this.boardItems.find(item => item.code === this.boardSelectedCode)
+        if (selected) {
+          if (this.boardSamplingActive()) {
+            const today = localDate(new Date())
+            this.boardHistory = [...this.boardHistory.filter(point => localDate(new Date(point.at)) === today), { at: Date.now(), code: selected.code, percent: Number(selected.percent), mainNet: Number(selected.main_net_yuan), breadth: this.boardBreadth(selected) }].slice(-240)
+          }
+        }
+        await this.$nextTick()
+        this.drawBoardChart()
+        if (selected) this.loadBoardMembers(selected.code)
+      } catch (error) {
+        this.boardsError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.boardsLoading = false
+      }
+    },
+    boardBreadth(item) {
+      const rise = Number(item && item.rise_count) || 0
+      const fall = Number(item && item.fall_count) || 0
+      const flat = Number(item && item.flat_count) || 0
+      const total = rise + fall + flat
+      return total > 0 ? Math.max(0, Math.min(100, 50 + (rise - fall) / total * 50)) : NaN
+    },
+    selectBoard(item) {
+      if (!item || !item.code) return
+      this.boardSelectedCode = item.code
+      this.boardHistory = []
+      this.boardMembers = []
+      this.loadBoardMembers(item.code)
+      this.$nextTick(() => this.drawBoardChart())
+    },
+    setBoardSort(field) {
+      if (!field) return
+      if (this.boardSortField === field) this.boardSortDirection = this.boardSortDirection === "desc" ? "asc" : "desc"
+      else { this.boardSortField = field; this.boardSortDirection = field === "name" ? "asc" : "desc" }
+      this.boardSort = field === "flow" ? "flow" : (field === "percent" && this.boardSortDirection === "asc" ? "weak" : "hot")
+    },
+    boardSortIndicator(field) {
+      if (this.boardSortField !== field) return ""
+      return this.boardSortDirection === "asc" ? " ↑" : " ↓"
+    },
+    newsTone(title) {
+      const text = String(title || "")
+      if (/(增持|回购|中标|签署|获批|涨价|突破|净利增|预增|分红|利好|订单|投资者关系)/.test(text)) return "up"
+      if (/(减持|亏损|下滑|预减|处罚|违规|诉讼|立案|风险|利空|跌停|解禁|质押)/.test(text)) return "down"
+      return "muted"
+    },
+    newsToneText(title) {
+      const tone = this.newsTone(title)
+      return tone === "up" ? "利好线索" : tone === "down" ? "利空线索" : "中性线索"
+    },
+    boardSamplingActive() {
+      const now = new Date()
+      const day = now.getDay()
+      if (day === 0 || day === 6) return false
+      const minutes = now.getHours() * 60 + now.getMinutes()
+      return (minutes >= 570 && minutes <= 690) || (minutes >= 780 && minutes <= 900)
+    },
+    async loadBoardMembers(code) {
+      if (!code || this.boardMembersLoading) return
+      this.boardMembersLoading = true
+      this.boardMembersError = ""
+      try {
+        const response = await fetch(`/api/stock?symbol=${encodeURIComponent(code)}&limit=300`, { cache: "no-store" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.board_error || payload.error || "成分股暂不可用")
+        if (code === this.boardSelectedCode) this.boardMembers = payload.board && Array.isArray(payload.board.leaders) ? payload.board.leaders : []
+      } catch (error) {
+        if (code === this.boardSelectedCode) this.boardMembersError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.boardMembersLoading = false
+      }
+    },
+    selectBoardMember(member) {
+      if (!member || !member.symbol) return
+      this.workspaceMode = "market"
+      this.query = this.displayCode(member.symbol)
+      this.requestedSymbol = member.symbol
+      this.load(member.symbol)
+      window.scrollTo({ top: 0, behavior: "auto" })
+    },
+    openBoardMarket(item) {
+      if (!item || !item.code) return
+      this.workspaceMode = "market"
+      this.query = item.code
+      this.requestedSymbol = item.code
+      this.load(item.code)
+      window.scrollTo({ top: 0, behavior: "auto" })
+    },
+    prepareBoardCanvas() {
+      const canvas = this.$refs.boardChart
+      if (!canvas) return null
+      const rect = canvas.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr)); canvas.height = Math.max(1, Math.floor(rect.height * dpr))
+      const context = canvas.getContext("2d"); context.setTransform(dpr, 0, 0, dpr, 0, 0); context.fillStyle = "#171d21"; context.fillRect(0, 0, rect.width, rect.height)
+      return { context, width: rect.width, height: rect.height }
+    },
+    drawBoardChart() {
+      const canvas = this.prepareBoardCanvas(); if (!canvas) return
+      const { context, width, height } = canvas
+      const points = this.boardHistory.filter(item => item.code === this.boardSelectedCode && Number.isFinite(item.percent))
+      if (points.length < 1) { context.fillStyle = "#91a0a7"; context.font = "12px sans-serif"; context.fillText("暂无板块分时数据", 18, 28); return }
+      const left = 42, right = 14, top = 18, bottom = 30, plotWidth = width - left - right, plotHeight = height - top - bottom
+      const values = points.map(item => Number(item.percent)); const min = Math.min(...values, 0); const max = Math.max(...values, 0); const pad = Math.max(.2, (max - min) * .15); const low = min - pad, high = max + pad
+      const xOf = index => left + index / Math.max(1, points.length - 1) * plotWidth; const yOf = value => top + (high - value) / Math.max(.001, high - low) * plotHeight
+      context.strokeStyle = "#2b363c"; context.lineWidth = 1; for (let index = 0; index < 5; index++) { const y = top + index * plotHeight / 4; context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke(); context.fillStyle = "#718188"; context.font = "10px sans-serif"; context.fillText((high - index * (high - low) / 4).toFixed(2) + "%", 4, y + 3) }
+      const zeroY = yOf(0); context.setLineDash([5, 4]); context.strokeStyle = "#87969b"; context.beginPath(); context.moveTo(left, zeroY); context.lineTo(width - right, zeroY); context.stroke(); context.setLineDash([])
+      if (points.length > 1) { context.beginPath(); points.forEach((point, index) => { const x = xOf(index), y = yOf(Number(point.percent)); index ? context.lineTo(x, y) : context.moveTo(x, y) }); context.lineTo(xOf(points.length - 1), zeroY); context.lineTo(left, zeroY); context.closePath(); context.fillStyle = "rgba(88,185,215,.10)"; context.fill(); context.beginPath(); points.forEach((point, index) => { const x = xOf(index), y = yOf(Number(point.percent)); index ? context.lineTo(x, y) : context.moveTo(x, y) }); context.strokeStyle = values[values.length - 1] >= 0 ? "#ef6b6b" : "#48c5a0"; context.lineWidth = 2; context.stroke() }
+      const currentX = xOf(points.length - 1), currentY = yOf(values[values.length - 1]); context.fillStyle = values[values.length - 1] >= 0 ? "#ef6b6b" : "#48c5a0"; context.beginPath(); context.arc(currentX, currentY, 4, 0, Math.PI * 2); context.fill()
+      context.fillStyle = "#718188"; context.font = "10px sans-serif"; context.textAlign = "center"; ["09:30", "10:30", "11:30", "13:00", "14:00", "15:00"].forEach((label, index, labels) => context.fillText(label, left + index / (labels.length - 1) * plotWidth, height - 9)); context.textAlign = "left"
+    },
+    prepareSentimentCanvas() {
+      const canvas = this.$refs.sentimentChart
+      if (!canvas) return null
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr)); canvas.height = Math.max(1, Math.floor(rect.height * dpr))
+      const context = canvas.getContext("2d")
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+      context.fillStyle = "#171d21"; context.fillRect(0, 0, rect.width, rect.height)
+      return { context, width: rect.width, height: rect.height }
+    },
+    drawSentimentChart() {
+      const canvas = this.prepareSentimentCanvas()
+      if (!canvas) return
+      const { context, width, height } = canvas
+      const fields = [
+        { key: "score", color: "#f0b768", width: 2.5 },
+        { key: "index_signal", color: "#58b9d7", width: 1.5 },
+        { key: "industry_breadth", color: "#77c99a", width: 1.5 },
+        { key: "turnover_signal", color: "#c58bd8", width: 1.5 },
+        { key: "northbound_signal", color: "#d68e6f", width: 1.35 },
+      ]
+      let points = this.sentimentHistory.filter(item => fields.some(field => Number.isFinite(Number(item[field.key]))))
+      if (points.length > 1) {
+        const latestDate = new Date(points[points.length - 1].at || "").toLocaleDateString("zh-CN")
+        const sameDay = points.filter(item => new Date(item.at || "").toLocaleDateString("zh-CN") === latestDate)
+        if (sameDay.length > 1) points = sameDay
+      }
+      if (points.length < 1) {
+        context.fillStyle = "#91a0a7"; context.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'; context.fillText("暂无情绪数据", 18, 28); return
+      }
+      const left = 42, right = 16, top = 18, bottom = 34, plotWidth = width - left - right, plotHeight = height - top - bottom
+      context.strokeStyle = "#2b363c"; context.lineWidth = 1
+      for (const [low, high, color] of [[0, 20, "rgba(72,197,160,.06)"], [20, 40, "rgba(72,197,160,.025)"], [60, 80, "rgba(239,107,107,.025)"], [80, 100, "rgba(239,107,107,.06)"]]) { const y = top + plotHeight * (1 - high / 100); const bandHeight = plotHeight * (high - low) / 100; context.fillStyle = color; context.fillRect(left, y, plotWidth, bandHeight) }
+      for (const value of [0, 20, 40, 60, 80, 100]) { const y = top + plotHeight * (1 - value / 100); context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke(); context.fillStyle = "#718188"; context.font = "10px sans-serif"; context.fillText(String(value), 8, y + 3) }
+      const neutralY = top + plotHeight * .5; context.setLineDash([5, 4]); context.strokeStyle = "#87969b"; context.beginPath(); context.moveTo(left, neutralY); context.lineTo(width - right, neutralY); context.stroke(); context.setLineDash([]); context.fillStyle = "#aab7ba"; context.fillText("中性", width - right - 28, neutralY - 5)
+      const scorePoints = points.filter(point => Number.isFinite(Number(point.score)))
+      if (scorePoints.length > 1) { context.beginPath(); scorePoints.forEach((point, index) => { const x = left + points.indexOf(point) / (points.length - 1) * plotWidth; const y = top + plotHeight * (1 - Number(point.score) / 100); index === 0 ? context.moveTo(x, y) : context.lineTo(x, y) }); context.lineTo(left + points.indexOf(scorePoints[scorePoints.length - 1]) / (points.length - 1) * plotWidth, top + plotHeight); context.lineTo(left, top + plotHeight); context.closePath(); context.fillStyle = "rgba(240,183,104,.10)"; context.fill() }
+      fields.forEach(field => {
+        const available = points.filter(point => Number.isFinite(Number(point[field.key])))
+        if (available.length < 2) return
+        context.strokeStyle = field.color; context.lineWidth = field.width; context.beginPath()
+        available.forEach((point, index) => { const x = left + (points.length === 1 ? 0 : points.indexOf(point) / (points.length - 1)) * plotWidth; const y = top + plotHeight * (1 - Number(point[field.key]) / 100); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y) })
+        context.stroke()
+      })
+      const last = points[points.length - 1]
+      fields.forEach(field => {
+        const value = Number(last[field.key]); if (!Number.isFinite(value)) return
+        const x = width - right; const y = top + plotHeight * (1 - value / 100)
+        context.fillStyle = field.color; context.beginPath(); context.arc(x, y, field.key === "score" ? 4 : 2.5, 0, Math.PI * 2); context.fill()
+      })
+      if (Number.isFinite(Number(last.score))) { const y = top + plotHeight * (1 - Number(last.score) / 100); context.fillStyle = "#edf3f5"; context.font = "11px sans-serif"; context.fillText(`${Number(last.score).toFixed(1)} · ${last.phase || ""}`, Math.max(left, width - right - 125), Math.max(13, y - 9)) }
+      context.fillStyle = "#718188"; context.font = "10px sans-serif"; context.textAlign = "center"; const labels = ["09:30", "10:30", "11:30", "13:00", "14:00", "15:00"]; labels.forEach((label, index) => { const x = left + index / (labels.length - 1) * plotWidth; context.fillText(label, x, height - 10) }); context.textAlign = "left"
+    },
     selectMarketIndex(item) {
       if (!item || !item.symbol) return
       this.query = item.symbol
@@ -1992,9 +2295,11 @@ createApp({
       }
     },
     selectWatchlistSymbol(symbol) {
+      this.workspaceMode = "market"
       this.query = this.displayCode(symbol)
       this.requestedSymbol = symbol
       this.load(symbol)
+      window.scrollTo({ top: 0, behavior: "auto" })
     },
     async addWatchlist() {
       if (!this.watchlistInput || this.watchlistLoading) return
@@ -2347,7 +2652,9 @@ createApp({
       this.drawStrategyChart()
     },
     handleResize() {
-      if (this.workspaceMode === "strategy") this.drawStrategyChart()
+      if (this.workspaceMode === "sentiment") this.drawSentimentChart()
+      else if (this.workspaceMode === "boards") this.drawBoardChart()
+      else if (this.workspaceMode === "strategy") this.drawStrategyChart()
       else if (this.workspaceMode === "global") this.drawGlobalChart()
       else this.drawChart()
     },
@@ -3245,12 +3552,16 @@ createApp({
   mounted() {
     this.load(this.requestedSymbol)
     this.loadIndices()
+    this.loadSentiment()
+    this.loadBoards()
     this.loadGlobalChart(this.globalSelectedSymbol, true)
     this.loadWatchlist()
     this.loadAIConfig()
     this.timer = window.setInterval(() => {
       if (this.workspaceMode === "market") this.load(this.requestedSymbol)
       this.loadIndices()
+      this.loadSentiment()
+      this.loadBoards()
       if (this.workspaceMode === "global") this.loadGlobalChart(this.globalSelectedSymbol)
       this.loadWatchlist()
       this.pollRealtimeSession()

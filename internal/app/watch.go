@@ -563,6 +563,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	refreshed := time.Time{}
 	message := ""
 	flowMessage := ""
+	northboundSnapshot := domain.NorthboundFlowSnapshot{}
+	northboundError := ""
 	session := marketSessionAt(time.Now())
 	viewState := watchViewState{}
 	command := watchCommand{}
@@ -822,6 +824,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			FundMovements:    fundMovements, FundMonitorSelected: fundMonitor.selected,
 			FundMonitorRefreshedAt:  fundMonitor.refreshedAt,
 			FundIndustryRefreshedAt: fundMonitor.industryRefreshedAt,
+			Northbound:              northboundSnapshot,
+			NorthboundError:         northboundError,
 		}, viewOptions, width, height)
 		renderer.Render(frame, width, height)
 		lastWidth, lastHeight = width, height
@@ -950,6 +954,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		flows map[string]domain.FundFlow
 		err   error
 	}
+	type northboundResult struct {
+		snapshot domain.NorthboundFlowSnapshot
+		err      error
+	}
 	type amountResult struct {
 		amounts domain.MarketAmountSnapshot
 		err     error
@@ -1045,6 +1053,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		message string
 	}
 	flowResults := make(chan flowResult, 1)
+	northboundResults := make(chan northboundResult, 1)
 	amountResults := make(chan amountResult, 1)
 	globalMarketResults := make(chan globalMarketResult, 1)
 	boardResults := make(chan boardResult, 8)
@@ -1065,6 +1074,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	strategyLabResults := make(chan strategyLabResult, 1)
 	strategyLabProgressResults := make(chan strategyLabProgressResult, 8)
 	flowRunning := false
+	northboundRunning := false
 	amountRunning := false
 	globalMarketRunning := false
 	boardRunning := make(map[string]bool)
@@ -1097,6 +1107,21 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			result, fetchError := app.flows.Fetch(ctx, request)
 			select {
 			case flowResults <- flowResult{flows: result, err: fetchError}:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	startNorthboundFetch := func() {
+		if northboundRunning || app.thsSignals == nil {
+			return
+		}
+		northboundRunning = true
+		go func() {
+			requestContext, cancel := context.WithTimeout(ctx, 4*time.Second)
+			snapshot, fetchError := app.thsSignals.FetchNorthbound(requestContext)
+			cancel()
+			select {
+			case northboundResults <- northboundResult{snapshot: snapshot, err: fetchError}:
 			case <-ctx.Done():
 			}
 		}()
@@ -1823,6 +1848,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	prewarmFundMonitor()
 	prewarmBoardAssets()
 	startFlowFetch()
+	startNorthboundFetch()
 	startAmountFetch()
 	executeWatchCommand := func(symbol string) {
 		switch command.kind {
@@ -3017,6 +3043,17 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				flowMessage = ""
 			}
 			render(true)
+		case result := <-northboundResults:
+			northboundRunning = false
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					northboundError = result.err.Error()
+				}
+			} else {
+				northboundSnapshot = result.snapshot
+				northboundError = ""
+			}
+			render(true)
 		case result := <-fundMonitorResults:
 			if result.requestID != activeFundMonitorRequestID {
 				continue
@@ -3304,6 +3341,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		case <-flowTicker.C:
 			if session.Poll {
 				startFlowFetch()
+				startNorthboundFetch()
 				startBoardAssetFetch(false)
 				startIndustryFlowFetch(false)
 				startBoardFundDashboardFetch(false)

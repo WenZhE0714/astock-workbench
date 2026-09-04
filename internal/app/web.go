@@ -34,12 +34,12 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 	set.SetOutput(app.errOut)
 	listen := set.String("listen", "127.0.0.1:8765", "Web 监听地址")
 	defaultSymbol := set.String("symbol", "", "首次打开的股票；默认使用自选第一只")
-	source := set.String("source", "", "行情源：http 或 tdx")
+	source := set.String("source", "", "行情源：http、tdx 或 ths")
 	if err := set.Parse(arguments); err != nil {
 		return err
 	}
 	if set.NArg() > 1 {
-		return fmt.Errorf("用法: astock web [--listen 地址] [--symbol 代码或名称] [--source http|tdx]")
+		return fmt.Errorf("用法: astock web [--listen 地址] [--symbol 代码或名称] [--source http|tdx|ths]")
 	}
 	if err := app.configureMarketSource(*source); err != nil {
 		return err
@@ -92,12 +92,17 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAIChatService(webAIChatService{app: app}),
 		web.WithAIConfigService(webAIConfigService{app: app}),
 		web.WithMarketAmount(app.amounts),
+		web.WithIndustryFlows(app.industryFlows),
+		web.WithSentimentSignals(market.NewTHSSignalClientFromEnv()),
+		web.WithLimitStats(market.EastmoneyClient{}),
+		web.WithSentimentHistoryStore(storage.NewSentimentHistoryStore(app.paths.SentimentHistoryFile)),
 		web.WithGlobalMarkets(app.globalMarkets),
 		web.WithGlobalCharts(market.NewFallbackGlobalChartClient(
 			market.YahooGlobalChartClient{},
 			market.EastmoneyGlobalChartClient{},
 		)),
 		web.WithBoardDetails(market.EastmoneyClient{}),
+		web.WithRelatedData(market.EastmoneyClient{}, market.EastmoneyClient{}),
 		web.WithStrategyResearch(
 			strategyEngine,
 			storage.NewBacktestStore(app.paths.BacktestsDir),

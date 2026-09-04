@@ -23,6 +23,7 @@ func TestParseWatchOptions(t *testing.T) {
 
 func TestDefaultRefreshIntervalIsOneSecond(t *testing.T) {
 	t.Setenv("ASTOCK_MARKET_SOURCE", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	result, err := parseWatchOptions([]string{"600519"}, true)
 	if err != nil {
 		t.Fatal(err)

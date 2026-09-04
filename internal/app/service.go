@@ -27,17 +27,17 @@ func (app *App) runService(arguments []string) error {
 	set := flag.NewFlagSet("service", flag.ContinueOnError)
 	set.SetOutput(app.errOut)
 	listen := set.String("listen", "127.0.0.1:8765", "Web 监听地址")
-	source := set.String("source", "", "行情源：http 或 tdx")
+	source := set.String("source", "", "行情源：http、tdx 或 ths")
 	symbol := set.String("symbol", "", "首次打开的股票")
 	if len(arguments) == 0 {
-		return fmt.Errorf("用法: astock service [install | uninstall | status] [--listen 地址] [--source http|tdx] [--symbol 代码]")
+		return fmt.Errorf("用法: astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]")
 	}
 	action := strings.ToLower(strings.TrimSpace(arguments[0]))
 	if err := set.Parse(arguments[1:]); err != nil {
 		return err
 	}
 	if set.NArg() != 0 {
-		return fmt.Errorf("用法: astock service [install | uninstall | status] [--listen 地址] [--source http|tdx] [--symbol 代码]")
+		return fmt.Errorf("用法: astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]")
 	}
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("launchd 服务仅支持 macOS")

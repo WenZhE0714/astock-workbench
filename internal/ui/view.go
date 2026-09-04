@@ -93,6 +93,14 @@ func parsePrice(value string) (float64, bool) {
 	return result, err == nil && !math.IsNaN(result) && !math.IsInf(result, 0)
 }
 
+func displayPrice(value string) string {
+	price, ok := parsePrice(strings.TrimSpace(value))
+	if !ok {
+		return value
+	}
+	return fmt.Sprintf("%.2f", price)
+}
+
 func priceDelta(value, previousClose string) float64 {
 	price, priceOK := parsePrice(value)
 	previous, previousOK := parsePrice(previousClose)
@@ -195,7 +203,7 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 	suffix := "  " + item.High
 	railWidth := width - displayWidth(prefix) - displayWidth(suffix) - 2
 	if railWidth < 8 {
-		return []string{fmt.Sprintf("%s  %s  ← %s →  %s", label, item.Low, item.Current, item.High)}
+		return []string{fmt.Sprintf("%s  %s  ← %s →  %s", label, displayPrice(item.Low), displayPrice(item.Current), displayPrice(item.High))}
 	}
 	if railWidth > 34 {
 		railWidth = 34
@@ -872,7 +880,7 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 	if !math.IsNaN(item.Delta) && !math.IsNaN(item.Percent) {
 		change = fmt.Sprintf("%+.2f  %+.2f%%", item.Delta, item.Percent)
 	}
-	priceLine := style("白线现价", "90", color) + "  " + style(item.Current, trendCode(item.Delta, true), color) +
+	priceLine := style("白线现价", "90", color) + "  " + style(displayPrice(item.Current), trendCode(item.Delta, true), color) +
 		"   " + style(change, trendCode(item.Delta, false), color)
 	bid := firstLevel(item.Bids)
 	ask := firstLevel(item.Asks)

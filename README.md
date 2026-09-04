@@ -465,6 +465,65 @@ Token。该口径实测与常见行情软件的“沪深京”总额和缩放量
 板块资金看板使用同一行业板块列表口径按主力净额双向排序，再用板块成份股列表按成交额取前三；
 可通过 `ASTOCK_INDUSTRY_SCAN_API_URL` 和 `ASTOCK_INDUSTRY_LEADER_API_URL` 分别指定兼容代理地址。
 
+同花顺 Quant API 为可选行情源，不改变默认的通达信/HTTP 路径。启用前请在同花顺
+Super Command 中确认账号已开通实时行情、高频序列和日期序列权限。应用支持本地配置文件：
+
+```text
+~/.config/astock-workbench/ths-quantapi.json
+```
+
+JSON 文件同时保存连接参数和 Token，建议权限设为 `0600`：
+
+```json
+{
+  "enabled": true,
+  "access_token": "在此填写 access_token",
+  "refresh_token": "在此填写 refresh_token",
+  "base_url": "https://quantapi.51ifind.com/api/v1",
+  "min_request_gap_ms": 100,
+  "quote_indicators": "latest,changeRatio,open,high,low,preClose,volume,amount,turnoverRatio,limitUp,limitDown",
+  "history_indicators": "open,close,high,low,volume,amount,turnoverRatio",
+  "minute_indicators": "latest,avgPrice,volume,amount"
+}
+```
+
+当 `enabled` 为 `true` 且 `access_token` 已填写时，CLI 和 Web 在未显式指定行情源的情况下会默认使用
+同花顺；仍可用 `--source http` 或 `--source tdx` 临时覆盖。
+
+也可以只使用环境变量；环境变量优先于本地文件：
+
+```bash
+export ASTOCK_THS_ACCESS_TOKEN='你的 access_token'
+export ASTOCK_THS_REFRESH_TOKEN='你的 refresh_token'
+export ASTOCK_MARKET_SOURCE=ths
+./dist/astock --once 贵州茅台
+./dist/astock web --listen 127.0.0.1:8788 --source ths
+```
+
+Quant API 请求使用 `access_token` Header。`refresh_token` 当前不会被程序自动交换，
+因为公开数据网关没有稳定的 CLI 刷新端点；Access Token 失效时应在同花顺控制台重新生成并
+更新本地 JSON。可通过 `ASTOCK_THS_BASE_URL` 覆盖网关地址，通过
+`ASTOCK_THS_MIN_REQUEST_GAP_MS` 调高本地请求间隔；指标名称可分别用
+`ASTOCK_THS_QUOTE_INDICATORS`、`ASTOCK_THS_HISTORY_INDICATORS` 和
+`ASTOCK_THS_MINUTE_INDICATORS` 覆盖。若账号权限不足或返回结构无法识别，系统会自动回退
+到现有 HTTP 行情源，并在错误信息中保留原因；不会把 Token 写入日志、报告或浏览器。
+
+Web 的“情绪驾驶舱”通过 `/api/sentiment` 提供指数信号、成交额信号、行业涨跌广度、上涨行业占比、
+情绪分数和24小时采样走势，并接入东方财富涨跌停池，提供涨停、跌停、炸板率、最高连板和连板梯队。
+涨跌停接口不可用时会明确标记为未覆盖，不会用0填充；
+情绪分数只作为观察和研究输入，不会直接改变九因子或影子账户基线。
+情绪采样会持久化到 `~/.local/share/astock-workbench/sentiment/history.json`，重启后恢复最近24小时、最多360个点。
+默认优先请求东方财富数据中心，失败时回退到涨停池接口；可通过
+`ASTOCK_LIMIT_STATS_API_URL`、`ASTOCK_LIMIT_STATS_POOL_API_URL` 以及对应的
+`ASTOCK_LIMIT_*_REPORT` 变量接入兼容代理。
+
+Web 另提供“板块行情”Tab，通过 `/api/boards` 展示行业涨幅、主力净额、上涨/下跌家数和强弱排序；
+选中板块后会在页面内积累盘中采样并绘制分时曲线，也可以一键打开板块行情详情。
+
+驾驶舱还会按30秒缓存读取同花顺公开信号端点：北向资金盘中累计净流入、当日热点股数量和题材归因。
+这些信号作为情绪辅助层和选股证据展示，不会单独触发交易；北向历史序列不作为长期回测依据，热点题材标签也不替代公告、财报等正式证据。
+如需使用兼容代理，可分别设置 `ASTOCK_THS_NORTHBOUND_URL` 和 `ASTOCK_THS_HOT_STOCKS_URL`；热点地址支持 `%s` 占位符传入交易日。
+
 自选股：
 
 ```bash
