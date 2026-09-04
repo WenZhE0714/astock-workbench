@@ -123,16 +123,9 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 	}
 	symbols := stockSymbols(watchlist)
 	if includeLeaders {
-		leaders, err := scanner.market.FetchStockRanking(ctx, domain.MarketScanByAmount, true, defaultLeaderLimit)
-		if err != nil {
-			warnings = append(warnings, "强势候选获取失败: "+err.Error())
-		} else {
-			for _, item := range leaders {
-				if item.Percent > 0 || item.Speed > 0 || item.MainNet > 0 {
-					symbols = append(symbols, item.Symbol)
-				}
-			}
-		}
+		leaders, leaderWarnings := scanner.fetchLeaderSymbols(ctx)
+		symbols = append(symbols, leaders...)
+		warnings = append(warnings, leaderWarnings...)
 	}
 	symbols = uniqueSymbols(symbols, maximumUniverse)
 	if len(symbols) == 0 {
@@ -230,6 +223,98 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 		}
 	}
 	return result, nil
+}
+
+type leaderRankingSpec struct {
+	metric domain.MarketScanMetric
+	label  string
+}
+
+var leaderRankingSpecs = []leaderRankingSpec{
+	{metric: domain.MarketScanByAmount, label: "成交额"},
+	{metric: domain.MarketScanByMainNet, label: "主力净流入"},
+	{metric: domain.MarketScanByPercent, label: "涨幅"},
+}
+
+// fetchLeaderSymbols builds a diversified discovery pool instead of treating
+// the turnover ranking as a proxy for every type of market leader. Rankings
+// are fetched concurrently and merged round-robin so one long list cannot
+// consume the entire universe before the other sources contribute.
+func (scanner *Scanner) fetchLeaderSymbols(ctx context.Context) ([]string, []string) {
+	type rankingResult struct {
+		index int
+		items []domain.MarketStockSnapshot
+		err   error
+	}
+	results := make(chan rankingResult, len(leaderRankingSpecs))
+	for index, spec := range leaderRankingSpecs {
+		go func(index int, spec leaderRankingSpec) {
+			items, err := scanner.market.FetchStockRanking(ctx, spec.metric, true, defaultLeaderLimit)
+			results <- rankingResult{index: index, items: items, err: err}
+		}(index, spec)
+	}
+
+	lists := make([][]string, len(leaderRankingSpecs))
+	errors := make([]error, len(leaderRankingSpecs))
+	for range leaderRankingSpecs {
+		result := <-results
+		errors[result.index] = result.err
+		if result.err != nil {
+			continue
+		}
+		for _, item := range result.items {
+			if leaderCandidateEligible(leaderRankingSpecs[result.index].metric, item) {
+				lists[result.index] = append(lists[result.index], item.Symbol)
+			}
+		}
+	}
+
+	warnings := make([]string, 0, len(leaderRankingSpecs))
+	for index, err := range errors {
+		if err != nil {
+			warnings = append(warnings, leaderRankingSpecs[index].label+"候选获取失败: "+err.Error())
+		}
+	}
+	merged := make([]string, 0, maximumUniverse)
+	seen := make(map[string]bool, maximumUniverse)
+	for rank := 0; len(merged) < maximumUniverse; rank++ {
+		hasCandidate := false
+		for _, items := range lists {
+			if rank >= len(items) {
+				continue
+			}
+			hasCandidate = true
+			symbol := items[rank]
+			if seen[symbol] {
+				continue
+			}
+			seen[symbol] = true
+			merged = append(merged, symbol)
+			if len(merged) >= maximumUniverse {
+				break
+			}
+		}
+		if !hasCandidate {
+			break
+		}
+	}
+	return merged, warnings
+}
+
+func leaderCandidateEligible(metric domain.MarketScanMetric, item domain.MarketStockSnapshot) bool {
+	if strings.TrimSpace(item.Symbol) == "" {
+		return false
+	}
+	switch metric {
+	case domain.MarketScanByMainNet:
+		return finite(item.MainNet) && item.MainNet > 0
+	case domain.MarketScanByPercent:
+		return finite(item.Percent) && item.Percent > 0
+	default:
+		return (finite(item.Percent) && item.Percent > 0) ||
+			(finite(item.Speed) && item.Speed > 0) ||
+			(finite(item.MainNet) && item.MainNet > 0)
+	}
 }
 
 func quoteDateCoverage(signals []Signal, tradingDate string) (stale, current int) {
