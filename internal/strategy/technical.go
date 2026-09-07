@@ -123,6 +123,60 @@ func rsi(values []float64, period int) float64 {
 	return 100 - 100/(1+strength)
 }
 
+func bollinger(values []float64, period int, deviations float64) (middle, upper, lower float64) {
+	if period < 2 || len(values) < period {
+		return math.NaN(), math.NaN(), math.NaN()
+	}
+	window := values[len(values)-period:]
+	middle = average(window)
+	variance := 0.0
+	for _, value := range window {
+		delta := value - middle
+		variance += delta * delta
+	}
+	stddev := math.Sqrt(variance / float64(period))
+	return middle, middle + deviations*stddev, middle - deviations*stddev
+}
+
+func kdj(values []float64, highs, lows []float64, period int) (k, d, j float64) {
+	if period < 2 || len(values) < period || len(highs) != len(values) || len(lows) != len(values) {
+		return math.NaN(), math.NaN(), math.NaN()
+	}
+	k, d = 50, 50
+	for index := period - 1; index < len(values); index++ {
+		high, low := highs[index-period+1], lows[index-period+1]
+		for cursor := index - period + 2; cursor <= index; cursor++ {
+			high = math.Max(high, highs[cursor])
+			low = math.Min(low, lows[cursor])
+		}
+		rsv := 50.0
+		if high > low {
+			rsv = (values[index] - low) / (high - low) * 100
+		}
+		k = k*2/3 + rsv/3
+		d = d*2/3 + k/3
+	}
+	return k, d, 3*k - 2*d
+}
+
+func atr(values, highs, lows []float64, period int) float64 {
+	if period < 1 || len(values) <= period || len(highs) != len(values) || len(lows) != len(values) {
+		return math.NaN()
+	}
+	trueRanges := make([]float64, 0, len(values)-1)
+	for index := 1; index < len(values); index++ {
+		trueRanges = append(trueRanges, math.Max(highs[index]-lows[index], math.Max(math.Abs(highs[index]-values[index-1]), math.Abs(lows[index]-values[index-1]))))
+	}
+	if len(trueRanges) < period {
+		return math.NaN()
+	}
+	result := average(trueRanges[:period])
+	for _, current := range trueRanges[period:] {
+		result = (result*float64(period-1) + current) / float64(period)
+	}
+	return result
+}
+
 func priorRange(bars []domain.DailyBar, period int) (float64, float64) {
 	start := len(bars) - period - 1
 	end := len(bars) - 1
@@ -187,10 +241,22 @@ func AnalyzeTechnical(symbol string, input []domain.DailyBar) (domain.TechnicalS
 	ma5 := average(values[len(values)-5:])
 	ma20 := average(values[len(values)-20:])
 	ma60 := average(values[len(values)-60:])
+	emas := ema(values, 60)
+	ema5 := ema(values, 5)[len(values)-1]
+	ema20 := ema(values, 20)[len(values)-1]
+	ema60 := emas[len(values)-1]
 	previousMA20 := average(values[len(values)-25 : len(values)-5])
 	high20, low20 := priorRange(bars, 20)
 	macd := macdHistogram(values)
 	rsi14 := rsi(values, 14)
+	highs := make([]float64, len(bars))
+	lows := make([]float64, len(bars))
+	for index, bar := range bars {
+		highs[index], lows[index] = bar.High, bar.Low
+	}
+	bollMiddle, bollUpper, bollLower := bollinger(values, 20, 2)
+	kdjK, kdjD, kdjJ := kdj(values, highs, lows, 9)
+	atr14 := atr(values, highs, lows, 14)
 
 	previousVolumes := make([]float64, 0, 20)
 	for _, bar := range bars[len(bars)-21 : len(bars)-1] {
@@ -314,7 +380,9 @@ func AnalyzeTechnical(symbol string, input []domain.DailyBar) (domain.TechnicalS
 		Status: domain.TechnicalStatusReady, Symbol: symbol, DataSource: latest.Source, DataDate: latest.Date,
 		Bias: bias, Action: action, OptionLike: optionLike,
 		Strength: technicalStrength(score, (breakout || breakdown) && volumeConfirmed), Score: score,
-		Price: latest.Close, MA5: ma5, MA20: ma20, MA60: ma60, MACD: macd, RSI14: rsi14,
+		Price: latest.Close, MA5: ma5, MA20: ma20, MA60: ma60, EMA5: ema5, EMA20: ema20, EMA60: ema60,
+		MACD: macd, RSI14: rsi14, BollUpper: bollUpper, BollMiddle: bollMiddle, BollLower: bollLower,
+		KDJK: kdjK, KDJD: kdjD, KDJJ: kdjJ, ATR14: atr14,
 		VolumeRatio: volumeRatio, High20: high20, Low20: low20,
 		Support: support, Resistance: resistance,
 		BuyTrigger: buyTrigger, SellTrigger: sellTrigger, Invalidation: invalidation,

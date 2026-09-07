@@ -25,6 +25,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
+	"github.com/wenzhe/astock-workbench/internal/strategy"
 )
 
 //go:embed dist
@@ -209,6 +210,7 @@ type Server struct {
 	industryFlows             marketIndustryFlowClient
 	sentimentSignals          marketSentimentSignalClient
 	limitStats                market.LimitStatsClient
+	rankings                  market.MarketRankingClient
 	sentimentExtrasMu         sync.Mutex
 	sentimentExtrasCache      sentimentExtrasCacheEntry
 	limitStatsMu              sync.Mutex
@@ -397,21 +399,22 @@ type boardCacheEntry struct {
 }
 
 type stockResponse struct {
-	Symbol        string                 `json:"symbol"`
-	Kind          domain.AssetKind       `json:"kind"`
-	Name          string                 `json:"name,omitempty"`
-	Quote         *quoteResponse         `json:"quote,omitempty"`
-	Bars          []chartBar             `json:"bars,omitempty"`
-	Minutes       []minutePointResponse  `json:"minutes,omitempty"`
-	FetchedAt     string                 `json:"fetched_at"`
-	QuoteError    string                 `json:"quote_error,omitempty"`
-	HistoryError  string                 `json:"history_error,omitempty"`
-	MinuteError   string                 `json:"minute_error,omitempty"`
-	BoardError    string                 `json:"board_error,omitempty"`
-	Board         *boardResponse         `json:"board,omitempty"`
-	RelatedBoards []boardResponse        `json:"related_boards,omitempty"`
-	News          []domain.StockNewsItem `json:"news,omitempty"`
-	NewsError     string                 `json:"news_error,omitempty"`
+	Symbol        string                  `json:"symbol"`
+	Kind          domain.AssetKind        `json:"kind"`
+	Name          string                  `json:"name,omitempty"`
+	Quote         *quoteResponse          `json:"quote,omitempty"`
+	Bars          []chartBar              `json:"bars,omitempty"`
+	Minutes       []minutePointResponse   `json:"minutes,omitempty"`
+	Technical     *domain.TechnicalSignal `json:"technical,omitempty"`
+	FetchedAt     string                  `json:"fetched_at"`
+	QuoteError    string                  `json:"quote_error,omitempty"`
+	HistoryError  string                  `json:"history_error,omitempty"`
+	MinuteError   string                  `json:"minute_error,omitempty"`
+	BoardError    string                  `json:"board_error,omitempty"`
+	Board         *boardResponse          `json:"board,omitempty"`
+	RelatedBoards []boardResponse         `json:"related_boards,omitempty"`
+	News          []domain.StockNewsItem  `json:"news,omitempty"`
+	NewsError     string                  `json:"news_error,omitempty"`
 }
 
 type boardResponse struct {
@@ -674,6 +677,12 @@ func WithSentimentSignals(client marketSentimentSignalClient) ServerOption {
 // WithLimitStats connects market-wide limit-up/limit-down structure data.
 func WithLimitStats(client market.LimitStatsClient) ServerOption {
 	return func(server *Server) { server.limitStats = client }
+}
+
+// WithMarketRankings connects the exchange-wide gainers/losers/amount/turnover
+// feeds used by the dashboard ranking matrix.
+func WithMarketRankings(client market.MarketRankingClient) ServerOption {
+	return func(server *Server) { server.rankings = client }
 }
 
 // WithSentimentHistoryStore persists the rolling cockpit chart history.
@@ -1017,6 +1026,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/indices", s.handleIndices)
 	mux.HandleFunc("/api/sentiment", s.handleSentiment)
 	mux.HandleFunc("/api/boards", s.handleBoards)
+	mux.HandleFunc("/api/rankings", s.handleRankings)
 	mux.HandleFunc("/api/global/markets", s.handleGlobalMarkets)
 	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
 	mux.HandleFunc("/api/stock", s.handleStock)
@@ -2441,6 +2451,9 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 		response.HistoryError = historyResult.err.Error()
 	} else {
 		response.Bars = newChartBars(historyResult.bars)
+		if technical, technicalErr := strategy.AnalyzeTechnical(symbol, historyResult.bars); technicalErr == nil {
+			response.Technical = &technical
+		}
 	}
 	if minuteResult.err != nil {
 		response.MinuteError = minuteResult.err.Error()

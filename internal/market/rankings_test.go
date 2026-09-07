@@ -12,7 +12,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
 
-const marketRankingFixture = `{"rc":0,"data":{"diff":[{"f2":43.33,"f3":15.82,"f12":"688166","f13":1,"f14":"博瑞医药","f22":3.02,"f100":"化学制药"},{"f2":"25.90","f3":"4.48","f12":"300122","f13":0,"f14":"智飞生物","f22":"2.21","f100":"生物制品"},{"f2":null,"f3":"-","f12":"bad","f13":0,"f14":"无效","f22":null,"f100":"-"}]}}`
+const marketRankingFixture = `{"rc":0,"data":{"diff":[{"f2":43.33,"f3":15.82,"f6":2350000000,"f8":12.65,"f12":"688166","f13":1,"f14":"博瑞医药","f22":3.02,"f100":"化学制药"},{"f2":"25.90","f3":"4.48","f6":"890000000","f8":"8.21","f12":"300122","f13":0,"f14":"智飞生物","f22":"2.21","f100":"生物制品"},{"f2":null,"f3":"-","f12":"bad","f13":0,"f14":"无效","f22":null,"f100":"-"}]}}`
 
 type rankingRoundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -26,7 +26,7 @@ func TestParseMarketRankingPayloadKeepsIndustryAndMetrics(t *testing.T) {
 		t.Fatalf("expected two ranking rows, got %d", len(items))
 	}
 	if items[0].Symbol != "sh688166" || items[0].Name != "博瑞医药" || items[0].Price != 43.33 ||
-		items[0].Percent != 15.82 || items[0].Speed != 3.02 || items[0].Industry != "化学制药" {
+		items[0].Percent != 15.82 || items[0].Speed != 3.02 || items[0].Amount != 2350000000 || items[0].Turnover != 12.65 || items[0].Industry != "化学制药" {
 		t.Fatalf("unexpected Shanghai ranking row: %#v", items[0])
 	}
 	if items[1].Symbol != "sz300122" || items[1].Industry != "生物制品" || math.IsNaN(items[1].Price) {
@@ -43,6 +43,8 @@ func TestMarketRankingAddressUsesExpectedSort(t *testing.T) {
 		{kind: domain.MarketRankingGainers, metric: "f3", order: "1"},
 		{kind: domain.MarketRankingLosers, metric: "f3", order: "0"},
 		{kind: domain.MarketRankingRapidRise, metric: "f22", order: "1"},
+		{kind: domain.MarketRankingAmount, metric: "f6", order: "1"},
+		{kind: domain.MarketRankingTurnover, metric: "f8", order: "1"},
 	}
 	for _, test := range tests {
 		address, err := marketRankingAddress("https://example.test/api", test.kind, 20)

@@ -822,6 +822,13 @@ func technicalSignalLines(signal *domain.TechnicalSignal, flow *domain.FundFlow,
 		"MACD柱 %+.3f  ·  RSI14 %.1f  ·  量能 %s  ·  前20日 %.2f–%.2f",
 		signal.MACD, signal.RSI14, volumeRatio, signal.Low20, signal.High20,
 	), width, color)...)
+	if signal.EMA5 > 0 && signal.EMA20 > 0 && signal.EMA60 > 0 && signal.BollUpper > 0 && signal.BollMiddle > 0 && signal.BollLower > 0 && signal.ATR14 > 0 {
+		lines = append(lines, labeledTechnicalLines("扩展指标", fmt.Sprintf(
+			"EMA %.2f/%.2f/%.2f  ·  BOLL %.2f/%.2f/%.2f  ·  KDJ %.1f/%.1f/%.1f  ·  ATR14 %.2f",
+			signal.EMA5, signal.EMA20, signal.EMA60, signal.BollUpper, signal.BollMiddle, signal.BollLower,
+			signal.KDJK, signal.KDJD, signal.KDJJ, signal.ATR14,
+		), width, color)...)
+	}
 	if len(signal.Evidence) > 0 {
 		lines = append(lines, labeledTechnicalLines("判断依据", strings.Join(signal.Evidence, "  ·  "), width, color)...)
 	}

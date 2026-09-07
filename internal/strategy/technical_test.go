@@ -41,6 +41,18 @@ func TestAnalyzeTechnicalFindsConfirmedBullishBreakout(t *testing.T) {
 	if !strings.Contains(signal.BuyTrigger, "成交量") || !strings.Contains(signal.Invalidation, "看涨结构失效") {
 		t.Fatalf("missing conditional plan: %#v", signal)
 	}
+	for name, value := range map[string]float64{
+		"ema5": signal.EMA5, "ema20": signal.EMA20, "ema60": signal.EMA60,
+		"boll_upper": signal.BollUpper, "boll_middle": signal.BollMiddle, "boll_lower": signal.BollLower,
+		"kdj_k": signal.KDJK, "kdj_d": signal.KDJD, "kdj_j": signal.KDJJ, "atr14": signal.ATR14,
+	} {
+		if math.IsNaN(value) || math.IsInf(value, 0) || (name != "kdj_j" && value <= 0) {
+			t.Fatalf("extended indicator %s is unavailable: %v", name, value)
+		}
+	}
+	if signal.BollUpper < signal.BollMiddle || signal.BollMiddle < signal.BollLower {
+		t.Fatalf("invalid bollinger ordering: %#v", signal)
+	}
 }
 
 func TestAnalyzeTechnicalFindsBearishBreakdown(t *testing.T) {
@@ -100,5 +112,21 @@ func TestRSIFlatSeriesIsNeutral(t *testing.T) {
 	}
 	if got := rsi(values, 14); math.Abs(got-50) > 1e-9 {
 		t.Fatalf("flat RSI = %v, want 50", got)
+	}
+}
+
+func TestKDJAndATRRemainFiniteForFlatSeries(t *testing.T) {
+	values := make([]float64, 30)
+	highs := make([]float64, 30)
+	lows := make([]float64, 30)
+	for index := range values {
+		values[index], highs[index], lows[index] = 10, 10, 10
+	}
+	k, d, j := kdj(values, highs, lows, 9)
+	if math.Abs(k-50) > 1e-9 || math.Abs(d-50) > 1e-9 || math.Abs(j-50) > 1e-9 {
+		t.Fatalf("flat KDJ = %v/%v/%v, want 50/50/50", k, d, j)
+	}
+	if got := atr(values, highs, lows, 14); got != 0 {
+		t.Fatalf("flat ATR = %v, want 0", got)
 	}
 }

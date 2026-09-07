@@ -74,7 +74,7 @@ createApp({
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
-      workspaceMode: "market",
+      workspaceMode: "dashboard",
       boardsLoading: false,
       boardsError: "",
       boardItems: [],
@@ -87,6 +87,10 @@ createApp({
       boardMembersLoading: false,
       boardMembersError: "",
       boardsFetchedAt: 0,
+      marketRankings: { gainers: [], losers: [], rapid_rise: [], amount: [], turnover: [] },
+      marketRankingsLoading: false,
+      marketRankingsError: "",
+      marketRankingsFetchedAt: 0,
       sentimentSnapshot: null,
       sentimentHistory: [],
       sentimentLoading: false,
@@ -405,6 +409,34 @@ createApp({
 	  return this.candidateStatusLabel(this.strategyCandidateLifecycle.status, this.strategyActiveCandidate.research_stage)
 	},
     realtimeSignals() { return this.realtimeResult && Array.isArray(this.realtimeResult.signals) ? this.realtimeResult.signals : [] },
+    marketPulseSignals() {
+      return [...this.realtimeSignals]
+        .filter(item => item && item.symbol)
+        .sort((left, right) => Number(right.risk_adjusted_score || right.score || 0) - Number(left.risk_adjusted_score || left.score || 0))
+        .slice(0, 5)
+    },
+    marketPulseRadarItems() {
+      const snapshot = this.sentimentSnapshot || {}
+      return [
+        { key: "index_signal", label: "指数", value: snapshot.index_signal, tone: "index" },
+        { key: "industry_breadth", label: "宽度", value: snapshot.industry_breadth, tone: "breadth" },
+        { key: "turnover_signal", label: "成交额", value: snapshot.turnover_signal, tone: "turnover" },
+        { key: "industry_flow_signal", label: "资金", value: snapshot.industry_flow_signal, tone: "flow" },
+        { key: "northbound_signal", label: "北向", value: snapshot.northbound_signal, tone: "northbound" },
+      ]
+    },
+    marketPulseBreadthRate() {
+      const value = this.sentimentSnapshot && Number(this.sentimentSnapshot.positive_industry_rate)
+      return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null
+    },
+    marketRankingColumns() {
+      return [
+        { key: "gainers", label: "涨幅榜", tone: "up", metric: "percent", items: this.marketRankings.gainers || [] },
+        { key: "losers", label: "跌幅榜", tone: "down", metric: "percent", items: this.marketRankings.losers || [] },
+        { key: "amount", label: "成交额榜", tone: "", metric: "amount", items: this.marketRankings.amount || [] },
+        { key: "turnover", label: "活跃换手", tone: "warn-text", metric: "turnover", items: this.marketRankings.turnover || [] },
+      ]
+    },
     realtimeScopeLabel() {
       return this.realtimeScope === "watchlist" ? "仅自选" : "自选 + 强势候选"
     },
@@ -639,10 +671,54 @@ createApp({
       const sample = this.bars.slice(Math.max(0, currentIndex - 20), currentIndex)
       const highs = sample.map(bar => Number(bar.high)).filter(Number.isFinite)
       const lows = sample.map(bar => Number(bar.low)).filter(Number.isFinite)
+      const closes = this.bars.slice(Math.max(0, currentIndex - 60), currentIndex + 1).map(bar => Number(bar.close)).filter(Number.isFinite)
+      const latest = Number(this.visibleLastBar.close)
+      const high20 = highs.length ? Math.max(...highs) : null
+      const low20 = lows.length ? Math.min(...lows) : null
+      const mean20 = closes.length >= 20 ? closes.slice(-20).reduce((sum, value) => sum + value, 0) / 20 : null
+      const std20 = mean20 == null ? null : Math.sqrt(closes.slice(-20).reduce((sum, value) => sum + (value - mean20) ** 2, 0) / 20)
+      const ema = (period) => {
+        if (closes.length < period) return null
+        let value = closes[0]
+        const alpha = 2 / (period + 1)
+        for (const close of closes.slice(1)) value = alpha * close + (1 - alpha) * value
+        return value
+      }
+      const ema20 = ema(20)
+      const trueRangeStart = Math.max(1, currentIndex - 60)
+      const trueRanges = this.bars.slice(trueRangeStart, currentIndex + 1).map((bar, offset) => {
+        const previous = this.bars[trueRangeStart + offset - 1]
+        const previousClose = Number(previous?.close)
+        const high = Number(bar.high); const low = Number(bar.low)
+        return Number.isFinite(previousClose) ? Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose)) : NaN
+      }).filter(Number.isFinite)
+      const atr14 = trueRanges.length >= 14 ? trueRanges.slice(-14).reduce((sum, value) => sum + value, 0) / 14 : null
+      const pivot = high20 != null && low20 != null && Number.isFinite(latest) ? (high20 + low20 + latest) / 3 : null
+      let gap = null
+      for (let index = currentIndex; index > 0; index -= 1) {
+        const current = this.bars[index]; const previous = this.bars[index - 1]
+        const low = Number(current.low); const high = Number(current.high); const previousHigh = Number(previous.high); const previousLow = Number(previous.low)
+        if (low > previousHigh && (gap == null || Math.abs(low - latest) < Math.abs(gap - latest))) gap = low
+        if (high < previousLow && (gap == null || Math.abs(high - latest) < Math.abs(gap - latest))) gap = high
+      }
+      const fib382 = high20 != null && low20 != null ? low20 + (high20 - low20) * .382 : null
+      const fib618 = high20 != null && low20 != null ? low20 + (high20 - low20) * .618 : null
+      const formatLevel = (value) => value == null || !Number.isFinite(value) ? "--" : this.number(value)
       return {
-        resistance: highs.length ? Math.max(...highs) : null,
-        support: lows.length ? Math.min(...lows) : null,
-        close: Number(this.visibleLastBar.close),
+        resistance: high20,
+        support: low20,
+        close: latest,
+        keyLevels: [
+          { label: "压力 / 支撑", value: `${formatLevel(high20)} / ${formatLevel(low20)}` },
+          { label: "成交密集区", value: formatLevel(mean20) },
+          { label: "枢轴点", value: formatLevel(pivot) },
+          { label: "前高 / 前低", value: `${formatLevel(high20)} / ${formatLevel(low20)}` },
+          { label: "Keltner 通道", value: ema20 == null || atr14 == null ? "--" : `${formatLevel(ema20 + 2 * atr14)} / ${formatLevel(ema20 - 2 * atr14)}` },
+          { label: "ATR 波动通道", value: !Number.isFinite(latest) || atr14 == null ? "--" : `${formatLevel(latest + 2 * atr14)} / ${formatLevel(latest - 2 * atr14)}` },
+          { label: "缺口位", value: formatLevel(gap) },
+          { label: "斐波那契", value: `${formatLevel(fib382)} / ${formatLevel(fib618)}` },
+          { label: "整数关口", value: Number.isFinite(latest) ? this.number(Math.round(latest)) : "--" },
+        ],
       }
     },
     quoteAmount() {
@@ -1235,7 +1311,7 @@ createApp({
       window.scrollTo({ top: 0, behavior: 'auto' })
     },
     switchWorkspace(mode) {
-      if (!["market", "sentiment", "boards", "global", "strategy", "realtime", "settings"].includes(mode)) return
+      if (!["dashboard", "market", "sentiment", "boards", "global", "strategy", "realtime", "settings"].includes(mode)) return
       this.workspaceMode = mode
       this.strategyCrosshair = null
       if (mode === "settings") {
@@ -1259,6 +1335,11 @@ createApp({
         this.loadSentiment(true)
       } else if (mode === "boards") {
         this.loadBoards(true)
+      } else if (mode === "dashboard") {
+        this.loadIndices()
+        this.loadSentiment(true)
+        this.loadBoards(true)
+        this.loadMarketRankings(true)
       } else {
         this.$nextTick(() => this.drawChart())
       }
@@ -2110,6 +2191,34 @@ createApp({
         this.boardsLoading = false
       }
     },
+    async loadMarketRankings(force = false) {
+      const now = Date.now()
+      if (!force && (this.marketRankingsLoading || now - this.marketRankingsFetchedAt < 20000)) return
+      this.marketRankingsLoading = true
+      this.marketRankingsError = ""
+      try {
+      const kinds = ["gainers", "losers", "rapid_rise", "amount", "turnover"]
+        const responses = await Promise.all(kinds.map(kind => fetch(`/api/rankings?kind=${kind}&limit=8`, { cache: "no-store" })))
+        const payloads = await Promise.all(responses.map(async response => ({ response, payload: await response.json() })))
+        const next = {}
+        payloads.forEach(({ response, payload }, index) => {
+          const kind = kinds[index]
+          if (!response.ok) throw new Error(payload.warning || payload.error || `${kind} 榜单暂不可用`)
+          next[kind] = Array.isArray(payload.items) ? payload.items : []
+        })
+        this.marketRankings = { ...this.marketRankings, ...next }
+        this.marketRankingsFetchedAt = now
+      } catch (error) {
+        this.marketRankingsError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.marketRankingsLoading = false
+      }
+    },
+    marketRankingMetric(item, metric) {
+      if (metric === "amount") return this.compact(item && item.amount_yuan)
+      if (metric === "turnover") return this.percentText(item && item.turnover_percent)
+      return this.percentText(item && item.percent)
+    },
     boardBreadth(item) {
       const rise = Number(item && item.rise_count) || 0
       const fall = Number(item && item.fall_count) || 0
@@ -2261,6 +2370,7 @@ createApp({
     },
     selectMarketIndex(item) {
       if (!item || !item.symbol) return
+      this.workspaceMode = "market"
       this.query = item.symbol
       this.requestedSymbol = item.symbol
       this.load(item.symbol)
@@ -3554,6 +3664,7 @@ createApp({
     this.loadIndices()
     this.loadSentiment()
     this.loadBoards()
+    this.loadMarketRankings()
     this.loadGlobalChart(this.globalSelectedSymbol, true)
     this.loadWatchlist()
     this.loadAIConfig()
@@ -3562,6 +3673,7 @@ createApp({
       this.loadIndices()
       this.loadSentiment()
       this.loadBoards()
+      this.loadMarketRankings()
       if (this.workspaceMode === "global") this.loadGlobalChart(this.globalSelectedSymbol)
       this.loadWatchlist()
       this.pollRealtimeSession()

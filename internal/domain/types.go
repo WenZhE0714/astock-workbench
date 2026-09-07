@@ -25,6 +25,8 @@ const (
 	MarketRankingGainers   MarketRankingKind = "gainers"
 	MarketRankingLosers    MarketRankingKind = "losers"
 	MarketRankingRapidRise MarketRankingKind = "rapid_rise"
+	MarketRankingAmount    MarketRankingKind = "amount"
+	MarketRankingTurnover  MarketRankingKind = "turnover"
 )
 
 // MarketRankingItem is one Eastmoney Shanghai/Shenzhen A-share ranking row.
@@ -34,6 +36,8 @@ type MarketRankingItem struct {
 	Price    float64 `json:"price"`
 	Percent  float64 `json:"percent"`
 	Speed    float64 `json:"speed"`
+	Amount   float64 `json:"amount_yuan"`
+	Turnover float64 `json:"turnover_percent"`
 	Industry string  `json:"industry"`
 }
 
@@ -177,8 +181,18 @@ type TechnicalSignal struct {
 	MA5          float64  `json:"ma5"`
 	MA20         float64  `json:"ma20"`
 	MA60         float64  `json:"ma60"`
+	EMA5         float64  `json:"ema5"`
+	EMA20        float64  `json:"ema20"`
+	EMA60        float64  `json:"ema60"`
 	MACD         float64  `json:"macd_histogram"`
 	RSI14        float64  `json:"rsi14"`
+	BollUpper    float64  `json:"boll_upper"`
+	BollMiddle   float64  `json:"boll_middle"`
+	BollLower    float64  `json:"boll_lower"`
+	KDJK         float64  `json:"kdj_k"`
+	KDJD         float64  `json:"kdj_d"`
+	KDJJ         float64  `json:"kdj_j"`
+	ATR14        float64  `json:"atr14"`
 	VolumeRatio  float64  `json:"volume_ratio_20d"`
 	High20       float64  `json:"prior_20d_high"`
 	Low20        float64  `json:"prior_20d_low"`

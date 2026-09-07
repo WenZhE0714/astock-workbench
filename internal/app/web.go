@@ -95,6 +95,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithIndustryFlows(app.industryFlows),
 		web.WithSentimentSignals(market.NewTHSSignalClientFromEnv()),
 		web.WithLimitStats(market.EastmoneyClient{}),
+		web.WithMarketRankings(app.rankings),
 		web.WithSentimentHistoryStore(storage.NewSentimentHistoryStore(app.paths.SentimentHistoryFile)),
 		web.WithGlobalMarkets(app.globalMarkets),
 		web.WithGlobalCharts(market.NewFallbackGlobalChartClient(

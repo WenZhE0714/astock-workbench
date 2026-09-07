@@ -33,6 +33,8 @@ type marketRankingPayload struct {
 			Market   json.RawMessage `json:"f13"`
 			Name     string          `json:"f14"`
 			Speed    json.RawMessage `json:"f22"`
+			Amount   json.RawMessage `json:"f6"`
+			Turnover json.RawMessage `json:"f8"`
 			Industry string          `json:"f100"`
 		} `json:"diff"`
 	} `json:"data"`
@@ -66,6 +68,8 @@ func ParseMarketRankingPayload(raw string) []domain.MarketRankingItem {
 			Price:    rawNumber(item.Price),
 			Percent:  rawNumber(item.Percent),
 			Speed:    rawNumber(item.Speed),
+			Amount:   rawNumber(item.Amount),
+			Turnover: rawNumber(item.Turnover),
 			Industry: industry,
 		})
 	}
@@ -80,6 +84,10 @@ func marketRankingSort(kind domain.MarketRankingKind) (metric, order string, err
 		return "f3", "0", nil
 	case domain.MarketRankingRapidRise:
 		return "f22", "1", nil
+	case domain.MarketRankingAmount:
+		return "f6", "1", nil
+	case domain.MarketRankingTurnover:
+		return "f8", "1", nil
 	default:
 		return "", "", fmt.Errorf("未知榜单类型 %q", kind)
 	}
@@ -102,7 +110,7 @@ func marketRankingAddress(base string, kind domain.MarketRankingKind, limit int)
 		return strings.ReplaceAll(address, "{limit}", strconv.Itoa(limit)), nil
 	}
 	values := url.Values{
-		"fields": {"f2,f3,f12,f13,f14,f22,f100"},
+		"fields": {"f2,f3,f6,f8,f12,f13,f14,f22,f100"},
 		"fid":    {metric},
 		"fltt":   {"2"},
 		"fs":     {marketRankingUniverse},
