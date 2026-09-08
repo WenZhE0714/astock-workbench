@@ -11,10 +11,21 @@ import (
 )
 
 type marketRankingResponse struct {
-	Kind      domain.MarketRankingKind   `json:"kind"`
-	Items     []domain.MarketRankingItem `json:"items"`
-	FetchedAt string                     `json:"fetched_at"`
-	Warning   string                     `json:"warning,omitempty"`
+	Kind      domain.MarketRankingKind    `json:"kind"`
+	Items     []marketRankingItemResponse `json:"items"`
+	FetchedAt string                      `json:"fetched_at"`
+	Warning   string                      `json:"warning,omitempty"`
+}
+
+type marketRankingItemResponse struct {
+	Symbol   string   `json:"symbol"`
+	Name     string   `json:"name"`
+	Industry string   `json:"industry"`
+	Price    *float64 `json:"price"`
+	Percent  *float64 `json:"percent"`
+	Speed    *float64 `json:"speed"`
+	Amount   *float64 `json:"amount_yuan"`
+	Turnover *float64 `json:"turnover_percent"`
 }
 
 func (s *Server) handleRankings(writer http.ResponseWriter, request *http.Request) {
@@ -23,7 +34,7 @@ func (s *Server) handleRankings(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	if s == nil || s.rankings == nil {
-		writeJSON(writer, http.StatusServiceUnavailable, marketRankingResponse{Items: []domain.MarketRankingItem{}, FetchedAt: time.Now().Format(time.RFC3339), Warning: "个股榜单服务未初始化"})
+		writeJSON(writer, http.StatusServiceUnavailable, marketRankingResponse{Items: []marketRankingItemResponse{}, FetchedAt: time.Now().Format(time.RFC3339), Warning: "个股榜单服务未初始化"})
 		return
 	}
 	kind := domain.MarketRankingKind(strings.ToLower(strings.TrimSpace(request.URL.Query().Get("kind"))))
@@ -45,11 +56,18 @@ func (s *Server) handleRankings(writer http.ResponseWriter, request *http.Reques
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
 	defer cancel()
 	items, err := s.rankings.FetchMarketRanking(ctx, kind, limit)
-	response := marketRankingResponse{Kind: kind, Items: items, FetchedAt: time.Now().Format(time.RFC3339)}
+	response := marketRankingResponse{Kind: kind, Items: make([]marketRankingItemResponse, 0, len(items)), FetchedAt: time.Now().Format(time.RFC3339)}
 	if err != nil {
 		response.Warning = err.Error()
 		writeJSON(writer, http.StatusBadGateway, response)
 		return
+	}
+	for _, item := range items {
+		response.Items = append(response.Items, marketRankingItemResponse{
+			Symbol: item.Symbol, Name: item.Name, Industry: item.Industry,
+			Price: finitePointer(item.Price), Percent: finitePointer(item.Percent), Speed: finitePointer(item.Speed),
+			Amount: finitePointer(item.Amount), Turnover: finitePointer(item.Turnover),
+		})
 	}
 	writeJSON(writer, http.StatusOK, response)
 }

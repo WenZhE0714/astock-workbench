@@ -1,7 +1,10 @@
 // The page template is delivered by Go so the browser bundle needs Vue's
 // runtime compiler, not the runtime-only default entry.
 import { createApp } from "vue/dist/vue.esm-bundler.js"
+import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight } from "lucide-vue-next"
+import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "./dashboard.mjs"
 import "./style.css"
+import "./dashboard.css"
 
 const defaultSymbol = document.querySelector('meta[name="astock-default-symbol"]')?.content || "600519"
 const morningStart = 9 * 60 + 30
@@ -15,6 +18,17 @@ const marketIndexDefinitions = [
   { symbol: "sh000001", name: "上证指数" },
   { symbol: "sz399001", name: "深证成指" },
   { symbol: "sz399006", name: "创业板指" },
+]
+const workspaceNavigation = [
+  { id: "dashboard", label: "市场看板", icon: "LayoutDashboard", group: "市场" },
+  { id: "market", label: "个股行情", icon: "ChartNoAxesCombined", group: "市场" },
+  { id: "boards", label: "板块行情", icon: "Layers", group: "市场" },
+  { id: "global", label: "外盘行情", icon: "Globe", group: "市场" },
+  { id: "sentiment", label: "情绪驾驶舱", icon: "Activity", group: "研究" },
+  { id: "realtime", label: "实时选股", icon: "ScanLine", group: "研究" },
+  { id: "monitor", label: "监控中心", icon: "Radio", group: "研究" },
+  { id: "strategy", label: "量化研究", icon: "FlaskConical", group: "研究" },
+  { id: "settings", label: "AI 设置", icon: "Settings", group: "设置" },
 ]
 const globalMarketDefinitions = [
   { symbol: "rt_hkHSI", region: "港股", name: "恒生指数" },
@@ -69,12 +83,18 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight },
   data() {
     return {
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
       workspaceMode: "dashboard",
+      workspaceNavigation,
+      monitorFilter: "all",
+      monitorQuery: "",
+      marketIndustryDirection: "leading",
+      mobileRankingKind: "gainers",
       boardsLoading: false,
       boardsError: "",
       boardItems: [],
@@ -91,6 +111,7 @@ createApp({
       marketRankingsLoading: false,
       marketRankingsError: "",
       marketRankingsFetchedAt: 0,
+      marketRankingStates: {},
       sentimentSnapshot: null,
       sentimentHistory: [],
       sentimentLoading: false,
@@ -195,7 +216,7 @@ createApp({
       aiConfigClearToken: false,
       aiConfigTestResult: null,
       aiConfigLoaded: false,
-      watchlistOpen: window.innerWidth > 1100,
+      watchlistOpen: false,
       watchlist: { groups: [] },
       selectedWatchlistGroup: "全部",
       watchlistInput: "",
@@ -296,16 +317,16 @@ createApp({
     },
     sentimentReadout() {
       const snapshot = this.sentimentSnapshot || {}
-      const score = Number(snapshot.score)
-      const index = Number(snapshot.index_signal)
-      const breadth = Number(snapshot.industry_breadth)
-      const positiveRate = Number(snapshot.positive_industry_rate)
+      const score = finiteNumber(snapshot.score)
+      const index = finiteNumber(snapshot.index_signal)
+      const breadth = finiteNumber(snapshot.industry_breadth)
+      const positiveRate = finiteNumber(snapshot.positive_industry_rate)
       const tags = []
       if (Number.isFinite(index) && Number.isFinite(breadth) && Math.abs(index - breadth) >= 12) {
         tags.push({ text: index > breadth ? "权重强于小票" : "小票扩散领先", tone: index > breadth ? "warn" : "up" })
       }
       if (Number.isFinite(positiveRate)) tags.push({ text: `上涨行业 ${positiveRate.toFixed(0)}%`, tone: positiveRate >= 50 ? "up" : "down" })
-      if (Number.isFinite(Number(snapshot.industry_flow_signal))) tags.push({ text: Number(snapshot.industry_flow_signal) >= 50 ? "资金偏流入" : "资金偏流出", tone: Number(snapshot.industry_flow_signal) >= 50 ? "up" : "down" })
+      if (finiteNumber(snapshot.industry_flow_signal) !== null) tags.push({ text: Number(snapshot.industry_flow_signal) >= 50 ? "资金偏流入" : "资金偏流出", tone: Number(snapshot.industry_flow_signal) >= 50 ? "up" : "down" })
       if (!tags.length) tags.push({ text: "等待更多盘中样本", tone: "muted" })
       if (!Number.isFinite(score)) return { title: "数据不足，暂不判断", detail: "当前行情源尚未形成有效的情绪合成结果。", tags }
       if (score >= 75) return { title: "情绪偏热，注意追高风险", detail: "综合分已进入强势区间，优先观察量能是否继续放大以及强势行业是否扩散。", tags }
@@ -410,10 +431,16 @@ createApp({
 	},
     realtimeSignals() { return this.realtimeResult && Array.isArray(this.realtimeResult.signals) ? this.realtimeResult.signals : [] },
     marketPulseSignals() {
-      return [...this.realtimeSignals]
-        .filter(item => item && item.symbol)
-        .sort((left, right) => Number(right.risk_adjusted_score || right.score || 0) - Number(left.risk_adjusted_score || left.score || 0))
-        .slice(0, 5)
+      return selectMonitorSignals(this.realtimeSignals).slice(0, 8)
+    },
+    monitorSignals() {
+      return selectMonitorSignals(this.realtimeSignals, this.monitorFilter, this.monitorQuery)
+    },
+    monitorStates() {
+      return [
+        { key: "all", label: "全部" }, { key: "triggered", label: "触发" },
+        { key: "watching", label: "观察" }, { key: "weak", label: "偏弱" }, { key: "invalid", label: "数据不足" },
+      ].map(item => ({ ...item, count: this.realtimeSignals.filter(signal => item.key === "all" || signal.state === item.key).length }))
     },
     marketPulseRadarItems() {
       const snapshot = this.sentimentSnapshot || {}
@@ -422,12 +449,12 @@ createApp({
         { key: "industry_breadth", label: "宽度", value: snapshot.industry_breadth, tone: "breadth" },
         { key: "turnover_signal", label: "成交额", value: snapshot.turnover_signal, tone: "turnover" },
         { key: "industry_flow_signal", label: "资金", value: snapshot.industry_flow_signal, tone: "flow" },
-        { key: "northbound_signal", label: "北向", value: snapshot.northbound_signal, tone: "northbound" },
-      ]
+        { key: "northbound_signal", label: "北向", value: snapshot.northbound_available ? snapshot.northbound_signal : null, tone: "northbound" },
+      ].map(item => ({ ...item, value: finiteNumber(item.value) }))
     },
-    marketPulseBreadthRate() {
-      const value = this.sentimentSnapshot && Number(this.sentimentSnapshot.positive_industry_rate)
-      return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null
+    marketRadarPolygon() {
+      const values = this.marketPulseRadarItems.map(item => item.value)
+      return values.every(value => value !== null) ? radarPolygon(values.map(value => Math.max(0, Math.min(100, value)))) : ""
     },
     marketRankingColumns() {
       return [
@@ -435,7 +462,26 @@ createApp({
         { key: "losers", label: "跌幅榜", tone: "down", metric: "percent", items: this.marketRankings.losers || [] },
         { key: "amount", label: "成交额榜", tone: "", metric: "amount", items: this.marketRankings.amount || [] },
         { key: "turnover", label: "活跃换手", tone: "warn-text", metric: "turnover", items: this.marketRankings.turnover || [] },
-      ]
+      ].map(column => ({ ...column, status: this.marketRankingStates[column.key] || {} }))
+    },
+    marketBreadth() { return boardDistribution(this.boardItems) },
+    marketThemeItems() {
+      const snapshot = this.sentimentSnapshot || {}
+      return (snapshot.hot_signal_available && Array.isArray(snapshot.hot_themes) ? snapshot.hot_themes : []).slice(0, 5)
+    },
+    marketIndustryItems() {
+      const sign = this.marketIndustryDirection === "leading" ? -1 : 1
+      return this.boardItems.filter(item => finiteNumber(item?.percent) !== null)
+        .sort((a, b) => sign * (Number(a.percent) - Number(b.percent)) || String(a.code).localeCompare(String(b.code)))
+        .slice(0, 5)
+    },
+    marketLadder() {
+      return this.sentimentSnapshot?.limit_stats_available ? [...(this.sentimentSnapshot.streak_ladder || [])]
+        .filter(item => item.streak >= 2).sort((a, b) => b.streak - a.streak).slice(0, 5) : []
+    },
+    dashboardWarnings() {
+      return [this.indicesError, this.sentimentError, this.boardsError, this.realtimeError,
+        ...(this.sentimentSnapshot?.warnings || [])].filter(Boolean)
     },
     realtimeScopeLabel() {
       return this.realtimeScope === "watchlist" ? "仅自选" : "自选 + 强势候选"
@@ -1311,8 +1357,10 @@ createApp({
       window.scrollTo({ top: 0, behavior: 'auto' })
     },
     switchWorkspace(mode) {
-      if (!["dashboard", "market", "sentiment", "boards", "global", "strategy", "realtime", "settings"].includes(mode)) return
+      if (!workspaceNavigation.some(item => item.id === mode)) return
       this.workspaceMode = mode
+      this.watchlistOpen = false
+      window.scrollTo({ top: 0, behavior: "auto" })
       this.strategyCrosshair = null
       if (mode === "settings") {
         this.loadAIConfig()
@@ -1335,14 +1383,39 @@ createApp({
         this.loadSentiment(true)
       } else if (mode === "boards") {
         this.loadBoards(true)
+      } else if (mode === "monitor") {
+        this.loadRealtimeSnapshot()
       } else if (mode === "dashboard") {
         this.loadIndices()
         this.loadSentiment(true)
         this.loadBoards(true)
         this.loadMarketRankings(true)
+        this.loadRealtimeSnapshot()
       } else {
+        this.load(this.requestedSymbol)
         this.$nextTick(() => this.drawChart())
       }
+    },
+    finiteNumber,
+    signalScore,
+    radarPoint,
+    radarPolygon,
+    async refreshDashboard() {
+      await Promise.allSettled([this.loadIndices(), this.loadSentiment(true), this.loadBoards(true), this.loadMarketRankings(true), this.loadRealtimeSnapshot()])
+    },
+    openBoardFromDashboard(item) {
+      this.switchWorkspace("boards")
+      this.selectBoard(item)
+    },
+    openHotThemes() {
+      this.switchWorkspace("sentiment")
+      this.$nextTick(() => document.querySelector(".sentiment-theme-panel")?.scrollIntoView({ block: "start" }))
+    },
+    signalReason(signal) {
+      return (signal.entry_shape_evidence || []).filter(Boolean)[0] || (signal.reasons || []).filter(Boolean)[0] || "暂无触发依据"
+    },
+    closeWatchlistOnEscape(event) {
+      if (event.key === "Escape") this.watchlistOpen = false
     },
     async loadStrategyHistory() {
       if (this.strategyHistoryLoading) return
@@ -1877,19 +1950,16 @@ createApp({
       }
     },
     pollRealtimeSession() {
-      if (this.workspaceMode !== "realtime" || this.realtimeLoading) return
+      if (!["realtime", "dashboard", "monitor"].includes(this.workspaceMode) || this.realtimeLoading) return
       const now = Date.now()
-      if (this.realtimeSection === 'shadow' && !this.shadowLoading && now - this.shadowCheckedAt >= 30000) this.loadShadowReport()
+      if (this.workspaceMode === "realtime" && this.realtimeSection === 'shadow' && !this.shadowLoading && now - this.shadowCheckedAt >= 30000) this.loadShadowReport()
       if (!this.realtimeSnapshotLoading && now - this.realtimeSessionCheckedAt >= 10000) {
         this.loadRealtimeSnapshot()
       }
     },
     selectRealtimeSignal(signal) {
       if (!signal || !signal.symbol) return
-      this.workspaceMode = "market"
-      this.query = this.displayCode(signal.symbol)
-      this.requestedSymbol = signal.symbol
-      this.load(signal.symbol)
+      this.selectWatchlistSymbol(signal.symbol)
     },
     movingAverage(bars, index, length) {
       if (index + 1 < length) return null
@@ -2112,26 +2182,30 @@ createApp({
       }
     },
     sentimentValue(value) {
-      const number = Number(value)
-      return Number.isFinite(number) ? number.toFixed(1) : "--"
+      const number = finiteNumber(value)
+      return number !== null ? number.toFixed(1) : "--"
     },
     sentimentNumber(value) {
       return this.sentimentValue(value)
     },
+    ratioText(value) {
+      const number = finiteNumber(value)
+      return number === null ? "--" : `${number.toFixed(1)}%`
+    },
     sentimentPercent(value) {
-      const number = Number(value)
-      return Number.isFinite(number) ? `${number >= 0 ? "+" : ""}${number.toFixed(1)}%` : "--"
+      const number = finiteNumber(value)
+      return number !== null ? `${number >= 0 ? "+" : ""}${number.toFixed(1)}%` : "--"
     },
     sentimentBarWidth(value) {
-      const number = Number(value)
-      return Number.isFinite(number) ? `${Math.max(0, Math.min(100, number))}%` : "0%"
+      const number = finiteNumber(value)
+      return number !== null ? `${Math.max(0, Math.min(100, number))}%` : "0%"
     },
     sentimentTrendDelta(key) {
-      const current = this.sentimentSnapshot ? Number(this.sentimentSnapshot[key]) : NaN
+      const current = finiteNumber(this.sentimentSnapshot?.[key])
       const points = this.sentimentHistory || []
-      if (!Number.isFinite(current) || points.length < 2) return "暂无前值"
+      if (current === null || points.length < 2) return "暂无前值"
       const latestAt = Date.parse(points[points.length - 1].at || "")
-      const previous = [...points].reverse().find(item => Number.isFinite(Number(item[key])) && Date.parse(item.at || "") < latestAt)
+      const previous = [...points].reverse().find(item => finiteNumber(item[key]) !== null && Date.parse(item.at || "") < latestAt)
       if (!previous) return "暂无前值"
       const delta = current - Number(previous[key])
       return `${delta >= 0 ? "较前次 +" : "较前次 "}${delta.toFixed(1)}`
@@ -2161,7 +2235,7 @@ createApp({
     },
     async loadBoards(force = false) {
       const now = Date.now()
-      if (!force && (this.boardsLoading || now - this.boardsFetchedAt < 20000)) return
+      if (this.boardsLoading || (!force && now - this.boardsFetchedAt < 20000)) return
       this.boardsLoading = true
       this.boardsError = ""
       try {
@@ -2176,7 +2250,7 @@ createApp({
         else if (this.boardSort === "hot") { this.boardSortField = "percent"; this.boardSortDirection = "desc" }
         if (!this.boardSelectedCode && this.boardItems.length) this.boardSelectedCode = this.boardItems[0].code
         const selected = this.boardItems.find(item => item.code === this.boardSelectedCode)
-        if (selected) {
+        if (selected && this.workspaceMode === "boards") {
           if (this.boardSamplingActive()) {
             const today = localDate(new Date())
             this.boardHistory = [...this.boardHistory.filter(point => localDate(new Date(point.at)) === today), { at: Date.now(), code: selected.code, percent: Number(selected.percent), mainNet: Number(selected.main_net_yuan), breadth: this.boardBreadth(selected) }].slice(-240)
@@ -2184,7 +2258,7 @@ createApp({
         }
         await this.$nextTick()
         this.drawBoardChart()
-        if (selected) this.loadBoardMembers(selected.code)
+        if (selected && this.workspaceMode === "boards") this.loadBoardMembers(selected.code)
       } catch (error) {
         this.boardsError = error instanceof Error ? error.message : String(error)
       } finally {
@@ -2193,23 +2267,21 @@ createApp({
     },
     async loadMarketRankings(force = false) {
       const now = Date.now()
-      if (!force && (this.marketRankingsLoading || now - this.marketRankingsFetchedAt < 20000)) return
+      if (this.marketRankingsLoading || (!force && now - this.marketRankingsFetchedAt < 20000)) return
       this.marketRankingsLoading = true
-      this.marketRankingsError = ""
       try {
-      const kinds = ["gainers", "losers", "rapid_rise", "amount", "turnover"]
-        const responses = await Promise.all(kinds.map(kind => fetch(`/api/rankings?kind=${kind}&limit=8`, { cache: "no-store" })))
-        const payloads = await Promise.all(responses.map(async response => ({ response, payload: await response.json() })))
-        const next = {}
-        payloads.forEach(({ response, payload }, index) => {
-          const kind = kinds[index]
-          if (!response.ok) throw new Error(payload.warning || payload.error || `${kind} 榜单暂不可用`)
-          next[kind] = Array.isArray(payload.items) ? payload.items : []
-        })
-        this.marketRankings = { ...this.marketRankings, ...next }
+        await Promise.allSettled(["gainers", "losers", "amount", "turnover"].map(async kind => {
+          try {
+            const response = await fetch(`/api/rankings?kind=${kind}&limit=8`, { cache: "no-store" })
+            const payload = await response.json()
+            if (!response.ok) throw new Error(payload.warning || payload.error || "榜单暂不可用")
+            this.marketRankings[kind] = Array.isArray(payload.items) ? payload.items : []
+            this.marketRankingStates[kind] = { fetchedAt: payload.fetched_at, error: "" }
+          } catch (error) {
+            this.marketRankingStates[kind] = { ...this.marketRankingStates[kind], error: error instanceof Error ? error.message : String(error) }
+          }
+        }))
         this.marketRankingsFetchedAt = now
-      } catch (error) {
-        this.marketRankingsError = error instanceof Error ? error.message : String(error)
       } finally {
         this.marketRankingsLoading = false
       }
@@ -2336,7 +2408,7 @@ createApp({
         { key: "turnover_signal", color: "#c58bd8", width: 1.5 },
         { key: "northbound_signal", color: "#d68e6f", width: 1.35 },
       ]
-      let points = this.sentimentHistory.filter(item => fields.some(field => Number.isFinite(Number(item[field.key]))))
+      let points = this.sentimentHistory.filter(item => fields.some(field => finiteNumber(item[field.key]) !== null))
       if (points.length > 1) {
         const latestDate = new Date(points[points.length - 1].at || "").toLocaleDateString("zh-CN")
         const sameDay = points.filter(item => new Date(item.at || "").toLocaleDateString("zh-CN") === latestDate)
@@ -2353,7 +2425,7 @@ createApp({
       const scorePoints = points.filter(point => Number.isFinite(Number(point.score)))
       if (scorePoints.length > 1) { context.beginPath(); scorePoints.forEach((point, index) => { const x = left + points.indexOf(point) / (points.length - 1) * plotWidth; const y = top + plotHeight * (1 - Number(point.score) / 100); index === 0 ? context.moveTo(x, y) : context.lineTo(x, y) }); context.lineTo(left + points.indexOf(scorePoints[scorePoints.length - 1]) / (points.length - 1) * plotWidth, top + plotHeight); context.lineTo(left, top + plotHeight); context.closePath(); context.fillStyle = "rgba(240,183,104,.10)"; context.fill() }
       fields.forEach(field => {
-        const available = points.filter(point => Number.isFinite(Number(point[field.key])))
+        const available = points.filter(point => finiteNumber(point[field.key]) !== null)
         if (available.length < 2) return
         context.strokeStyle = field.color; context.lineWidth = field.width; context.beginPath()
         available.forEach((point, index) => { const x = left + (points.length === 1 ? 0 : points.indexOf(point) / (points.length - 1)) * plotWidth; const y = top + plotHeight * (1 - Number(point[field.key]) / 100); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y) })
@@ -2361,11 +2433,11 @@ createApp({
       })
       const last = points[points.length - 1]
       fields.forEach(field => {
-        const value = Number(last[field.key]); if (!Number.isFinite(value)) return
+        const value = finiteNumber(last[field.key]); if (value === null) return
         const x = width - right; const y = top + plotHeight * (1 - value / 100)
         context.fillStyle = field.color; context.beginPath(); context.arc(x, y, field.key === "score" ? 4 : 2.5, 0, Math.PI * 2); context.fill()
       })
-      if (Number.isFinite(Number(last.score))) { const y = top + plotHeight * (1 - Number(last.score) / 100); context.fillStyle = "#edf3f5"; context.font = "11px sans-serif"; context.fillText(`${Number(last.score).toFixed(1)} · ${last.phase || ""}`, Math.max(left, width - right - 125), Math.max(13, y - 9)) }
+      if (finiteNumber(last.score) !== null) { const y = top + plotHeight * (1 - Number(last.score) / 100); context.fillStyle = "#edf3f5"; context.font = "11px sans-serif"; context.fillText(`${Number(last.score).toFixed(1)} · ${last.phase || ""}`, Math.max(left, width - right - 125), Math.max(13, y - 9)) }
       context.fillStyle = "#718188"; context.font = "10px sans-serif"; context.textAlign = "center"; const labels = ["09:30", "10:30", "11:30", "13:00", "14:00", "15:00"]; labels.forEach((label, index) => { const x = left + index / (labels.length - 1) * plotWidth; context.fillText(label, x, height - 10) }); context.textAlign = "left"
     },
     selectMarketIndex(item) {
@@ -2405,6 +2477,7 @@ createApp({
       }
     },
     selectWatchlistSymbol(symbol) {
+      this.watchlistOpen = false
       this.workspaceMode = "market"
       this.query = this.displayCode(symbol)
       this.requestedSymbol = symbol
@@ -3019,7 +3092,6 @@ createApp({
         if (distance < nearestDistance) { nearestDistance = distance; nearestIndex = index }
       })
       const item = geometry.items[nearestIndex]
-      const indexChart = this.isMarketIndex(this.data.symbol)
       this.globalCrosshair = { mode: geometry.mode, x: geometry.xOf(item, nearestIndex), y: Math.max(geometry.top, Math.min(geometry.plotBottom, pointerY)), item, index: nearestIndex }
       this.drawGlobalChart()
     },
@@ -3217,6 +3289,7 @@ createApp({
       context.textAlign = "center"
       context.fillText(xLabel, xLabelX + xLabelWidth / 2, height - 28)
 
+      const indexChart = this.isMarketIndex(this.data.symbol)
       const rows = geometry.mode === "intraday"
         ? [{ label: this.intradayWhiteLabel(), value: this.number(item.price) }, { label: "涨跌", value: changeText, color: changeColor }, { label: this.intradayYellowLabel(), value: this.number(indexChart ? item.leading : item.average) }, { label: "分钟量", value: this.compact(item.volume) }]
         : [{ label: "开", value: this.number(item.open) }, { label: "高", value: this.number(item.high) }, { label: "低", value: this.number(item.low) }, { label: "收", value: this.number(item.close) }, { label: "涨跌", value: changeText, color: changeColor }, { label: "成交量", value: this.compact(item.volume) }]
@@ -3660,12 +3733,11 @@ createApp({
     },
   },
   mounted() {
-    this.load(this.requestedSymbol)
     this.loadIndices()
     this.loadSentiment()
     this.loadBoards()
     this.loadMarketRankings()
-    this.loadGlobalChart(this.globalSelectedSymbol, true)
+    this.loadRealtimeSnapshot()
     this.loadWatchlist()
     this.loadAIConfig()
     this.timer = window.setInterval(() => {
@@ -3673,7 +3745,7 @@ createApp({
       this.loadIndices()
       this.loadSentiment()
       this.loadBoards()
-      this.loadMarketRankings()
+      if (this.workspaceMode === "dashboard") this.loadMarketRankings()
       if (this.workspaceMode === "global") this.loadGlobalChart(this.globalSelectedSymbol)
       this.loadWatchlist()
       this.pollRealtimeSession()
@@ -3684,6 +3756,7 @@ createApp({
       }
     }, 10000)
     window.addEventListener("resize", this.handleResize)
+    window.addEventListener("keydown", this.closeWatchlistOnEscape)
   },
   beforeUnmount() {
     window.clearInterval(this.timer)
@@ -3691,5 +3764,6 @@ createApp({
     if (this.crosshairFrame != null) window.cancelAnimationFrame(this.crosshairFrame)
     this.setAssistantBodyLock(false)
     window.removeEventListener("resize", this.handleResize)
+    window.removeEventListener("keydown", this.closeWatchlistOnEscape)
   },
 }).mount("#app")

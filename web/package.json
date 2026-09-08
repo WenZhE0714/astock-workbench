@@ -4,9 +4,11 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node tests/dashboard.test.mjs"
   },
   "dependencies": {
+    "lucide-vue-next": "0.468.0",
     "vue": "3.2.47"
   },
   "devDependencies": {

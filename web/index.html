@@ -11,6 +11,7 @@
   <div id="app" v-cloak>
     <main class="shell">
       <div class="app-layout" :class="{'drawer-collapsed': !watchlistOpen}">
+        <div class="watchlist-scrim" v-if="watchlistOpen" @click="watchlistOpen = false"></div>
         <aside class="watchlist-drawer" :class="{open: watchlistOpen}">
           <div class="drawer-head">
             <div v-if="watchlistOpen"><div class="drawer-kicker">WATCHLIST</div><h2>自选</h2></div>
@@ -40,19 +41,22 @@
           </template>
         </aside>
 
+        <aside class="workbench-rail" aria-label="工作区导航">
+          <div class="workbench-brand"><activity :size="25" aria-hidden="true"></activity><div><strong>ASTOCK</strong><small>投资研究工作台</small></div></div>
+          <nav class="workbench-rail-section" v-for="group in ['市场', '研究', '设置']" :key="group" :aria-label="group">
+            <span class="workbench-rail-label" v-text="group"></span>
+            <button type="button" v-for="item in workspaceNavigation.filter(item => item.group === group)" :key="item.id" :class="{active: workspaceMode === item.id}" :aria-current="workspaceMode === item.id ? 'page' : null" @click="switchWorkspace(item.id)">
+              <component :is="item.icon" :size="17" aria-hidden="true"></component><span v-text="item.label"></span><em v-if="item.id === 'monitor' && realtimeSignals.length" v-text="realtimeSignals.length"></em>
+            </button>
+          </nav>
+          <div class="workbench-rail-spacer"></div>
+          <button type="button" class="workbench-watchlist-button" @click="watchlistOpen = true"><star :size="17" aria-hidden="true"></star><span>我的自选</span><small v-text="watchlistItems.length"></small></button>
+        </aside>
+
         <div class="main-content">
           <nav class="workspace-nav" aria-label="工作台视图">
-            <div class="workspace-tabs" role="tablist">
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'dashboard'" :class="{active: workspaceMode === 'dashboard'}" @click="switchWorkspace('dashboard')">市场看板</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'market'" :class="{active: workspaceMode === 'market'}" @click="switchWorkspace('market')">个股行情</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'sentiment'" :class="{active: workspaceMode === 'sentiment'}" @click="switchWorkspace('sentiment')">情绪驾驶舱</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'boards'" :class="{active: workspaceMode === 'boards'}" @click="switchWorkspace('boards')">板块行情</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'global'" :class="{active: workspaceMode === 'global'}" @click="switchWorkspace('global')">外盘行情</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'realtime'" :class="{active: workspaceMode === 'realtime'}" @click="switchWorkspace('realtime')">实时选股</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'strategy'" :class="{active: workspaceMode === 'strategy'}" @click="switchWorkspace('strategy')">量化研究</button>
-              <button type="button" role="tab" :aria-selected="workspaceMode === 'settings'" :class="{active: workspaceMode === 'settings'}" @click="switchWorkspace('settings')">AI 设置</button>
-            </div>
-            <span class="workspace-context" v-text="workspaceMode === 'settings' ? 'Codex Profile · provider · 模型 · 本地凭证' : workspaceMode === 'strategy' ? '历史回测 · 样本外门禁 · 交易审计' : workspaceMode === 'realtime' ? '实时因子 · 多策略评分 · 信号留痕' : workspaceMode === 'global' ? '港股 · 日股 · 韩股 · 美股 · 分时 · 日 K' : workspaceMode === 'boards' ? '行业涨跌 · 资金流向 · 盘中分时' : workspaceMode === 'sentiment' ? '市场宽度 · 涨跌停结构 · 题材热度' : workspaceMode === 'dashboard' ? '市场横截面 · 情绪 · 榜单 · 实时监控' : '实时行情 · 分时 · 日 K'"></span>
+            <strong>ASTOCK</strong><select aria-label="切换工作区" :value="workspaceMode" @change="switchWorkspace($event.target.value)"><option v-for="item in workspaceNavigation" :key="item.id" :value="item.id" v-text="item.label"></option></select>
+            <button type="button" class="icon-button" title="我的自选" aria-label="我的自选" @click="watchlistOpen = true"><star :size="18"></star></button>
           </nav>
           <section class="boards-view" v-if="workspaceMode === 'boards'">
             <header class="boards-head"><div class="title-row"><button type="button" class="mobile-drawer-button" title="打开自选" aria-label="打开自选" @click="watchlistOpen = true">☰</button><div><div class="eyebrow">MARKET / SECTOR ROTATION</div><h1>板块行情</h1><p class="sentiment-note">实时行业横截面、资金方向与盘中轮动采样。</p></div></div><div class="sentiment-status"><span>板块样本</span><strong v-text="boardsLoading ? '刷新中…' : boardItems.length + ' 个'"></strong></div></header>
@@ -87,51 +91,130 @@
             </template>
             <div class="sentiment-empty-state" v-else-if="!sentimentLoading">暂无情绪快照，点击情绪驾驶舱或等待下一次刷新。</div>
           </section>
-          <header class="dashboard-head" v-if="workspaceMode === 'dashboard'"><div><span class="eyebrow">MARKET / COMMAND DESK</span><h1>市场看板</h1></div><div class="dashboard-head-status"><span v-text="sentimentSnapshot ? sentimentSnapshot.phase : '等待市场快照'"></span><strong v-text="sentimentSnapshot ? sentimentNumber(sentimentSnapshot.score) : '--'"></strong><button type="button" :disabled="sentimentLoading || marketRankingsLoading" @click="loadSentiment(true); loadBoards(true); loadMarketRankings(true); loadIndices()">刷新</button></div></header>
+          <header class="dashboard-head" v-if="workspaceMode === 'dashboard'">
+            <div class="dashboard-heading"><layout-dashboard :size="20" aria-hidden="true"></layout-dashboard><h1>市场看板</h1><span class="dashboard-phase" v-text="sentimentSnapshot?.phase || '等待快照'"></span></div>
+            <div class="dashboard-head-status"><span v-text="sentimentSnapshot?.trade_date || '--'"></span><span v-text="realtimeStateLabel(realtimeMarketState)"></span><button type="button" class="dashboard-icon" title="刷新市场看板" aria-label="刷新市场看板" :disabled="sentimentLoading || marketRankingsLoading" @click="refreshDashboard"><refresh-cw :size="16"></refresh-cw></button></div>
+          </header>
           <section class="market-strip" v-if="workspaceMode === 'dashboard'" aria-label="主要指数">
-            <div class="market-strip-label"><span>MARKET</span><small v-text="indicesLoading ? '刷新中' : '主要指数'"></small></div>
             <div class="market-index-list">
-              <button type="button" class="market-index" v-for="item in marketIndices" :key="item.symbol" :class="{active: item.symbol === data.symbol}" :title="(item.source || '行情') + (item.quote_time ? ' · ' + item.quote_time : '')" @click="selectMarketIndex(item)">
-                <span class="market-index-name"><strong v-text="item.name"></strong><small v-text="displayCode(item.symbol)"></small></span>
-                <span class="market-index-value" v-text="priceText(item.current)"></span>
-                <span class="market-index-change" :class="watchlistChangeClass(item.percent)" v-text="marketIndexChange(item)"></span>
+              <button type="button" class="market-index" v-for="item in marketIndices" :key="item.symbol" :title="(item.source || '行情') + ' · ' + (item.quote_time || '--')" @click="selectMarketIndex(item)">
+                <span class="market-index-name"><strong v-text="item.name"></strong><small v-text="displayCode(item.symbol)"></small></span><span class="market-index-value" v-text="priceText(item.current)"></span><span class="market-index-change" :class="watchlistChangeClass(item.percent)" v-text="marketIndexChange(item)"></span>
               </button>
             </div>
-            <div class="market-turnover" v-if="marketAmount" :title="(marketAmount.source || '成交额数据') + (marketAmount.trade_date ? ' · 上一交易日 ' + marketAmount.trade_date : '')">
-              <span class="market-turnover-label">今日成交额总计</span>
-              <strong v-text="marketAmountValue(marketAmount.current_wan_yuan)"></strong>
-              <small :class="marketAmount.delta_wan_yuan >= 0 ? 'up' : 'down'" v-text="'较上一日 ' + marketAmountChange(marketAmount)"></small>
-            </div>
-            <div class="market-northbound" v-if="sentimentSnapshot && sentimentSnapshot.northbound_available"><span>北向</span><strong :class="sentimentSnapshot.northbound_net_hundred_million_yuan >= 0 ? 'up' : 'down'" v-text="(sentimentSnapshot.northbound_net_hundred_million_yuan >= 0 ? '+' : '') + Number(sentimentSnapshot.northbound_net_hundred_million_yuan).toFixed(2) + ' 亿'"></strong></div>
-            <span class="market-strip-error" v-if="indicesError" :title="indicesError">!</span>
+            <div class="market-turnover"><span class="market-turnover-label">两市及北交所成交额</span><strong v-text="marketAmountValue(marketAmount?.current_wan_yuan)"></strong><small v-text="'上日全天 ' + marketAmountValue(marketAmount?.previous_wan_yuan)"></small></div>
+            <div class="market-northbound" :title="sentimentSnapshot?.northbound_available ? formatDateTime(sentimentSnapshot.northbound_at) : '暂无北向数据'"><span>北向资金</span><strong :class="watchlistChangeClass(sentimentSnapshot?.northbound_net_hundred_million_yuan)" v-text="sentimentSnapshot?.northbound_available ? number(sentimentSnapshot.northbound_net_hundred_million_yuan) + ' 亿' : '--'"></strong><small v-text="sentimentSnapshot?.northbound_available ? formatDateTime(sentimentSnapshot.northbound_at) : '暂不可用'"></small></div>
           </section>
           <section class="market-pulse" v-if="workspaceMode === 'dashboard'" aria-label="市场总览">
-            <div class="market-pulse-head"><div><span class="eyebrow">MARKET / PULSE</span><strong>市场脉搏</strong></div><button type="button" class="text-action" @click="switchWorkspace('sentiment')">查看完整情绪 →</button></div>
             <div class="market-pulse-grid">
-              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>综合情绪</span><strong v-text="sentimentSnapshot ? sentimentNumber(sentimentSnapshot.score) : '--'"></strong><small v-text="sentimentSnapshot ? sentimentSnapshot.phase : '等待数据'"></small></button>
-              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>行业宽度</span><strong v-text="sentimentSnapshot ? (sentimentSnapshot.rise_count || 0) + ' / ' + (sentimentSnapshot.fall_count || 0) : '--'"></strong><small>上涨 / 下跌板块</small></button>
-              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>涨停 / 跌停</span><strong v-text="sentimentSnapshot && sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.limit_up_count || 0) + ' / ' + (sentimentSnapshot.limit_down_count || 0) : '--'"></strong><small v-text="sentimentSnapshot && sentimentSnapshot.limit_stats_available ? '市场结构' : '暂未覆盖'"></small></button>
-              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>炸板率</span><strong :class="sentimentSnapshot && sentimentSnapshot.broken_rate_percent > 35 ? 'down' : ''" v-text="sentimentSnapshot && sentimentSnapshot.limit_stats_available ? sentimentPercent(sentimentSnapshot.broken_rate_percent) : '--'"></strong><small v-text="sentimentSnapshot && sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.broken_count || 0) + ' 家炸板' : '暂未覆盖'"></small></button>
-              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>最高连板</span><strong v-text="sentimentSnapshot && sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.highest_streak || 0) + ' 板' : '--'"></strong><small>涨停池高度</small></button>
-              <button type="button" class="market-pulse-metric" @click="switchWorkspace('boards')"><span>板块样本</span><strong v-text="boardsLoading ? '…' : boardItems.length || '--'"></strong><small>点击进入板块轮动</small></button>
+              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>综合情绪</span><strong v-text="sentimentNumber(sentimentSnapshot?.score)"></strong><small v-text="sentimentSnapshot ? ratioText(sentimentSnapshot.coverage_percent) + ' 数据覆盖' : '等待数据'"></small></button>
+              <button type="button" class="market-pulse-metric" @click="switchWorkspace('boards')"><span>板块涨 / 跌 / 平</span><strong><b class="up" v-text="marketBreadth.total ? marketBreadth.rise : '--'"></b> / <b class="down" v-text="marketBreadth.total ? marketBreadth.fall : '--'"></b> / <b v-text="marketBreadth.total ? marketBreadth.flat : '--'"></b></strong><small v-text="'有效样本 ' + marketBreadth.total + ' / ' + boardItems.length"></small></button>
+              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>涨停 / 跌停</span><strong><b class="up" v-text="sentimentSnapshot?.limit_stats_available ? sentimentSnapshot.limit_up_count : '--'"></b> / <b class="down" v-text="sentimentSnapshot?.limit_stats_available ? sentimentSnapshot.limit_down_count : '--'"></b></strong><small v-text="sentimentSnapshot?.limit_stats_available ? sentimentSnapshot.limit_stats_source : '暂不可用'"></small></button>
+              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>炸板率</span><strong :class="sentimentSnapshot?.broken_rate_percent > 35 ? 'down' : ''" v-text="sentimentSnapshot?.limit_stats_available ? ratioText(sentimentSnapshot.broken_rate_percent) : '--'"></strong><small v-text="sentimentSnapshot?.limit_stats_available ? sentimentSnapshot.broken_count + ' 家炸板' : '暂不可用'"></small></button>
+              <button type="button" class="market-pulse-metric" @click="switchWorkspace('sentiment')"><span>最高连板</span><strong v-text="sentimentSnapshot?.limit_stats_available ? sentimentSnapshot.highest_streak + ' 板' : '--'"></strong><small>涨停池高度</small></button>
+              <button type="button" class="market-pulse-metric" @click="switchWorkspace('monitor')"><span>策略触发</span><strong v-text="realtimeResult ? monitorStates.find(item => item.key === 'triggered').count : '--'"></strong><small v-text="realtimeResult ? realtimeSignals.length + ' 只扫描候选' : '等待扫描快照'"></small></button>
             </div>
-            <div class="market-pulse-bottom"><div class="market-pulse-leaders"><div class="market-pulse-section-head"><span>领涨板块</span><button type="button" @click="switchWorkspace('boards')">全部板块 →</button></div><div class="market-pulse-board-list"><button type="button" v-for="item in sortedBoardItems.slice(0, 4)" :key="'pulse-' + item.code" @click="openBoardMarket(item)"><span><strong v-text="item.name"></strong><small v-text="item.rise_count + ' 涨 · ' + item.fall_count + ' 跌'"></small></span><b class="up" v-text="percentText(item.percent)"></b></button><span class="market-pulse-empty" v-if="!sortedBoardItems.length">暂无板块快照</span></div></div><div class="market-pulse-ladder"><div class="market-pulse-section-head"><span>连板梯队</span><button type="button" @click="switchWorkspace('sentiment')">查看结构 →</button></div><div class="market-pulse-streaks" v-if="sentimentSnapshot && sentimentSnapshot.limit_stats_available && (sentimentSnapshot.streak_ladder || []).length"><span v-for="item in sentimentSnapshot.streak_ladder.slice(0, 5)" :key="'pulse-streak-' + item.streak"><b v-text="item.streak + '板'"></b><small v-text="item.count + '只'"></small></span></div><span class="market-pulse-empty" v-else>暂无连板数据</span></div></div>
-            <div class="market-pulse-dashboard">
-              <section class="market-pulse-module market-pulse-breadth"><div class="market-pulse-section-head"><span>行业涨跌结构</span><button type="button" @click="switchWorkspace('sentiment')">展开情绪 →</button></div><div class="market-pulse-breadth-counts"><strong class="up" v-text="sentimentSnapshot ? (sentimentSnapshot.rise_count || 0) : '--'"></strong><span>上涨行业</span><i>/</i><strong class="down" v-text="sentimentSnapshot ? (sentimentSnapshot.fall_count || 0) : '--'"></strong><span>下跌行业</span></div><div class="market-pulse-breadth-track"><span :style="{width: marketPulseBreadthRate == null ? '0%' : marketPulseBreadthRate + '%'}"></span></div><small v-text="sentimentSnapshot ? (sentimentSnapshot.industry_count || 0) + ' 个行业样本 · 广度 ' + sentimentNumber(sentimentSnapshot.industry_breadth) : '等待行业样本'"></small></section>
-              <section class="market-pulse-module market-pulse-radar"><div class="market-pulse-section-head"><span>情绪雷达</span><button type="button" @click="switchWorkspace('sentiment')">查看走势 →</button></div><div class="market-pulse-radar-list"><div v-for="item in marketPulseRadarItems" :key="item.key"><span v-text="item.label"></span><div><i :class="item.tone" :style="{width: Number.isFinite(Number(item.value)) ? Math.max(0, Math.min(100, Number(item.value))) + '%' : '0%'}"></i></div><b v-text="sentimentNumber(item.value)"></b></div></div></section>
-              <section class="market-pulse-module market-pulse-signals"><div class="market-pulse-section-head"><span>实时信号</span><button type="button" @click="switchWorkspace('realtime')">全部信号 →</button></div><div class="market-pulse-signal-list"><button type="button" v-for="signal in marketPulseSignals" :key="'pulse-signal-' + signal.id" @click="selectRealtimeSignal(signal)"><span><strong v-text="signal.name || displayCode(signal.symbol)"></strong><small v-text="(signal.entry_shape_label || signal.state || '观察') + ' · ' + (signal.market_regime || '--')"></small></span><b :class="signal.state === 'triggered' ? 'up' : signal.state === 'invalid' ? 'down' : 'warn-text'" v-text="number(signal.risk_adjusted_score || signal.score, 1)"></b></button><span class="market-pulse-empty" v-if="!marketPulseSignals.length">暂无实时信号快照</span></div></section>
+            <div class="dashboard-grid">
+              <div class="dashboard-main">
+                <div class="dashboard-analysis">
+                  <section class="dashboard-module dashboard-distribution">
+                    <div class="dashboard-module-head"><h2><chart-no-axes-combined :size="15"></chart-no-axes-combined>板块涨跌分布</h2><span v-text="marketBreadth.total + ' 个有效样本'"></span></div>
+                    <div class="dashboard-histogram" v-if="marketBreadth.total" aria-label="板块涨跌幅分布">
+                      <div class="dashboard-bin" v-for="item in marketBreadth.buckets" :key="item.label" :title="item.label + '：' + item.count + ' 个板块'"><b v-text="item.count"></b><div><i :class="item.tone" :style="{height: item.count / marketBreadth.peak * 100 + '%'}"></i></div><small v-text="item.label"></small></div>
+                    </div>
+                    <div class="dashboard-empty chart-empty" v-else v-text="boardsLoading ? '正在获取板块快照' : '暂无有效板块报价'"></div>
+                    <div class="dashboard-breadth-strip" v-if="marketBreadth.total"><i class="up" :style="{flex: marketBreadth.rise}"></i><i class="flat" :style="{flex: marketBreadth.flat}"></i><i class="down" :style="{flex: marketBreadth.fall}"></i></div>
+                    <div class="dashboard-pair"><span>平均涨幅 <b :class="watchlistChangeClass(marketBreadth.mean)" v-text="signedPercent(marketBreadth.mean)"></b></span><span>中位涨幅 <b :class="watchlistChangeClass(marketBreadth.median)" v-text="signedPercent(marketBreadth.median)"></b></span></div>
+                    <small class="dashboard-source" v-text="'板块口径' + (marketBreadth.missing ? ' · ' + marketBreadth.missing + ' 个缺失报价' : '')"></small>
+                  </section>
+                  <section class="dashboard-module dashboard-radar">
+                    <div class="dashboard-module-head"><h2><activity :size="15"></activity>情绪分项</h2><button type="button" class="dashboard-icon" title="查看情绪走势" aria-label="查看情绪走势" @click="switchWorkspace('sentiment')"><arrow-up-right :size="16"></arrow-up-right></button></div>
+                    <div class="dashboard-radar-body">
+                      <svg viewBox="0 0 240 218" role="img" aria-label="情绪分项雷达图">
+                        <polygon v-for="level in [25, 50, 75, 100]" :key="level" :points="radarPolygon([level,level,level,level,level])" class="radar-grid"></polygon>
+                        <line v-for="(item, index) in marketPulseRadarItems" :key="'axis-' + item.key" x1="120" y1="108" :x2="radarPoint(index,100).x" :y2="radarPoint(index,100).y" class="radar-grid"></line>
+                        <polygon v-if="marketRadarPolygon" :points="marketRadarPolygon" class="radar-value"></polygon>
+                        <template v-for="(item, index) in marketPulseRadarItems" :key="item.key">
+                          <circle v-if="item.value !== null" :cx="radarPoint(index,Math.max(0,Math.min(100,item.value))).x" :cy="radarPoint(index,Math.max(0,Math.min(100,item.value))).y" r="3" class="radar-dot"></circle>
+                          <text :x="radarPoint(index,127).x" :y="radarPoint(index,127).y + 4" class="radar-label" v-text="item.label"></text>
+                        </template>
+                        <text x="120" y="113" class="radar-score" v-text="sentimentNumber(sentimentSnapshot?.score)"></text>
+                      </svg>
+                      <dl><div v-for="item in marketPulseRadarItems" :key="item.key"><dt v-text="item.label"></dt><dd v-text="sentimentNumber(item.value)"></dd></div></dl>
+                    </div>
+                    <small class="dashboard-source" v-text="sentimentSnapshot ? formatDateTime(sentimentSnapshot.generated_at) : '暂无快照'"></small>
+                  </section>
+                </div>
+                <div class="dashboard-themes">
+                  <section class="dashboard-module">
+                    <div class="dashboard-module-head"><h2><layers :size="15"></layers>热点题材</h2><button type="button" class="dashboard-icon" title="全部热点题材" aria-label="全部热点题材" @click="openHotThemes"><arrow-up-right :size="16"></arrow-up-right></button></div>
+                    <ol class="dashboard-theme-list"><li v-for="(item, index) in marketThemeItems" :key="item.name"><button type="button" @click="openHotThemes"><span class="dashboard-rank" v-text="index + 1"></span><span class="dashboard-row-copy"><strong v-text="item.name"></strong><small v-text="'代表股 ' + (item.leader || '--')"></small></span><span class="dashboard-row-metric"><b v-text="item.count + ' 只'"></b><small v-if="finiteNumber(item.average_rise_percent) !== null" :class="watchlistChangeClass(item.average_rise_percent)" v-text="signedPercent(item.average_rise_percent)"></small></span></button></li></ol>
+                    <div class="dashboard-empty" v-if="!marketThemeItems.length" v-text="sentimentLoading ? '正在获取题材快照' : '暂无热点题材'"></div>
+                    <small class="dashboard-source">同花顺热点股归因</small>
+                  </section>
+                  <section class="dashboard-module">
+                    <div class="dashboard-module-head"><h2><layers :size="15"></layers>板块热度</h2><div class="dashboard-segment" aria-label="板块热度排序"><button type="button" :aria-pressed="marketIndustryDirection === 'leading'" @click="marketIndustryDirection = 'leading'">领涨</button><button type="button" :aria-pressed="marketIndustryDirection === 'lagging'" @click="marketIndustryDirection = 'lagging'">领跌</button></div></div>
+                    <ol class="dashboard-theme-list"><li v-for="(item, index) in marketIndustryItems" :key="item.code"><button type="button" @click="openBoardFromDashboard(item)"><span class="dashboard-rank" v-text="index + 1"></span><span class="dashboard-row-copy"><strong v-text="item.name"></strong><small v-text="item.rise_count + ' 涨 · ' + item.fall_count + ' 跌'"></small></span><span class="dashboard-row-metric"><b :class="watchlistChangeClass(item.percent)" v-text="signedPercent(item.percent)"></b><small v-text="compact(item.main_net_yuan)"></small></span></button></li></ol>
+                    <div class="dashboard-empty" v-if="!marketIndustryItems.length" v-text="boardsLoading ? '正在获取板块快照' : '暂无板块报价'"></div>
+                    <small class="dashboard-source" v-text="boardsError ? '刷新失败 · 保留上次快照' : '按板块涨跌幅排序'"></small>
+                  </section>
+                </div>
+                <div class="market-pulse-rankings">
+                  <div class="dashboard-segment dashboard-ranking-tabs" aria-label="个股榜单分类"><button type="button" v-for="column in marketRankingColumns" :key="column.key" :aria-pressed="mobileRankingKind === column.key" @click="mobileRankingKind = column.key" v-text="column.label"></button></div>
+                  <section class="market-pulse-ranking" v-for="column in marketRankingColumns" :key="column.key" :class="{'mobile-ranking-active': mobileRankingKind === column.key}">
+                    <div class="dashboard-module-head"><h2 v-text="column.label"></h2><span>TOP 8</span></div>
+                    <button type="button" class="dashboard-ranking-row" v-for="(item, index) in column.items" :key="column.key + '-' + item.symbol" @click="selectWatchlistSymbol(item.symbol)" :title="item.name + ' · ' + (item.industry || '--')">
+                      <span class="dashboard-rank" v-text="index + 1"></span><span class="dashboard-row-copy"><strong v-text="item.name || displayCode(item.symbol)"></strong><small v-text="displayCode(item.symbol)"></small></span><span class="dashboard-row-metric"><b :class="column.metric === 'percent' ? watchlistChangeClass(item.percent) : column.tone" v-text="marketRankingMetric(item, column.metric)"></b><small v-text="priceText(item.price)"></small></span>
+                    </button>
+                    <div class="dashboard-empty" v-if="!column.items.length" v-text="marketRankingsLoading ? '加载中' : '暂无榜单数据'"></div>
+                    <small class="dashboard-source" :class="{warning: column.status.error}" :title="column.status.error || ''" v-text="column.status.error ? (column.items.length ? '刷新失败 · 保留快照' : '榜单暂不可用') : column.status.fetchedAt ? formatDateTime(column.status.fetchedAt) : '--'"></small>
+                  </section>
+                </div>
+              </div>
+              <aside class="dashboard-stream">
+                <section class="dashboard-module dashboard-ladder">
+                  <div class="dashboard-module-head"><h2><layers :size="15"></layers>连板梯队</h2><button type="button" class="dashboard-icon" title="完整连板结构" aria-label="完整连板结构" @click="switchWorkspace('sentiment')"><arrow-up-right :size="16"></arrow-up-right></button></div>
+                  <div class="dashboard-ladder-group" v-for="item in marketLadder" :key="item.streak"><div><strong v-text="item.streak + '板'"></strong><span v-text="item.count + '只'"></span></div><div class="dashboard-ladder-stocks"><button type="button" v-for="stock in (item.stocks || []).slice(0, 3)" :key="stock.symbol" @click="selectBoardMember(stock)" v-text="stock.name || displayCode(stock.symbol)"></button><small v-if="item.count > 3" v-text="'等 ' + item.count + ' 只'"></small></div></div>
+                  <div class="dashboard-empty" v-if="!marketLadder.length" v-text="sentimentSnapshot?.limit_stats_available ? '当前无二连板及以上股票' : '暂无连板数据'"></div>
+                </section>
+                <section class="dashboard-module dashboard-live">
+                  <div class="dashboard-module-head"><h2><radio :size="15"></radio>信号监控</h2><button type="button" class="dashboard-icon" title="打开监控中心" aria-label="打开监控中心" @click="switchWorkspace('monitor')"><arrow-up-right :size="16"></arrow-up-right></button></div>
+                  <div class="dashboard-stream-status"><span v-text="realtimeStateLabel(realtimeMarketState)"></span><small v-text="realtimeResult ? formatDateTime(realtimeResult.generated_at) : '暂无扫描快照'"></small></div>
+                  <div class="dashboard-signal-list">
+                    <button type="button" class="dashboard-signal" v-for="signal in marketPulseSignals" :key="signal.id || signal.symbol" :class="signal.state" @click="selectRealtimeSignal(signal)">
+                      <span class="dashboard-signal-head"><strong v-text="signal.name || displayCode(signal.symbol)"></strong><b v-text="number(signalScore(signal), 1)"></b></span>
+                      <span class="dashboard-signal-meta"><em v-text="realtimeStateLabel(signal.state)"></em><time v-text="formatDateTime(signal.as_of)"></time></span>
+                      <span class="dashboard-signal-reason" v-text="signalReason(signal)"></span>
+                    </button>
+                    <div class="dashboard-empty" v-if="!marketPulseSignals.length" v-text="realtimeSnapshotLoading ? '正在读取信号快照' : '暂无策略信号'"></div>
+                  </div>
+                </section>
+                <section class="dashboard-module dashboard-tasks">
+                  <div class="dashboard-module-head"><h2><activity :size="15"></activity>自动任务</h2><span v-text="realtimeAutomation?.enabled ? '已启用' : '未启用'"></span></div>
+                  <div v-for="task in realtimeAutomationTasks" :key="task.key" :title="task.detail || ''"><span v-text="task.label"></span><b v-text="automationStatusLabel(task.status)"></b></div>
+                </section>
+              </aside>
             </div>
-            <div class="market-pulse-rankings">
-              <section class="market-pulse-ranking" v-for="column in marketRankingColumns" :key="column.key">
-                <div class="market-pulse-section-head"><span v-text="column.label"></span><button type="button" @click="switchWorkspace('realtime')">查看信号 →</button></div>
-                <button type="button" class="market-pulse-ranking-row" v-for="(item, index) in column.items" :key="column.key + '-' + item.symbol" @click="selectWatchlistSymbol(item.symbol)">
-                  <span><b v-text="String(index + 1).padStart(2, '0')"></b><strong v-text="item.name || displayCode(item.symbol)"></strong><small v-text="displayCode(item.symbol) + ' · ' + (item.industry || '--')"></small></span>
-                  <em :class="column.tone" v-text="marketRankingMetric(item, column.metric)"></em>
-                </button>
-                <span class="market-pulse-empty" v-if="!column.items.length" v-text="marketRankingsLoading ? '加载中…' : '暂无榜单数据'"></span>
-              </section>
+            <details class="dashboard-data-status" v-if="dashboardWarnings.length"><summary v-text="'数据状态 · ' + dashboardWarnings.length + ' 项提示'"></summary><p v-for="warning in dashboardWarnings" :key="warning" v-text="warning"></p></details>
+          </section>
+          <section class="monitor-view" v-if="workspaceMode === 'monitor'">
+            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1><span class="dashboard-phase">策略信号</span></div><div class="dashboard-head-status"><span v-text="realtimeStateLabel(realtimeMarketState)"></span><button type="button" class="dashboard-icon" title="刷新信号快照" aria-label="刷新信号快照" :disabled="realtimeSnapshotLoading" @click="loadRealtimeSnapshot"><refresh-cw :size="16"></refresh-cw></button></div></header>
+            <div class="monitor-toolbar"><div class="dashboard-segment" aria-label="信号状态"><button type="button" v-for="item in monitorStates" :key="item.key" :aria-pressed="monitorFilter === item.key" @click="monitorFilter = item.key"><span v-text="item.label"></span><b v-text="item.count"></b></button></div><input aria-label="筛选监控股票" v-model.trim="monitorQuery" placeholder="股票名称、代码或行业"></div>
+            <div class="monitor-snapshot"><span v-text="'快照 ' + formatDateTime(realtimeResult?.generated_at)"></span><span v-text="realtimeSnapshotScopeLabel"></span><span v-if="realtimeFrozen">交易时段外 · 保留最近信号</span><span v-text="monitorSignals.length + ' 条结果'"></span></div>
+            <div class="monitor-table-wrap">
+              <table class="monitor-table"><thead><tr><th>股票</th><th>信号时间</th><th>状态 / 形态</th><th>风险调整分</th><th>触发 / 失效价</th><th>触发依据</th><th></th></tr></thead>
+                <tbody><tr v-for="signal in monitorSignals" :key="signal.id || signal.symbol">
+                  <td><button type="button" class="monitor-stock" @click="selectRealtimeSignal(signal)"><strong v-text="signal.name || displayCode(signal.symbol)"></strong><small v-text="displayCode(signal.symbol) + ' · ' + (signal.industry || '--')"></small></button></td>
+                  <td><time v-text="formatDateTime(signal.as_of)"></time></td>
+                  <td><span class="monitor-state" :class="signal.state" v-text="realtimeStateLabel(signal.state)"></span><small v-text="signal.entry_shape_label || '--'"></small></td>
+                  <td><strong v-text="number(signalScore(signal), 1)"></strong></td>
+                  <td><strong v-text="priceText(signal.entry_shape_trigger_price || signal.trigger_price)"></strong><small v-text="priceText(signal.entry_shape_invalidation_price || signal.invalidation_price)"></small></td>
+                  <td class="monitor-reason"><span v-text="signalReason(signal)"></span><small v-if="signal.risk_overlay_reason" v-text="signal.risk_overlay_reason"></small><details v-if="(signal.reasons || []).length > 1 || (signal.warnings || []).length"><summary>更多依据</summary><p v-for="reason in [...(signal.reasons || []), ...(signal.warnings || [])]" :key="reason" v-text="reason"></p></details></td>
+                  <td><button type="button" class="dashboard-icon" :title="'查看 ' + signal.name + ' 行情'" :aria-label="'查看 ' + signal.name + ' 行情'" @click="selectRealtimeSignal(signal)"><arrow-up-right :size="16"></arrow-up-right></button></td>
+                </tr></tbody>
+              </table>
             </div>
-            <div class="market-pulse-ranking-note" v-if="marketRankingsError" v-text="marketRankingsError"></div>
+            <div class="dashboard-empty" v-if="!monitorSignals.length" v-text="realtimeSnapshotLoading ? '正在读取信号快照' : '当前条件下暂无信号'"></div>
+            <div class="dashboard-data-status" v-if="realtimeError" v-text="realtimeError"></div>
           </section>
           <section class="global-view" v-if="workspaceMode === 'global'">
             <header class="global-view-head">
@@ -626,6 +709,7 @@
           <footer v-if="workspaceMode === 'market'">Vue 行情页 · 自选与 CLI 共用 · 页面每 10 秒刷新 · 不影响 CLI 看盘</footer>
           <footer v-else-if="workspaceMode === 'realtime'">实时策略是辅助观察信号 · 不代表未来收益 · 触发价和失效价需结合涨跌停、流动性和个人仓位复核</footer>
           <footer v-else-if="workspaceMode === 'settings'">AI 配置只影响本机研究请求 · Token 不会返回浏览器 · 仍然不会触发自动交易</footer>
+          <footer v-else-if="workspaceMode === 'dashboard' || workspaceMode === 'monitor'">ASTOCK · 行情与信号快照</footer>
           <footer v-else>量化研究与 CLI 共用 Go 回测引擎和本地归档 · 历史模拟不代表未来收益 · 不触发自动交易</footer>
         </div>
       </div>
