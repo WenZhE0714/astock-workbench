@@ -1332,6 +1332,10 @@ createApp({
     shadowProfileMetricClass(value) {
       return this.metricClass(value)
     },
+    shadowPositionLimitText(config) {
+      if (config && config.unlimited_open_positions) return "不限"
+      return `${config && config.max_open_positions || 0} 仓`
+    },
     automationStatusLabel(status) {
       return ({ success: '已推进', waiting: '等待', paused: '已暂停', warning: '同步保护', error: '异常', running: '推进中', busy: '忙碌' })[status] || status || '等待'
     },

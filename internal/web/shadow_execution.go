@@ -245,14 +245,16 @@ func singleShadowExecutionProfile(archive shadowArchive) map[string]shadowExecut
 func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArchive) map[string]shadowExecutionProfile {
 	profiles := make(map[string]shadowExecutionProfile, 3)
 	balancedConfig := paper.DefaultConfig()
+	balancedConfig.UnlimitedOpenPositions = true
 	if balanced != nil {
 		profiles[shadowProfileBalanced] = shadowExecutionProfile{
-			ID: shadowProfileBalanced, Name: "均衡型", Strategy: "55 分门槛 · 80% 上限 · 8 持仓",
+			ID: shadowProfileBalanced, Name: "均衡型", Strategy: "55 分门槛 · 80% 上限 · 持仓数量不限",
 			Description: "延续现有账户，在信号覆盖、风险预算和现金余量之间取平衡。",
 			Config:      balancedConfig, Archive: balanced,
 		}
 	}
 	conservativeConfig := paper.DefaultConfig()
+	conservativeConfig.UnlimitedOpenPositions = true
 	conservativeConfig.MinimumScore = 62
 	conservativeConfig.MaxPositionPercent = 12
 	conservativeConfig.MaxIndustryPercent = 22
@@ -279,12 +281,13 @@ func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArc
 	conservativeConfig.TCooldownMinutes = 25
 	if conservative != nil {
 		profiles[shadowProfileConservative] = shadowExecutionProfile{
-			ID: shadowProfileConservative, Name: "稳健型", Strategy: "62 分门槛 · 60% 上限 · 6 持仓",
+			ID: shadowProfileConservative, Name: "稳健型", Strategy: "62 分门槛 · 60% 上限 · 持仓数量不限",
 			Description: "提高信号门槛并压低单股、行业和组合风险，保留更多现金。",
 			Config:      conservativeConfig, Archive: conservative,
 		}
 	}
 	aggressiveConfig := paper.DefaultConfig()
+	aggressiveConfig.UnlimitedOpenPositions = true
 	aggressiveConfig.MinimumScore = 52
 	aggressiveConfig.MaxPositionPercent = 25
 	aggressiveConfig.MaxIndustryPercent = 40
@@ -312,7 +315,7 @@ func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArc
 	aggressiveConfig.TCooldownMinutes = 10
 	if aggressive != nil {
 		profiles[shadowProfileAggressive] = shadowExecutionProfile{
-			ID: shadowProfileAggressive, Name: "进取型", Strategy: "52 分门槛 · 90% 上限 · 10 持仓",
+			ID: shadowProfileAggressive, Name: "进取型", Strategy: "52 分门槛 · 90% 上限 · 持仓数量不限",
 			Description: "扩大候选覆盖和分批空间，用更高风险预算换取更积极的仓位响应。",
 			Config:      aggressiveConfig, Archive: aggressive,
 		}
@@ -322,6 +325,7 @@ func defaultShadowExecutionProfiles(balanced, conservative, aggressive shadowArc
 
 func adaptiveShadowExecutionProfile(archive shadowArchive) shadowExecutionProfile {
 	cfg := paper.DefaultConfig()
+	cfg.UnlimitedOpenPositions = true
 	cfg.UseCalibratedScore = true
 	return shadowExecutionProfile{
 		ID: shadowProfileAdaptive, Name: "自适应校准型", Strategy: "滚动验证门控 · Champion/Challenger",
@@ -332,6 +336,7 @@ func adaptiveShadowExecutionProfile(archive shadowArchive) shadowExecutionProfil
 
 func monsterShadowExecutionProfile(archive shadowArchive) shadowExecutionProfile {
 	cfg := paper.DefaultConfig()
+	cfg.UnlimitedOpenPositions = true
 	// The radar is deliberately observed in its own, lower-capacity ledger. It
 	// gets enough cash and tranches to measure the signal, while retaining a
 	// larger reserve because high-volatility candidates have wider slippage.
@@ -362,7 +367,7 @@ func monsterShadowExecutionProfile(archive shadowArchive) shadowExecutionProfile
 	cfg.TMinimumNetProfitPercent = .2
 	cfg.TCooldownMinutes = 15
 	return shadowExecutionProfile{
-		ID: shadowProfileMonster, Name: "抓妖实验型", Strategy: "雷达≥58 · 09:40后入场 · 6持仓",
+		ID: shadowProfileMonster, Name: "抓妖实验型", Strategy: "雷达≥58 · 09:40后入场 · 持仓数量不限",
 		Description: "仅使用抓妖雷达的独立纸面账本；开盘前10分钟只观察，09:40后验证潜伏、启动和加速阶段，不影响基线账户。",
 		Config:      cfg, Archive: archive,
 	}

@@ -34,10 +34,13 @@ type Config struct {
 	MaxEntryTranches          int     `json:"max_entry_tranches"`
 	AdditionScoreStep         float64 `json:"addition_score_step"`
 	MaxOpenPositions          int     `json:"max_open_positions"`
-	MaxDailyRotations         int     `json:"max_daily_rotations"`
-	RotationScoreGap          float64 `json:"rotation_score_gap"`
-	RotationMinimumHoldDays   int     `json:"rotation_minimum_hold_days"`
-	UseCalibratedScore        bool    `json:"use_calibrated_score,omitempty"`
+	// UnlimitedOpenPositions removes the arbitrary count gate. Capital,
+	// portfolio, industry and risk budgets still limit actual entries.
+	UnlimitedOpenPositions  bool    `json:"unlimited_open_positions,omitempty"`
+	MaxDailyRotations       int     `json:"max_daily_rotations"`
+	RotationScoreGap        float64 `json:"rotation_score_gap"`
+	RotationMinimumHoldDays int     `json:"rotation_minimum_hold_days"`
+	UseCalibratedScore      bool    `json:"use_calibrated_score,omitempty"`
 	// UseMonsterRadar gates this account with the independent high-volatility
 	// radar. It is opt-in so existing Champion accounts keep their historical
 	// eligibility and execution semantics unchanged.
@@ -366,6 +369,10 @@ func ConfigFingerprint(cfg Config) string {
 
 func OptionsFingerprint(cfg Config, limit int) string {
 	canonical := canonicalConfig(cfg)
+	// The open-position count was an earlier portfolio gate. It is now a
+	// compatibility field: profile upgrades remove that artificial gate while
+	// preserving existing ledgers and their fingerprints.
+	canonical.UnlimitedOpenPositions = true
 	data, _ := json.Marshal(struct {
 		Config Config `json:"config"`
 		Limit  int    `json:"limit"`
@@ -2067,7 +2074,7 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 				continue
 			}
 			rotation := shadowRotationCandidate{}
-			if !exists && len(active) >= cfg.MaxOpenPositions {
+			if !exists && !cfg.UnlimitedOpenPositions && len(active) >= cfg.MaxOpenPositions {
 				if len(active) > cfg.MaxOpenPositions {
 					appendShadowDecision(&report, plan.signal, date, "wait", fmt.Sprintf("历史持仓 %d 个高于当前 %d 个上限，先等待减仓或到期退出", len(active), cfg.MaxOpenPositions), 0, targetPositionPercent(plan.signal, cfg))
 					continue
@@ -3178,10 +3185,10 @@ func canonicalConfig(cfg Config) Config {
 	if cfg.AdditionScoreStep <= 0 || !finite(cfg.AdditionScoreStep) {
 		cfg.AdditionScoreStep = defaults.AdditionScoreStep
 	}
-	if cfg.MaxOpenPositions <= 0 || cfg.MaxOpenPositions > 200 {
+	if cfg.MaxOpenPositions < 0 || cfg.MaxOpenPositions > 200 || (cfg.MaxOpenPositions == 0 && !cfg.UnlimitedOpenPositions) {
 		cfg.MaxOpenPositions = defaults.MaxOpenPositions
 	}
-	if cfg.MaxDailyRotations <= 0 || cfg.MaxDailyRotations > cfg.MaxOpenPositions {
+	if cfg.MaxDailyRotations <= 0 || (!cfg.UnlimitedOpenPositions && cfg.MaxDailyRotations > cfg.MaxOpenPositions) {
 		cfg.MaxDailyRotations = minInt(defaults.MaxDailyRotations, cfg.MaxOpenPositions)
 	}
 	if cfg.RotationScoreGap <= 0 || !finite(cfg.RotationScoreGap) {

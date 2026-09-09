@@ -258,7 +258,7 @@ func (e *Evaluator) advanceRealtime(ctx context.Context, report Report, signals 
 			appendRealtimeDecision(&report, signal, date, "wait", realtimeEntryWindowReason(eventNow, report.Config), 0, targetPositionPercent(signal, report.Config), eventID, quote)
 			continue
 		}
-		if len(report.Positions) >= report.Config.MaxOpenPositions {
+		if !report.Config.UnlimitedOpenPositions && len(report.Positions) >= report.Config.MaxOpenPositions {
 			appendRealtimeDecision(&report, signal, date, "wait", fmt.Sprintf("组合已有 %d 个持仓，达到盘中持仓上限", len(report.Positions)), 0, targetPositionPercent(signal, report.Config), eventID, quote)
 			continue
 		}

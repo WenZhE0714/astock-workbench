@@ -998,6 +998,35 @@ func TestShadowRotationReplacesWeakestEligiblePosition(t *testing.T) {
 	}
 }
 
+func TestUnlimitedOpenPositionsBypassesCountGateButKeepsCapitalBudget(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.UnlimitedOpenPositions = true
+	cfg.MaxOpenPositions = 1
+	cfg.MaxPortfolioPercent = 80
+	cfg.CashReservePercent = 20
+	cfg.InitialEntryPercent = 50
+	date := "2026-08-25"
+	first := rotationTestPosition("sh600000", "已有持仓", 60, cfg)
+	secondSignal := shadowSignal("second", "sh600002", "2026-08-24", 90)
+	secondSignal.Name, secondSignal.Industry = "新候选", "软件"
+	plan := shadowPlan{signal: secondSignal, bars: shadowStrategyBars(secondSignal.Symbol), capacity: 100_000_000, entryDate: date, entryIndex: 4, signalClose: 10.3}
+	report, active := rotationTestAccount(cfg, date, first)
+	result := simulateFrom(report, []shadowPlan{plan}, cfg, report.RemainingCash, active)
+	if !shadowReportHasPosition(result, secondSignal.Symbol) || len(result.Positions) < 2 {
+		t.Fatalf("unlimited account still applied count gate: %+v", result)
+	}
+	if result.RemainingCash < cfg.InitialCash*cfg.CashReservePercent/100 {
+		t.Fatalf("unlimited account violated cash reserve: %+v", result)
+	}
+
+	cfg.MaxPortfolioPercent = 10
+	report, active = rotationTestAccount(cfg, date, first)
+	result = simulateFrom(report, []shadowPlan{plan}, cfg, report.RemainingCash, active)
+	if shadowReportHasPosition(result, secondSignal.Symbol) {
+		t.Fatalf("portfolio budget was bypassed with unlimited count: %+v", result)
+	}
+}
+
 func TestShadowRotationRequiresScoreGapAndMinimumHold(t *testing.T) {
 	tests := []struct {
 		name        string
