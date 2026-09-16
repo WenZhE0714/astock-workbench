@@ -378,11 +378,10 @@ type globalMarketCacheEntry struct {
 }
 
 type sentimentExtrasCacheEntry struct {
-	northbound domain.NorthboundFlowSnapshot
-	hot        domain.HotStockSnapshot
-	northErr   error
-	hotErr     error
-	fetchedAt  time.Time
+	hot       domain.HotStockSnapshot
+	hotErr    error
+	tradeDate string
+	fetchedAt time.Time
 }
 
 type limitStatsCacheEntry struct {
@@ -669,7 +668,7 @@ func WithIndustryFlows(client marketIndustryFlowClient) ServerOption {
 	return func(server *Server) { server.industryFlows = client }
 }
 
-// WithSentimentSignals connects optional northbound-flow and hot-theme data.
+// WithSentimentSignals connects optional hot-stock and theme data.
 func WithSentimentSignals(client marketSentimentSignalClient) ServerOption {
 	return func(server *Server) { server.sentimentSignals = client }
 }

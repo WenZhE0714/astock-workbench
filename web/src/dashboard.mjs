@@ -45,7 +45,7 @@ export function selectMonitorSignals(signals = [], state = "all", query = "") {
       || (signalScore(b) === null ? -1 : signalScore(b)) - (signalScore(a) === null ? -1 : signalScore(a)) || a.symbol.localeCompare(b.symbol))
 }
 
-export function radarPoint(index, value, count = 5) {
+export function radarPoint(index, value, count) {
   const angle = -Math.PI / 2 + index * 2 * Math.PI / count
   const radius = 72 * value / 100
   return { x: 120 + Math.cos(angle) * radius, y: 108 + Math.sin(angle) * radius }

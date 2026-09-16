@@ -39,8 +39,6 @@ type LiveData struct {
 	FundMonitorSelected     int
 	FundMonitorRefreshedAt  time.Time
 	FundIndustryRefreshedAt time.Time
-	Northbound              domain.NorthboundFlowSnapshot
-	NorthboundError         string
 }
 
 func indexLabel(symbol string, moyu bool) string {
@@ -278,16 +276,6 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 	header := first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
 		"\n" + marketFlowOverview(data.Flows, options.Moyu, options.Color, width) +
 		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, options.Color, width)
-	if data.Northbound.Available {
-		shanghai := northboundValue(data.Northbound.Shanghai, options.Moyu, options.Color)
-		shenzhen := northboundValue(data.Northbound.Shenzhen, options.Moyu, options.Color)
-		total := northboundValue(data.Northbound.Total, options.Moyu, options.Color)
-		value := fmt.Sprintf("北向资金  沪 %s  深 %s  合计 %s", shanghai, shenzhen, total)
-		if options.Moyu {
-			value = fmt.Sprintf("NORTHBOUND  HGT %s  SGT %s  TOTAL %s", shanghai, shenzhen, total)
-		}
-		header += "\n" + truncateWidth(value, width)
-	}
 	if data.GroupName != "" && data.RankingKind == "" && !data.FundMonitorActive {
 		label := fmt.Sprintf("自选分组  %s  ·  %d只", data.GroupName, data.GroupCount)
 		if options.Moyu {
@@ -296,20 +284,6 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 		header += "\n" + truncateWidth(label, width)
 	}
 	return header
-}
-
-func northboundValue(value float64, moyu, color bool) string {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return "--"
-	}
-	text := fmt.Sprintf("%+.2f", value)
-	if !moyu {
-		text += "亿"
-	}
-	if color && !moyu {
-		text = style(text, trendCode(value, false), true)
-	}
-	return text
 }
 
 func visibleQuoteWindow(total, selected, limit int) (int, int) {

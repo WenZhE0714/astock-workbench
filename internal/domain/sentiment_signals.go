@@ -1,18 +1,5 @@
 package domain
 
-import "time"
-
-// NorthboundFlowSnapshot is the latest intraday cumulative northbound flow.
-// Values are in hundred-million yuan and may be unavailable outside sessions.
-type NorthboundFlowSnapshot struct {
-	At        time.Time `json:"at"`
-	Shanghai  float64   `json:"shanghai_hundred_million_yuan"`
-	Shenzhen  float64   `json:"shenzhen_hundred_million_yuan"`
-	Total     float64   `json:"total_hundred_million_yuan"`
-	Available bool      `json:"available"`
-	Source    string    `json:"source,omitempty"`
-}
-
 type HotTheme struct {
 	Name        string  `json:"name"`
 	Count       int     `json:"count"`

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -15,16 +14,15 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
 
-// THSSignalClient reads the public Tonghuashun signal endpoints used by the
-// sentiment cockpit. These endpoints are independent of QuantAPI token quotas.
+// THSSignalClient reads the public Tonghuashun hot-stock endpoint used by the
+// sentiment cockpit, independently of QuantAPI token quotas.
 type THSSignalClient struct {
-	HTTPClient    *http.Client
-	NorthboundURL string
-	HotStocksURL  string
+	HTTPClient   *http.Client
+	HotStocksURL string
 }
 
 func NewTHSSignalClientFromEnv() THSSignalClient {
-	return THSSignalClient{NorthboundURL: os.Getenv("ASTOCK_THS_NORTHBOUND_URL"), HotStocksURL: os.Getenv("ASTOCK_THS_HOT_STOCKS_URL")}
+	return THSSignalClient{HotStocksURL: os.Getenv("ASTOCK_THS_HOT_STOCKS_URL")}
 }
 
 func (client THSSignalClient) httpClient() *http.Client {
@@ -32,45 +30,6 @@ func (client THSSignalClient) httpClient() *http.Client {
 		return client.HTTPClient
 	}
 	return &http.Client{Timeout: 4 * time.Second}
-}
-
-func (client THSSignalClient) FetchNorthbound(ctx context.Context) (domain.NorthboundFlowSnapshot, error) {
-	address := client.NorthboundURL
-	if strings.TrimSpace(address) == "" {
-		address = "https://data.hexin.cn/market/hsgtApi/method/dayChart/"
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return domain.NorthboundFlowSnapshot{}, err
-	}
-	request.Header.Set("User-Agent", "Mozilla/5.0")
-	request.Header.Set("Referer", "https://data.hexin.cn/")
-	response, err := client.httpClient().Do(request)
-	if err != nil {
-		return domain.NorthboundFlowSnapshot{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return domain.NorthboundFlowSnapshot{}, fmt.Errorf("北向资金 HTTP %s", response.Status)
-	}
-	var payload struct {
-		Time []string          `json:"time"`
-		HGT  []json.RawMessage `json:"hgt"`
-		SGT  []json.RawMessage `json:"sgt"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return domain.NorthboundFlowSnapshot{}, err
-	}
-	if len(payload.Time) == 0 {
-		return domain.NorthboundFlowSnapshot{}, fmt.Errorf("北向资金暂无盘中数据")
-	}
-	last := len(payload.Time) - 1
-	shanghai := signalNumber(payload.HGT, last)
-	shenzhen := signalNumber(payload.SGT, last)
-	if !finiteSignal(shanghai) && !finiteSignal(shenzhen) {
-		return domain.NorthboundFlowSnapshot{}, fmt.Errorf("北向资金返回空值")
-	}
-	return domain.NorthboundFlowSnapshot{At: time.Now(), Shanghai: shanghai, Shenzhen: shenzhen, Total: safeSignal(shanghai) + safeSignal(shenzhen), Available: true, Source: "同花顺 hsgtApi"}, nil
 }
 
 func (client THSSignalClient) FetchHotStocks(ctx context.Context, tradeDate string) (domain.HotStockSnapshot, error) {
@@ -169,18 +128,6 @@ func (client THSSignalClient) FetchHotStocks(ctx context.Context, tradeDate stri
 	return domain.HotStockSnapshot{TradeDate: tradeDate, Stocks: stocks, Themes: themes, Available: true, Source: "同花顺热点事件"}, nil
 }
 
-func signalNumber(values []json.RawMessage, index int) float64 {
-	if index < 0 || index >= len(values) {
-		return math.NaN()
-	}
-	text := strings.TrimSpace(strings.Trim(string(values[index]), `"`))
-	text = strings.TrimSuffix(strings.ReplaceAll(text, ",", ""), "%")
-	number, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
-	if err != nil {
-		return math.NaN()
-	}
-	return number
-}
 func signalRawNumber(value json.RawMessage) float64 {
 	text := strings.TrimSpace(strings.Trim(string(value), `"`))
 	text = strings.TrimSuffix(strings.ReplaceAll(text, ",", ""), "%")
@@ -197,12 +144,6 @@ func signalRawNumber(value json.RawMessage) float64 {
 	return number * multiplier
 }
 func finiteSignal(value float64) bool { return value == value && value < 1e308 && value > -1e308 }
-func safeSignal(value float64) float64 {
-	if finiteSignal(value) {
-		return value
-	}
-	return 0
-}
 func normalizePlainSymbol(code string) string {
 	if strings.HasPrefix(code, "6") {
 		return "sh" + code

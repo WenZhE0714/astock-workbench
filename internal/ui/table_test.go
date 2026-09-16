@@ -725,16 +725,17 @@ func TestPlaceholderUsesUnavailableValues(t *testing.T) {
 	}
 }
 
-func TestLiveHeaderFormatsMissingNorthboundLegAndColorsFlow(t *testing.T) {
-	frame := BuildLiveFrame(LiveData{
-		Quotes:     []domain.Quote{dashboardQuote()},
-		Indices:    []domain.Quote{{Symbol: "sh000001", Current: "3000", Percent: 1}, {Symbol: "sz399001", Current: "9000", Percent: 1}, {Symbol: "sz399006", Current: "1800", Percent: 1}},
-		Northbound: domain.NorthboundFlowSnapshot{Available: true, Shanghai: -9.28, Shenzhen: math.NaN(), Total: -9.28},
-	}, ViewOptions{Color: true}, 120, 30)
-	if !strings.Contains(frame, "深 --") || strings.Contains(frame, "NaN") {
-		t.Fatalf("missing northbound leg was not normalized:\n%s", frame)
-	}
-	if !strings.Contains(frame, "\x1b[") {
-		t.Fatalf("northbound flow is not colored:\n%s", frame)
+func TestLiveHeaderOmitsRetiredNorthboundFeed(t *testing.T) {
+	for _, moyu := range []bool{false, true} {
+		frame := BuildLiveFrame(LiveData{
+			Quotes:  []domain.Quote{dashboardQuote()},
+			Indices: []domain.Quote{{Symbol: "sh000001", Current: "3000", Percent: 1}, {Symbol: "sz399001", Current: "9000", Percent: 1}, {Symbol: "sz399006", Current: "1800", Percent: 1}},
+		}, ViewOptions{Color: true, Moyu: moyu}, 120, 30)
+		if strings.Contains(frame, "北向") || strings.Contains(frame, "NORTHBOUND") || strings.Contains(frame, "-9.28") {
+			t.Fatalf("retired feed remains in CLI (moyu=%t):\n%s", moyu, frame)
+		}
+		if !strings.Contains(frame, "3000") {
+			t.Fatalf("index data was removed with retired feed:\n%s", frame)
+		}
 	}
 }

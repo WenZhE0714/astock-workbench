@@ -124,7 +124,6 @@ createApp({
         { key: "industry_breadth", label: "行业广度", note: "行业样本涨跌扩散", tone: "breadth" },
         { key: "positive_industry_rate", label: "上涨行业占比", note: "上涨行业 / 行业样本", tone: "positive" },
         { key: "industry_flow_signal", label: "行业资金方向", note: "主力净流入行业占比", tone: "flow" },
-        { key: "northbound_signal", label: "北向资金信号", note: "盘中累计净流入标准化", tone: "northbound" },
       ],
       realtimeScope: "leaders",
       realtimeLoading: false,
@@ -449,7 +448,6 @@ createApp({
         { key: "industry_breadth", label: "宽度", value: snapshot.industry_breadth, tone: "breadth" },
         { key: "turnover_signal", label: "成交额", value: snapshot.turnover_signal, tone: "turnover" },
         { key: "industry_flow_signal", label: "资金", value: snapshot.industry_flow_signal, tone: "flow" },
-        { key: "northbound_signal", label: "北向", value: snapshot.northbound_available ? snapshot.northbound_signal : null, tone: "northbound" },
       ].map(item => ({ ...item, value: finiteNumber(item.value) }))
     },
     marketRadarPolygon() {
@@ -2410,7 +2408,6 @@ createApp({
         { key: "index_signal", color: "#58b9d7", width: 1.5 },
         { key: "industry_breadth", color: "#77c99a", width: 1.5 },
         { key: "turnover_signal", color: "#c58bd8", width: 1.5 },
-        { key: "northbound_signal", color: "#d68e6f", width: 1.35 },
       ]
       let points = this.sentimentHistory.filter(item => fields.some(field => finiteNumber(item[field.key]) !== null))
       if (points.length > 1) {

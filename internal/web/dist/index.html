@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.40f58be4.js"></script>
-  <link rel="stylesheet" href="/assets/index.c2747091.css">
+  <script type="module" crossorigin src="/assets/index.8bcc5f8c.js"></script>
+  <link rel="stylesheet" href="/assets/index.5698c02f.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -77,12 +77,11 @@
                 <div class="sentiment-metric"><span>行业广度</span><strong v-text="sentimentNumber(sentimentSnapshot.industry_breadth)"></strong><small v-text="(sentimentSnapshot.rise_count || 0) + ' 个上涨 · ' + (sentimentSnapshot.fall_count || 0) + ' 个下跌'"></small></div>
                 <div class="sentiment-metric"><span>上涨行业占比</span><strong v-text="sentimentPercent((sentimentSnapshot || {}).positive_industry_rate)"></strong><small v-text="((sentimentSnapshot || {}).industry_count || 0) + ' 个行业样本'"></small></div>
                 <div class="sentiment-metric"><span>行业资金方向</span><strong v-text="sentimentNumber(sentimentSnapshot.industry_flow_signal)"></strong><small>主力净流入方向</small></div>
-                <div class="sentiment-metric"><span>北向资金</span><strong :class="sentimentSnapshot.northbound_net_hundred_million_yuan >= 0 ? 'up' : 'down'" v-text="sentimentSnapshot.northbound_available ? (sentimentSnapshot.northbound_net_hundred_million_yuan >= 0 ? '+' : '') + Number(sentimentSnapshot.northbound_net_hundred_million_yuan).toFixed(2) + ' 亿' : '--'"></strong><small v-text="sentimentSnapshot.northbound_available ? '盘中累计 · 更新 ' + formatDateTime(sentimentSnapshot.northbound_at) : '暂未覆盖'"></small></div>
                 <div class="sentiment-metric"><span>热点题材</span><strong v-text="sentimentSnapshot.hot_signal_available ? (sentimentSnapshot.hot_theme_count || 0) + ' 个' : '--'"></strong><small v-text="sentimentSnapshot.hot_signal_available ? (sentimentSnapshot.hot_stock_count || 0) + ' 只强势股' : '暂未覆盖'"></small></div>
                 <div class="sentiment-metric sentiment-limit"><span>涨停 / 跌停</span><strong v-text="sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.limit_up_count || 0) + ' / ' + (sentimentSnapshot.limit_down_count || 0) : '--'"></strong><small v-text="sentimentSnapshot.limit_stats_available ? '家数' : '暂未覆盖'"></small></div>
               </section>
               <section class="sentiment-limit-panel"><div class="panel-head"><span class="panel-title">涨跌停结构</span><span class="symbol" v-text="sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.limit_stats_source || '结构数据') + ' · ' + (sentimentSnapshot.trade_date || '--') : '数据暂不可用'"></span></div><div class="sentiment-limit-grid"><div><span>炸板率</span><strong :class="sentimentSnapshot.broken_rate_percent > 35 ? 'down' : sentimentSnapshot.broken_rate_percent < 15 ? 'up' : ''" v-text="sentimentSnapshot.limit_stats_available ? sentimentPercent(sentimentSnapshot.broken_rate_percent) : '--'"></strong><small v-text="sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.broken_count || 0) + ' 家炸板' : '等待数据源' "></small></div><div><span>最高连板</span><strong v-text="sentimentSnapshot.limit_stats_available ? (sentimentSnapshot.highest_streak || 0) + ' 板' : '--'"></strong><small>涨停池最高高度</small></div><div class="streak-ladder"><span>连板梯队</span><div v-if="sentimentSnapshot.limit_stats_available && (sentimentSnapshot.streak_ladder || []).length"><div class="streak-group" v-for="item in sentimentSnapshot.streak_ladder.slice(0, 8)" :key="item.streak"><em><b v-text="item.streak + '板'"></b><small v-text="item.count + '只'"></small></em><button type="button" class="streak-stock" v-for="stock in (item.stocks || [])" :key="stock.symbol" @click="selectBoardMember(stock)" :title="'查看 ' + stock.name + ' 行情'"><span v-text="stock.name || displayCode(stock.symbol)"></span><small v-text="percentText(stock.percent)"></small></button></div></div><small v-else>暂无连板数据</small></div></div></section>
-              <section class="sentiment-chart-panel"><div class="panel-head"><span class="panel-title">情绪分时</span><span class="sentiment-legend"><i class="score"></i>综合 <i class="index"></i>指数 <i class="breadth"></i>行业广度 <i class="turnover"></i>成交额 <i class="northbound"></i>北向</span><span class="symbol" v-text="sentimentHistory.length ? sentimentHistory.length + ' 个采样点 · 50 为中性' : '暂无历史采样'"></span></div><div class="sentiment-chart-wrap"><canvas ref="sentimentChart" aria-label="市场情绪分时走势"></canvas></div></section>
+              <section class="sentiment-chart-panel"><div class="panel-head"><span class="panel-title">情绪分时</span><span class="sentiment-legend"><i class="score"></i>综合 <i class="index"></i>指数 <i class="breadth"></i>行业广度 <i class="turnover"></i>成交额</span><span class="symbol" v-text="sentimentHistory.length ? sentimentHistory.length + ' 个采样点 · 50 为中性' : '暂无历史采样'"></span></div><div class="sentiment-chart-wrap"><canvas ref="sentimentChart" aria-label="市场情绪分时走势"></canvas></div></section>
               <section class="sentiment-readout"><div><span class="eyebrow">MARKET READOUT</span><strong v-text="sentimentReadout.title"></strong><p v-text="sentimentReadout.detail"></p></div><div class="sentiment-readout-tags"><span v-for="tag in sentimentReadout.tags" :key="tag.text" :class="tag.tone" v-text="tag.text"></span></div></section>
               <div class="sentiment-grid">
                 <section class="sentiment-panel sentiment-components"><div class="panel-head"><span class="panel-title">分项贡献</span><span class="symbol">0-100 标准化</span></div><div class="sentiment-component" v-for="item in sentimentComponents" :key="item.key"><div class="sentiment-component-head"><span v-text="item.label"></span><strong v-text="sentimentNumber(sentimentSnapshot[item.key])"></strong></div><div class="sentiment-bar"><span :class="item.tone" :style="{width: sentimentBarWidth(sentimentSnapshot[item.key])}"></span></div><small v-text="item.note"></small></div></section>
@@ -104,7 +103,6 @@
               </button>
             </div>
             <div class="market-turnover"><span class="market-turnover-label">两市及北交所成交额</span><strong v-text="marketAmountValue(marketAmount?.current_wan_yuan)"></strong><small v-text="'上日全天 ' + marketAmountValue(marketAmount?.previous_wan_yuan)"></small></div>
-            <div class="market-northbound" :title="sentimentSnapshot?.northbound_available ? formatDateTime(sentimentSnapshot.northbound_at) : '暂无北向数据'"><span>北向资金</span><strong :class="watchlistChangeClass(sentimentSnapshot?.northbound_net_hundred_million_yuan)" v-text="sentimentSnapshot?.northbound_available ? number(sentimentSnapshot.northbound_net_hundred_million_yuan) + ' 亿' : '--'"></strong><small v-text="sentimentSnapshot?.northbound_available ? formatDateTime(sentimentSnapshot.northbound_at) : '暂不可用'"></small></div>
           </section>
           <section class="market-pulse" v-if="workspaceMode === 'dashboard'" aria-label="市场总览">
             <div class="market-pulse-grid">
@@ -132,12 +130,12 @@
                     <div class="dashboard-module-head"><h2><activity :size="15"></activity>情绪分项</h2><button type="button" class="dashboard-icon" title="查看情绪走势" aria-label="查看情绪走势" @click="switchWorkspace('sentiment')"><arrow-up-right :size="16"></arrow-up-right></button></div>
                     <div class="dashboard-radar-body">
                       <svg viewBox="0 0 240 218" role="img" aria-label="情绪分项雷达图">
-                        <polygon v-for="level in [25, 50, 75, 100]" :key="level" :points="radarPolygon([level,level,level,level,level])" class="radar-grid"></polygon>
-                        <line v-for="(item, index) in marketPulseRadarItems" :key="'axis-' + item.key" x1="120" y1="108" :x2="radarPoint(index,100).x" :y2="radarPoint(index,100).y" class="radar-grid"></line>
+                        <polygon v-for="level in [25, 50, 75, 100]" :key="level" :points="radarPolygon(marketPulseRadarItems.map(() => level))" class="radar-grid"></polygon>
+                        <line v-for="(item, index) in marketPulseRadarItems" :key="'axis-' + item.key" x1="120" y1="108" :x2="radarPoint(index,100,marketPulseRadarItems.length).x" :y2="radarPoint(index,100,marketPulseRadarItems.length).y" class="radar-grid"></line>
                         <polygon v-if="marketRadarPolygon" :points="marketRadarPolygon" class="radar-value"></polygon>
                         <template v-for="(item, index) in marketPulseRadarItems" :key="item.key">
-                          <circle v-if="item.value !== null" :cx="radarPoint(index,Math.max(0,Math.min(100,item.value))).x" :cy="radarPoint(index,Math.max(0,Math.min(100,item.value))).y" r="3" class="radar-dot"></circle>
-                          <text :x="radarPoint(index,127).x" :y="radarPoint(index,127).y + 4" class="radar-label" v-text="item.label"></text>
+                          <circle v-if="item.value !== null" :cx="radarPoint(index,Math.max(0,Math.min(100,item.value)),marketPulseRadarItems.length).x" :cy="radarPoint(index,Math.max(0,Math.min(100,item.value)),marketPulseRadarItems.length).y" r="3" class="radar-dot"></circle>
+                          <text :x="radarPoint(index,127,marketPulseRadarItems.length).x" :y="radarPoint(index,127,marketPulseRadarItems.length).y + 4" class="radar-label" v-text="item.label"></text>
                         </template>
                         <text x="120" y="113" class="radar-score" v-text="sentimentNumber(sentimentSnapshot?.score)"></text>
                       </svg>

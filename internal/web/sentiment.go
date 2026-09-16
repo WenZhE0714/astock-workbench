@@ -16,7 +16,6 @@ type marketIndustryFlowClient interface {
 }
 
 type marketSentimentSignalClient interface {
-	FetchNorthbound(context.Context) (domain.NorthboundFlowSnapshot, error)
 	FetchHotStocks(context.Context, string) (domain.HotStockSnapshot, error)
 }
 
@@ -37,6 +36,7 @@ func (response marketSentimentResponse) MarshalJSON() ([]byte, error) {
 	snapshotJSON := map[string]any{
 		"generated_at": snapshot.GeneratedAt, "trade_date": snapshot.TradeDate, "source": snapshot.Source,
 		"score": sentimentJSONNumber(snapshot.Score), "phase": snapshot.Phase, "coverage_percent": snapshot.CoveragePercent,
+		"score_model":  snapshot.ScoreModel,
 		"index_signal": sentimentJSONNumber(snapshot.IndexSignal), "turnover_signal": sentimentJSONNumber(snapshot.TurnoverSignal),
 		"industry_breadth": sentimentJSONNumber(snapshot.IndustryBreadth), "positive_industry_rate": sentimentJSONNumber(snapshot.PositiveIndustryRate),
 		"industry_flow_signal": sentimentJSONNumber(snapshot.IndustryFlowSignal), "rise_count": snapshot.RiseCount, "fall_count": snapshot.FallCount,
@@ -47,19 +47,20 @@ func (response marketSentimentResponse) MarshalJSON() ([]byte, error) {
 		"limit_stats_available": snapshot.LimitStatsAvailable,
 		"limit_stats_source":    snapshot.LimitStatsSource,
 		"warnings":              snapshot.Warnings, "strong_industries": snapshot.StrongIndustries, "weak_industries": snapshot.WeakIndustries,
-		"northbound_net_hundred_million_yuan": sentimentJSONNumber(snapshot.NorthboundNet), "northbound_available": snapshot.NorthboundAvailable,
-		"northbound_signal": sentimentJSONNumber(snapshot.NorthboundSignal),
-		"northbound_at":     snapshot.NorthboundAt,
-		"hot_stock_count":   snapshot.HotStockCount, "hot_theme_count": snapshot.HotThemeCount, "hot_signal_available": snapshot.HotSignalAvailable,
+		"hot_stock_count": snapshot.HotStockCount, "hot_theme_count": snapshot.HotThemeCount, "hot_signal_available": snapshot.HotSignalAvailable,
 		"hot_themes": snapshot.HotThemes,
 	}
 	history := make([]map[string]any, 0, len(response.History))
 	for _, point := range response.History {
+		if point.ScoreModel != domain.MarketSentimentScoreModel {
+			continue
+		}
 		history = append(history, map[string]any{
 			"at": point.At, "score": sentimentJSONNumber(point.Score), "phase": point.Phase,
+			"score_model":  point.ScoreModel,
 			"index_signal": sentimentJSONNumber(point.IndexSignal), "turnover_signal": sentimentJSONNumber(point.TurnoverSignal),
 			"industry_breadth": sentimentJSONNumber(point.IndustryBreadth), "positive_industry_rate": sentimentJSONNumber(point.PositiveIndustryRate),
-			"industry_flow_signal": sentimentJSONNumber(point.IndustryFlowSignal), "northbound_signal": sentimentJSONNumber(point.NorthboundSignal),
+			"industry_flow_signal": sentimentJSONNumber(point.IndustryFlowSignal),
 		})
 	}
 	return json.Marshal(map[string]any{"snapshot": snapshotJSON, "history": history})
@@ -73,7 +74,7 @@ func sentimentJSONNumber(value float64) any {
 }
 
 func calculateMarketSentiment(now time.Time, indices []domain.Quote, flows map[string]domain.BoardFlow, previousAmount domain.MarketAmountSnapshot) domain.MarketSentimentSnapshot {
-	snapshot := domain.MarketSentimentSnapshot{GeneratedAt: now, Phase: "数据不足", Score: math.NaN(), CoveragePercent: 0, IndexSignal: math.NaN(), TurnoverSignal: math.NaN(), IndustryBreadth: math.NaN(), PositiveIndustryRate: math.NaN(), IndustryFlowSignal: math.NaN(), Warnings: make([]string, 0, 4)}
+	snapshot := domain.MarketSentimentSnapshot{GeneratedAt: now, Phase: "数据不足", Score: math.NaN(), ScoreModel: domain.MarketSentimentScoreModel, CoveragePercent: 0, IndexSignal: math.NaN(), TurnoverSignal: math.NaN(), IndustryBreadth: math.NaN(), PositiveIndustryRate: math.NaN(), IndustryFlowSignal: math.NaN(), Warnings: make([]string, 0, 4)}
 	indexValues := make([]float64, 0, len(indices))
 	var amount float64
 	for _, quote := range indices {
@@ -236,9 +237,10 @@ func appendSentimentHistory(history []domain.MarketSentimentPoint, snapshot doma
 	}
 	history = append(history, domain.MarketSentimentPoint{
 		At: snapshot.GeneratedAt, Score: snapshot.Score, Phase: snapshot.Phase,
+		ScoreModel:  snapshot.ScoreModel,
 		IndexSignal: snapshot.IndexSignal, TurnoverSignal: snapshot.TurnoverSignal,
 		IndustryBreadth: snapshot.IndustryBreadth, PositiveIndustryRate: snapshot.PositiveIndustryRate,
-		IndustryFlowSignal: snapshot.IndustryFlowSignal, NorthboundSignal: snapshot.NorthboundSignal,
+		IndustryFlowSignal: snapshot.IndustryFlowSignal,
 	})
 	cutoff := snapshot.GeneratedAt.Add(-24 * time.Hour)
 	start := sort.Search(len(history), func(index int) bool { return !history[index].At.Before(cutoff) })

@@ -56,7 +56,6 @@ type App struct {
 	marketSource    string
 	tdxMarket       *market.TDXClient
 	thsMarket       *market.THSQuantClient
-	thsSignals      *market.THSSignalClient
 	continuousMu    sync.Mutex
 }
 
@@ -107,7 +106,6 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		aiChats:         storage.NewAIChatStore(paths.AIChatsDir),
 		marketSource:    "http",
 		aiConfig:        storage.NewAIConfigStore(paths.AIConfigFile, paths.AITokenFile),
-		thsSignals:      func() *market.THSSignalClient { client := market.NewTHSSignalClientFromEnv(); return &client }(),
 	}
 	aiConfigService := webAIConfigService{app: app}
 	app.marketReportAI = analysis.NewConfiguredCodexRunner("", aiConfigService.runnerSettings)

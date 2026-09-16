@@ -1,5 +1,5 @@
 import assert from "assert"
-import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals } from "../src/dashboard.mjs"
+import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "../src/dashboard.mjs"
 
 for (const value of [null, undefined, "", " ", "--", true, NaN, Infinity, -Infinity]) assert.strictEqual(finiteNumber(value), null)
 assert.strictEqual(finiteNumber(0), 0)
@@ -29,4 +29,12 @@ assert.strictEqual(selectMonitorSignals(signals, "triggered", "银行").length, 
 assert.strictEqual(selectMonitorSignals(signals, "all", "600519")[0].state, "invalid")
 assert.strictEqual(selectMonitorSignals(signals, "watching", "茅台").length, 0)
 assert.strictEqual(JSON.stringify(signals), original)
+const vertices = radarPolygon([100, 100, 100, 100]).split(" ").map(value => value.split(",").map(Number))
+assert.strictEqual(vertices.length, 4)
+vertices.forEach((point, index) => {
+  const axis = radarPoint(index, 100, vertices.length)
+  assert.strictEqual(point[0], axis.x)
+  assert.strictEqual(point[1], axis.y)
+  assert(Math.abs(Math.hypot(point[0] - 120, point[1] - 108) - 72) < 1e-8)
+})
 console.log("PASS: missing data, distribution boundaries, signal ordering and filters")

@@ -21,7 +21,7 @@ func (s *Server) handleSentiment(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	// Each optional provider gets its own deadline. A slow limit-pool or
-	// industry request must not cancel independent northbound/hot-theme data.
+	// industry request must not cancel independent hot-theme data.
 	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 	defer cancel()
 	symbols := []string{"sh000001", "sz399001", "sz399006", "sz399106", "bj899050"}
@@ -126,21 +126,8 @@ func (s *Server) handleSentiment(writer http.ResponseWriter, request *http.Reque
 	}
 	if s.sentimentSignals != nil {
 		extrasCtx, extrasCancel := context.WithTimeout(providerRoot, 8*time.Second)
-		northbound, hot, northErr, hotErr := s.fetchSentimentExtras(extrasCtx, snapshot.TradeDate)
+		hot, hotErr := s.fetchSentimentExtras(extrasCtx, snapshot.TradeDate)
 		extrasCancel()
-		if northErr == nil && northbound.Available {
-			snapshot.NorthboundNet = northbound.Total
-			snapshot.NorthboundAt = northbound.At
-			snapshot.NorthboundSignal = clampSentiment(50+northbound.Total*10, 0, 100)
-			snapshot.NorthboundAvailable = true
-			snapshot.CoveragePercent = math.Min(100, snapshot.CoveragePercent+10)
-			if finiteSentiment(snapshot.Score) {
-				snapshot.Score = math.Round((snapshot.Score*.9+snapshot.NorthboundSignal*.1)*10) / 10
-				snapshot.Phase = sentimentPhase(snapshot.Score)
-			}
-		} else if northErr != nil {
-			snapshot.Warnings = append(snapshot.Warnings, "北向资金暂不可用: "+northErr.Error())
-		}
 		if hotErr == nil && hot.Available {
 			snapshot.HotStockCount = len(hot.Stocks)
 			snapshot.HotThemeCount = len(hot.Themes)
@@ -188,30 +175,23 @@ func removeSentimentWarning(values []string, unwanted string) []string {
 	return filtered
 }
 
-func (s *Server) fetchSentimentExtras(ctx context.Context, tradeDate string) (domain.NorthboundFlowSnapshot, domain.HotStockSnapshot, error, error) {
+func (s *Server) fetchSentimentExtras(ctx context.Context, tradeDate string) (domain.HotStockSnapshot, error) {
 	now := time.Now()
+	if tradeDate == "" {
+		tradeDate = now.In(realtimeWebLocation).Format("2006-01-02")
+	}
 	s.sentimentExtrasMu.Lock()
 	cached := s.sentimentExtrasCache
-	if !cached.fetchedAt.IsZero() && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < sentimentExtrasCacheTTL {
+	if cached.tradeDate == tradeDate && !cached.fetchedAt.IsZero() && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < sentimentExtrasCacheTTL {
 		s.sentimentExtrasMu.Unlock()
-		return cached.northbound, cached.hot, cached.northErr, cached.hotErr
+		return cached.hot, cached.hotErr
 	}
 	s.sentimentExtrasMu.Unlock()
-	if tradeDate == "" {
-		tradeDate = now.Format("2006-01-02")
-	}
-	var waitGroup sync.WaitGroup
-	var northbound domain.NorthboundFlowSnapshot
-	var hot domain.HotStockSnapshot
-	var northErr, hotErr error
-	waitGroup.Add(2)
-	go func() { defer waitGroup.Done(); northbound, northErr = s.sentimentSignals.FetchNorthbound(ctx) }()
-	go func() { defer waitGroup.Done(); hot, hotErr = s.sentimentSignals.FetchHotStocks(ctx, tradeDate) }()
-	waitGroup.Wait()
+	hot, hotErr := s.sentimentSignals.FetchHotStocks(ctx, tradeDate)
 	s.sentimentExtrasMu.Lock()
-	s.sentimentExtrasCache = sentimentExtrasCacheEntry{northbound: northbound, hot: hot, northErr: northErr, hotErr: hotErr, fetchedAt: now}
+	s.sentimentExtrasCache = sentimentExtrasCacheEntry{hot: hot, hotErr: hotErr, tradeDate: tradeDate, fetchedAt: now}
 	s.sentimentExtrasMu.Unlock()
-	return northbound, hot, northErr, hotErr
+	return hot, hotErr
 }
 
 func uniqueSentimentWarnings(values []string) []string {

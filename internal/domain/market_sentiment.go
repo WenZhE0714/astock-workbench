@@ -2,6 +2,10 @@ package domain
 
 import "time"
 
+// Keep the current score series separate from snapshots that included the
+// retired, undated northbound feed.
+const MarketSentimentScoreModel = "market-components-v2"
+
 // MarketSentimentSnapshot is a point-in-time, explicitly coverage-aware
 // market emotion snapshot. Missing limit-up/limit-down data is represented by
 // availability flags rather than zero values.
@@ -10,6 +14,7 @@ type MarketSentimentSnapshot struct {
 	TradeDate            string                    `json:"trade_date,omitempty"`
 	Source               string                    `json:"source,omitempty"`
 	Score                float64                   `json:"score"`
+	ScoreModel           string                    `json:"score_model,omitempty"`
 	Phase                string                    `json:"phase"`
 	CoveragePercent      float64                   `json:"coverage_percent"`
 	IndexSignal          float64                   `json:"index_signal"`
@@ -33,10 +38,6 @@ type MarketSentimentSnapshot struct {
 	Warnings             []string                  `json:"warnings,omitempty"`
 	StrongIndustries     []MarketSentimentIndustry `json:"strong_industries,omitempty"`
 	WeakIndustries       []MarketSentimentIndustry `json:"weak_industries,omitempty"`
-	NorthboundNet        float64                   `json:"northbound_net_hundred_million_yuan"`
-	NorthboundSignal     float64                   `json:"northbound_signal"`
-	NorthboundAvailable  bool                      `json:"northbound_available"`
-	NorthboundAt         time.Time                 `json:"northbound_at,omitempty"`
 	HotStockCount        int                       `json:"hot_stock_count,omitempty"`
 	HotThemeCount        int                       `json:"hot_theme_count,omitempty"`
 	HotSignalAvailable   bool                      `json:"hot_signal_available"`
@@ -60,11 +61,13 @@ type MarketSentimentIndustry struct {
 type MarketSentimentPoint struct {
 	At                   time.Time `json:"at"`
 	Score                float64   `json:"score"`
+	ScoreModel           string    `json:"score_model,omitempty"`
 	Phase                string    `json:"phase"`
 	IndexSignal          float64   `json:"index_signal"`
 	TurnoverSignal       float64   `json:"turnover_signal"`
 	IndustryBreadth      float64   `json:"industry_breadth"`
 	PositiveIndustryRate float64   `json:"positive_industry_rate"`
 	IndustryFlowSignal   float64   `json:"industry_flow_signal"`
-	NorthboundSignal     float64   `json:"northbound_signal"`
+	// Retained only for lossless loading/saving of legacy local history.
+	LegacyNorthboundSignal *float64 `json:"northbound_signal,omitempty"`
 }

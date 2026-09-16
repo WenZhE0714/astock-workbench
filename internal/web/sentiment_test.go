@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -70,5 +71,87 @@ func TestSentimentEndpointIncludesLimitStructure(t *testing.T) {
 		if warning == "涨停/跌停、炸板率和连板梯队尚未接入" {
 			t.Fatalf("stale limit warning remains: %+v", response.Snapshot.Warnings)
 		}
+	}
+}
+
+type hotStockSignalStub struct {
+	dates []string
+}
+
+func (stub *hotStockSignalStub) FetchHotStocks(_ context.Context, date string) (domain.HotStockSnapshot, error) {
+	stub.dates = append(stub.dates, date)
+	return domain.HotStockSnapshot{
+		Available: true, TradeDate: date,
+		Stocks: []domain.HotStockSignal{{Symbol: "sh600519", Name: "贵州茅台", Percent: 5}},
+		Themes: []domain.HotTheme{{Name: "消费", Count: 1, Leader: "贵州茅台", AverageRise: 5}},
+	}, nil
+}
+
+func TestSentimentEndpointKeepsThemesWithoutRetiredScoreOverlay(t *testing.T) {
+	ctx := context.Background()
+	quotes, _ := (marketQuoteStub{}).Fetch(ctx, []string{"sh000001", "sz399001", "sz399006"})
+	flows, _ := (boardRankingStub{}).FetchIndustryFlows(ctx)
+	previous, _ := (marketAmountStub{}).FetchPreviousMarketAmount(ctx)
+	want := calculateMarketSentiment(time.Now(), quotes, flows, previous)
+	hot := &hotStockSignalStub{}
+	server := NewServer(nil, marketQuoteStub{}, nil, nil, "", WithIndustryFlows(boardRankingStub{}), WithMarketAmount(marketAmountStub{}), WithSentimentSignals(hot))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/sentiment", nil))
+	var response marketSentimentResponse
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("sentiment status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Snapshot.Score != want.Score || response.Snapshot.CoveragePercent != want.CoveragePercent || response.Snapshot.Phase != want.Phase {
+		t.Fatalf("retired overlay changed score or coverage: got=%+v want=%+v", response.Snapshot, want)
+	}
+	if !response.Snapshot.HotSignalAvailable || response.Snapshot.HotStockCount != 1 || len(response.Snapshot.HotThemes) != 1 || len(hot.dates) != 1 {
+		t.Fatalf("hot-theme data was lost: %+v requests=%v", response.Snapshot, hot.dates)
+	}
+	if response.Snapshot.ScoreModel != domain.MarketSentimentScoreModel || bytes.Contains(recorder.Body.Bytes(), []byte("northbound")) {
+		t.Fatalf("retired fields or wrong score model in API: %s", recorder.Body.String())
+	}
+}
+
+func TestSentimentHistorySeparatesScoreModelsWithoutRewritingLegacyPoints(t *testing.T) {
+	var legacy []domain.MarketSentimentPoint
+	if err := json.Unmarshal([]byte(`[{"at":"2026-09-11T09:30:00+08:00","score":54,"phase":"修复","northbound_signal":0}]`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	current := domain.MarketSentimentSnapshot{GeneratedAt: legacy[0].At.Add(time.Minute), Score: 60, ScoreModel: domain.MarketSentimentScoreModel, Phase: "强势"}
+	history := appendSentimentHistory(legacy, current)
+	before := append([]domain.MarketSentimentPoint(nil), history...)
+	data, err := json.Marshal(marketSentimentResponse{Snapshot: current, History: history})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response marketSentimentResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.History) != 1 || response.History[0].Score != 60 || response.History[0].ScoreModel != domain.MarketSentimentScoreModel {
+		t.Fatalf("old and current scores were mixed: %s", data)
+	}
+	if !reflect.DeepEqual(before, history) || len(history) != 2 || history[0].Score != 54 || history[0].LegacyNorthboundSignal == nil {
+		t.Fatalf("legacy history was rewritten: %+v", history)
+	}
+	if bytes.Contains(data, []byte("northbound")) {
+		t.Fatalf("retired factor exposed by API: %s", data)
+	}
+}
+
+func TestHotThemeCacheIsPartitionedByTradeDate(t *testing.T) {
+	provider := &hotStockSignalStub{}
+	server := NewServer(nil, nil, nil, nil, "", WithSentimentSignals(provider))
+	for _, date := range []string{"2026-09-10", "2026-09-10", "2026-09-11"} {
+		snapshot, err := server.fetchSentimentExtras(context.Background(), date)
+		if err != nil || snapshot.TradeDate != date {
+			t.Fatalf("incorrect cached theme date: %+v %v", snapshot, err)
+		}
+	}
+	if !reflect.DeepEqual(provider.dates, []string{"2026-09-10", "2026-09-11"}) {
+		t.Fatalf("unexpected theme requests: %v", provider.dates)
 	}
 }
