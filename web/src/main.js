@@ -1,12 +1,18 @@
 // The page template is delivered by Go so the browser bundle needs Vue's
 // runtime compiler, not the runtime-only default entry.
 import { createApp } from "vue/dist/vue.esm-bundler.js"
-import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight } from "lucide-vue-next"
+import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle } from "lucide-vue-next"
 import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "./dashboard.mjs"
+import { matchingChartAnalysis, chartLevelRows, chartStructureState, chartWeeklyState, savedPlanState, chartDataLagNotice } from "./chart-analysis.mjs"
+import { PlanMonitorDetails, planMonitorPhase, planMonitorHealth, monitorCanToggle } from "./plan-monitor.mjs"
+import { PlanExperimentView } from "./plan-experiment-view.js"
 import "./style.css"
 import "./dashboard.css"
+import "./chart-analysis.css"
+import "./plan-experiment.css"
 
 const defaultSymbol = document.querySelector('meta[name="astock-default-symbol"]')?.content || "600519"
+const initialView = new URLSearchParams(window.location.search)
 const morningStart = 9 * 60 + 30
 const morningEnd = 11 * 60 + 30
 const afternoonStart = 13 * 60
@@ -83,13 +89,29 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, PlanMonitorDetails, PlanExperimentView },
   data() {
     return {
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
-      workspaceMode: "dashboard",
+      workspaceMode: ["market", "monitor"].includes(initialView.get("view")) ? initialView.get("view") : "dashboard",
+      monitorView: ["plans", "experiment"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
+      planExperiment: null,
+      planExperimentRuntime: {},
+      planExperimentConfig: {},
+      planExperimentLoading: false,
+      planExperimentBusy: false,
+      planExperimentRequestID: 0,
+      planExperimentError: "",
+      planMonitorActiveOnly: false,
+      planMonitors: [],
+      planMonitorRuntime: {},
+      planMonitorLoading: false,
+      planMonitorRequestID: 0,
+      planMonitorBusy: {},
+      planMonitorError: "",
+      planMonitorNotice: "",
       workspaceNavigation,
       monitorFilter: "all",
       monitorQuery: "",
@@ -157,7 +179,7 @@ createApp({
       shadowRequestID: 0,
       shadowCheckedAt: 0,
       shadowOrderSymbol: "",
-      chartMode: "intraday",
+      chartMode: initialView.get("chart") === "daily" ? "daily" : "intraday",
       chartGeometry: null,
       crosshair: null,
       crosshairFrame: null,
@@ -165,6 +187,24 @@ createApp({
       dailyRangePreset: "6m",
       dailyVisibleCount: 120,
       dailyEndIndex: null,
+      chartHistoricalAnalysis: null,
+      chartAnalysisLoading: false,
+      chartAnalysisError: "",
+      chartAnalysisRequestID: 0,
+      chartAnalysisTimer: null,
+      chartAnalysisController: null,
+      chartStructureID: "range-breakout",
+      showChartStructure: true,
+      showChartPlan: false,
+      tradePlans: [],
+      tradePlansLoading: false,
+      tradePlansRequestID: 0,
+      tradePlansError: "",
+      tradePlansToday: localDate(new Date()),
+      tradePlansOpen: false,
+      tradePlanExpiresOn: localDate(Date.now() + 7 * 86400000),
+      tradePlanSaving: false,
+      tradePlanNotice: "",
       chartPointers: new Map(),
       dailyPanState: null,
       dailyPinchState: null,
@@ -710,60 +750,46 @@ createApp({
       return this.bars[this.dailyViewEnd - 1] || {}
     },
     dailyLevels() {
-      if (this.dailyViewEnd < 1) return {}
-      const currentIndex = this.dailyViewEnd - 1
-      const sample = this.bars.slice(Math.max(0, currentIndex - 20), currentIndex)
-      const highs = sample.map(bar => Number(bar.high)).filter(Number.isFinite)
-      const lows = sample.map(bar => Number(bar.low)).filter(Number.isFinite)
-      const closes = this.bars.slice(Math.max(0, currentIndex - 60), currentIndex + 1).map(bar => Number(bar.close)).filter(Number.isFinite)
-      const latest = Number(this.visibleLastBar.close)
-      const high20 = highs.length ? Math.max(...highs) : null
-      const low20 = lows.length ? Math.min(...lows) : null
-      const mean20 = closes.length >= 20 ? closes.slice(-20).reduce((sum, value) => sum + value, 0) / 20 : null
-      const std20 = mean20 == null ? null : Math.sqrt(closes.slice(-20).reduce((sum, value) => sum + (value - mean20) ** 2, 0) / 20)
-      const ema = (period) => {
-        if (closes.length < period) return null
-        let value = closes[0]
-        const alpha = 2 / (period + 1)
-        for (const close of closes.slice(1)) value = alpha * close + (1 - alpha) * value
-        return value
-      }
-      const ema20 = ema(20)
-      const trueRangeStart = Math.max(1, currentIndex - 60)
-      const trueRanges = this.bars.slice(trueRangeStart, currentIndex + 1).map((bar, offset) => {
-        const previous = this.bars[trueRangeStart + offset - 1]
-        const previousClose = Number(previous?.close)
-        const high = Number(bar.high); const low = Number(bar.low)
-        return Number.isFinite(previousClose) ? Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose)) : NaN
-      }).filter(Number.isFinite)
-      const atr14 = trueRanges.length >= 14 ? trueRanges.slice(-14).reduce((sum, value) => sum + value, 0) / 14 : null
-      const pivot = high20 != null && low20 != null && Number.isFinite(latest) ? (high20 + low20 + latest) / 3 : null
-      let gap = null
-      for (let index = currentIndex; index > 0; index -= 1) {
-        const current = this.bars[index]; const previous = this.bars[index - 1]
-        const low = Number(current.low); const high = Number(current.high); const previousHigh = Number(previous.high); const previousLow = Number(previous.low)
-        if (low > previousHigh && (gap == null || Math.abs(low - latest) < Math.abs(gap - latest))) gap = low
-        if (high < previousLow && (gap == null || Math.abs(high - latest) < Math.abs(gap - latest))) gap = high
-      }
-      const fib382 = high20 != null && low20 != null ? low20 + (high20 - low20) * .382 : null
-      const fib618 = high20 != null && low20 != null ? low20 + (high20 - low20) * .618 : null
-      const formatLevel = (value) => value == null || !Number.isFinite(value) ? "--" : this.number(value)
       return {
-        resistance: high20,
-        support: low20,
-        close: latest,
-        keyLevels: [
-          { label: "压力 / 支撑", value: `${formatLevel(high20)} / ${formatLevel(low20)}` },
-          { label: "成交密集区", value: formatLevel(mean20) },
-          { label: "枢轴点", value: formatLevel(pivot) },
-          { label: "前高 / 前低", value: `${formatLevel(high20)} / ${formatLevel(low20)}` },
-          { label: "Keltner 通道", value: ema20 == null || atr14 == null ? "--" : `${formatLevel(ema20 + 2 * atr14)} / ${formatLevel(ema20 - 2 * atr14)}` },
-          { label: "ATR 波动通道", value: !Number.isFinite(latest) || atr14 == null ? "--" : `${formatLevel(latest + 2 * atr14)} / ${formatLevel(latest - 2 * atr14)}` },
-          { label: "缺口位", value: formatLevel(gap) },
-          { label: "斐波那契", value: `${formatLevel(fib382)} / ${formatLevel(fib618)}` },
-          { label: "整数关口", value: Number.isFinite(latest) ? this.number(Math.round(latest)) : "--" },
-        ],
+        resistance: this.chartAnalysis?.range_high,
+        support: this.chartAnalysis?.range_low,
+        close: this.chartAnalysis?.price,
+        keyLevels: chartLevelRows(this.chartAnalysis, value => this.number(value)),
       }
+    },
+    chartAnalysis() {
+      const symbol = this.data.symbol
+      const date = this.visibleLastBar.date
+      return matchingChartAnalysis(this.data.chart_analysis, symbol, date) || matchingChartAnalysis(this.chartHistoricalAnalysis, symbol, date)
+    },
+    chartStructure() {
+      const structures = this.chartAnalysis?.structures || []
+      return structures.find(item => item.id === this.chartStructureID) || structures[0] || null
+    },
+    chartDataWarning() {
+      return chartDataLagNotice(this.chartAnalysis, this.quote.quote_time, this.dailyViewEnd === this.bars.length)
+    },
+    chartPlan() {
+      return this.chartStructure?.plan || null
+    },
+    canSaveChartPlan() {
+      return this.data.plans_enabled && this.chartPlan && this.chartStructure.state !== "invalidated" && !this.tradePlanSaving && !this.chartAnalysisLoading
+    },
+    planMonitorIndex() {
+      return Object.fromEntries(this.planMonitors.map(item => [item.plan_id, item]))
+    },
+    monitorToday() {
+      return this.planMonitorRuntime.today || this.tradePlansToday
+    },
+    filteredPlanMonitors() {
+      const query = String(this.monitorQuery || "").trim().toLowerCase()
+      return this.planMonitors.filter(item => (!this.planMonitorActiveOnly || item.enabled) && (!query || `${item.symbol} ${item.name}`.toLowerCase().includes(query)))
+    },
+    planMonitorRuntimeLabel() {
+      if (!this.planMonitorRuntime.supported) return "监控未配置"
+      if (!this.planMonitorRuntime.running) return "后台离线"
+      if (this.planMonitorRuntime.checking) return "检查中"
+      return this.planMonitorRuntime.session === "closed" ? "休市等待" : "后台运行"
     },
     quoteAmount() {
       if (this.quote.amount == null) return "--"
@@ -806,6 +832,208 @@ createApp({
     },
   },
   methods: {
+    async loadPlanExperiment(force = false) {
+      if (this.planExperimentLoading && !force) return
+      const requestID = ++this.planExperimentRequestID
+      this.planExperimentLoading = true
+      try {
+        const response = await fetch("/api/plan-experiment", { cache: "no-store" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "读取影子实验失败")
+        if (requestID !== this.planExperimentRequestID) return
+        this.planExperiment = payload.state || null
+        this.planExperimentRuntime = payload.runtime || {}
+        this.planExperimentConfig = payload.config || {}
+        this.planExperimentError = ""
+      } catch (error) {
+        if (requestID === this.planExperimentRequestID) this.planExperimentError = error.message || String(error)
+      } finally {
+        if (requestID === this.planExperimentRequestID) this.planExperimentLoading = false
+      }
+    },
+    async configurePlanExperiment(input, control) {
+      if (this.planExperimentBusy) return
+      this.planExperimentBusy = true
+      this.planExperimentError = ""
+      try {
+        const response = await fetch("/api/plan-experiment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "修改实验设置失败")
+        this.planExperiment = payload
+        await this.loadPlanExperiment(true)
+      } catch (error) {
+        this.planExperimentError = error.message || String(error)
+      } finally {
+        this.planExperimentBusy = false
+        if (control) control.checked = input.action === "entries" ? Boolean(this.planExperiment?.entries_enabled) : Boolean(this.planExperiment?.selections?.[input.plan_id]?.enabled)
+      }
+    },
+    openPlanExperiment() {
+      this.monitorView = "experiment"
+      this.switchWorkspace("monitor")
+    },
+    refreshMonitorWorkspace() {
+      if (this.monitorView === "experiment") this.loadPlanExperiment(true)
+      else if (this.monitorView === "plans") this.loadPlanMonitors(true)
+      else this.loadRealtimeSnapshot()
+    },
+    planMonitorPhase,
+    planMonitorHealth,
+    monitorCanToggle,
+    monitorForPlan(id) { return this.planMonitorIndex[id] || null },
+    formatMonitorTime(value) {
+      if (!value || String(value).startsWith("0001")) return "--"
+      const date = new Date(value)
+      if (!Number.isFinite(date.getTime())) return "--"
+      return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
+    },
+    planMonitorEnded(state) { return state && (state.phase === "expired" || state.phase === "invalidated") },
+    savedPlanDisplayState(plan) {
+      const state = this.monitorForPlan(plan.id)
+      return state ? this.planMonitorPhase(state) : savedPlanState(plan, this.monitorToday)
+    },
+    async loadPlanMonitors(force = false) {
+      if (this.planMonitorLoading && !force) return
+      const requestID = ++this.planMonitorRequestID
+      this.planMonitorLoading = true
+      try {
+        const response = await fetch("/api/trade-plan-monitors", { cache: "no-store" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "读取计划监控失败")
+        if (requestID !== this.planMonitorRequestID) return
+        this.planMonitors = payload.items || []
+        this.planMonitorRuntime = payload.runtime || {}
+        this.planMonitorError = ""
+      } catch (error) {
+        if (requestID === this.planMonitorRequestID) this.planMonitorError = error.message || String(error)
+      } finally {
+        if (requestID === this.planMonitorRequestID) this.planMonitorLoading = false
+      }
+    },
+    async setPlanMonitoring(plan, event) {
+      const id = plan.id || plan.plan_id
+      const control = event.target
+      const enabled = control.checked
+      if (this.planMonitorBusy[id]) return
+      this.planMonitorBusy[id] = true
+      this.planMonitorError = ""
+      this.planMonitorNotice = ""
+      try {
+        const response = await fetch("/api/trade-plan-monitors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: plan.symbol, plan_id: id, enabled }) })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "修改计划监控失败")
+        this.planMonitors = [payload, ...this.planMonitors.filter(item => item.plan_id !== id)]
+        this.planMonitorNotice = enabled ? "已启用后台监控" : "已暂停监控"
+        await this.loadPlanMonitors(true)
+        this.loadAssistantAlerts(true)
+      } catch (error) {
+        this.planMonitorError = error.message || String(error)
+      } finally {
+        this.planMonitorBusy[id] = false
+        control.checked = Boolean(this.monitorForPlan(id)?.enabled)
+      }
+    },
+    async checkPlanMonitors() {
+      this.planMonitorError = ""
+      try {
+        const response = await fetch("/api/trade-plan-monitors?action=check", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "监控检查未启动")
+        this.planMonitorNotice = "已安排后台检查"
+        await this.loadPlanMonitors(true)
+      } catch (error) {
+        this.planMonitorError = error.message || String(error)
+      }
+    },
+    openPlanMonitors() {
+      this.monitorView = "plans"
+      this.switchWorkspace("monitor")
+    },
+    openMonitoredStock(state) {
+      this.chartMode = "daily"
+      this.requestedSymbol = state.symbol
+      this.switchWorkspace("market")
+      this.tradePlansOpen = true
+    },
+    chartStructureState,
+    chartWeeklyState,
+    savedPlanState,
+    scheduleChartAnalysis(force = false) {
+      window.clearTimeout(this.chartAnalysisTimer)
+      if (this.chartAnalysisController) this.chartAnalysisController.abort()
+      const requestID = ++this.chartAnalysisRequestID
+      const symbol = this.data.symbol
+      const date = this.visibleLastBar.date
+      this.chartAnalysisError = ""
+      if (this.chartMode !== "daily" || !symbol || !date || (!force && this.chartAnalysis)) {
+        this.chartAnalysisLoading = false
+        return
+      }
+      this.chartAnalysisLoading = true
+      this.chartAnalysisTimer = window.setTimeout(async () => {
+        const controller = new AbortController()
+        this.chartAnalysisController = controller
+        try {
+          const response = await fetch(`/api/chart-analysis?symbol=${encodeURIComponent(symbol)}&through=${encodeURIComponent(date)}`, { cache: "no-store", signal: controller.signal })
+          const payload = await response.json()
+          if (!response.ok) throw new Error(payload.error || "结构分析暂不可用")
+          if (requestID !== this.chartAnalysisRequestID || this.data.symbol !== symbol || this.visibleLastBar.date !== date) return
+          if (!matchingChartAnalysis(payload, symbol, date)) throw new Error("分析日期与图表不一致，请刷新行情")
+          this.chartHistoricalAnalysis = payload
+          if (this.data.chart_analysis?.data_date === date) this.data.chart_analysis = payload
+          this.scheduleChartDraw()
+        } catch (error) {
+          if (requestID === this.chartAnalysisRequestID && error.name !== "AbortError") this.chartAnalysisError = error.message || String(error)
+        } finally {
+          if (requestID === this.chartAnalysisRequestID) this.chartAnalysisLoading = false
+        }
+      }, 180)
+    },
+    async loadTradePlans(symbol = this.data.symbol) {
+      if (!symbol || !this.data.plans_enabled) return
+      const requestID = ++this.tradePlansRequestID
+      this.tradePlansLoading = true
+      try {
+        const response = await fetch(`/api/trade-plans?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "读取计划失败")
+        if (requestID !== this.tradePlansRequestID || this.data.symbol !== symbol) return
+        this.tradePlans = payload.items || []
+        this.tradePlansToday = payload.today || localDate(new Date())
+        this.tradePlansError = ""
+      } catch (error) {
+        if (requestID === this.tradePlansRequestID && this.data.symbol === symbol) this.tradePlansError = error.message || String(error)
+      } finally {
+        if (requestID === this.tradePlansRequestID) this.tradePlansLoading = false
+      }
+    },
+    async saveChartPlan() {
+      if (!this.canSaveChartPlan) return
+      const analysis = this.chartAnalysis
+      const symbol = analysis.symbol
+      this.tradePlanSaving = true
+      this.tradePlanNotice = ""
+      this.tradePlansError = ""
+      try {
+        const response = await fetch("/api/trade-plans", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol, through: analysis.data_date, fingerprint: analysis.fingerprint, structure_id: this.chartStructure.id, expires_on: this.tradePlanExpiresOn }),
+        })
+        const payload = await response.json()
+        if (!response.ok) {
+          if (response.status === 409 && this.data.symbol === symbol) this.scheduleChartAnalysis(true)
+          throw new Error(payload.error || "保存计划失败")
+        }
+        if (this.data.symbol !== symbol) return
+        this.tradePlanNotice = payload.created ? "观察计划已保存" : "相同快照已保存，未重复创建"
+        this.tradePlansOpen = true
+        await this.loadTradePlans(symbol)
+      } catch (error) {
+        if (this.data.symbol === symbol) this.tradePlansError = error.message || String(error)
+      } finally {
+        this.tradePlanSaving = false
+      }
+    },
     number(value, digits = 2) {
       return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "--"
     },
@@ -993,6 +1221,7 @@ createApp({
     },
     assistantAlertKindLabel(alert) {
       if (!alert) return "提示"
+      if (alert.kind === "plan-monitor") return "计划"
       if (alert.kind === "risk") return "风险"
       if (alert.kind === "level" || alert.kind === "fact-level") return "点位"
       return alert.state === "triggered" ? "触发" : "观察"
@@ -1387,6 +1616,8 @@ createApp({
         this.loadBoards(true)
       } else if (mode === "monitor") {
         this.loadRealtimeSnapshot()
+        this.loadPlanMonitors(true)
+        if (this.monitorView === "experiment") this.loadPlanExperiment(true)
       } else if (mode === "dashboard") {
         this.loadIndices()
         this.loadSentiment(true)
@@ -2529,6 +2760,8 @@ createApp({
       if (mode !== "intraday" && mode !== "daily") return
       this.crosshair = null
       this.chartMode = mode
+      this.scheduleChartAnalysis()
+      if (mode === "daily") { this.loadTradePlans(); this.loadPlanMonitors() }
       this.$nextTick(() => this.drawChart())
     },
     dailyWindow() {
@@ -2549,6 +2782,7 @@ createApp({
       this.dailyEndIndex = nextEnd >= total ? null : nextEnd
       this.dailyRangePreset = preset
       this.crosshair = null
+      this.scheduleChartAnalysis()
       this.scheduleChartDraw()
     },
     setDailyRange(option) {
@@ -2557,6 +2791,7 @@ createApp({
       this.dailyEndIndex = null
       this.dailyRangePreset = option.key
       this.crosshair = null
+      this.scheduleChartAnalysis()
       this.$nextTick(() => this.drawChart())
     },
     resetDailyViewport() {
@@ -2659,7 +2894,14 @@ createApp({
         if (!response.ok) throw new Error(payload.error || payload.board_error || "行情请求失败")
         const symbolChanged = this.data.symbol && payload.symbol && this.data.symbol !== payload.symbol
         this.data = payload
+        this.chartHistoricalAnalysis = null
         if (symbolChanged) {
+          this.tradePlansRequestID += 1
+          this.tradePlans = []
+          this.tradePlansError = ""
+          this.tradePlanNotice = ""
+          this.tradePlansOpen = false
+          this.chartStructureID = "range-breakout"
           this.dailyVisibleCount = 120
           this.dailyEndIndex = null
           this.dailyRangePreset = "6m"
@@ -2675,6 +2917,8 @@ createApp({
           this.loadAssistantAlerts()
           if (this.assistantOpen) this.loadAssistantContext(payload.symbol)
         }
+        this.scheduleChartAnalysis()
+        if (this.chartMode === "daily") this.loadTradePlans()
         await this.$nextTick()
         this.drawChart()
       } catch (error) {
@@ -3555,8 +3799,9 @@ createApp({
       const minimumY = top + labelHalfHeight
       const maximumY = plotBottom - labelHalfHeight
       const visible = levels
+        .filter(level => level.value != null)
         .map(level => ({ ...level, price: Number(level.value) }))
-        .filter(level => Number.isFinite(level.price) && level.price >= level.low && level.price <= level.high)
+        .filter(level => Number.isFinite(level.price) && level.price > 0 && level.price >= level.low && level.price <= level.high)
         .map(level => ({ ...level, lineY: y(level.price), labelY: y(level.price) }))
         .sort((left, rightLevel) => left.lineY - rightLevel.lineY)
       if (!visible.length) return
@@ -3699,12 +3944,29 @@ createApp({
       drawAverage(5, "#58b9d7")
       drawAverage(20, "#f0b768")
       drawAverage(60, "#b28ee8")
+      const planLevels = []
+      if (this.showChartPlan && this.chartPlan) {
+        const plan = this.chartPlan
+        const bandTop = Math.max(top, y(plan.entry_high))
+        const bandBottom = Math.min(plotBottom, y(plan.entry_low))
+        if (bandBottom > bandTop) {
+          context.fillStyle = "rgba(240,183,104,.14)"
+          context.fillRect(left, bandTop, width - left - right, bandBottom - bandTop)
+        }
+        planLevels.push(
+          { value: plan.entry_high, label: "入场", color: "#f0b768", background: "#30291f", dash: [3, 4], low, high, left },
+          { value: plan.invalidation, label: "失效", color: "#48c5a0", background: "#18332d", dash: [3, 4], low, high, left },
+          { value: plan.target_2, label: "2R", color: "#58b9d7", background: "#1b3038", dash: [3, 4], low, high, left },
+        )
+      }
       this.drawDailyKeyLevels(context, [
-        { value: this.dailyLevels.resistance, label: width < 560 ? "压" : "压力", color: "#ef6b6b", background: "#342125", dash: [6, 4], low, high, left },
-        { value: this.dailyLevels.support, label: width < 560 ? "撑" : "支撑", color: "#48c5a0", background: "#18332d", dash: [6, 4], low, high, left },
+        { value: this.dailyLevels.resistance, label: width < 560 ? "高" : "前高", color: "#ef6b6b", background: "#342125", dash: [6, 4], low, high, left },
+        { value: this.dailyLevels.support, label: width < 560 ? "低" : "前低", color: "#48c5a0", background: "#18332d", dash: [6, 4], low, high, left },
         { value: this.dailyLevels.close, label: width < 560 ? "收" : "收盘", color: "#58b9d7", background: "#1b3038", dash: [2, 3], low, high, left },
+        ...planLevels,
       ], width, right, top, plotBottom, y)
-      ;[this.quote.limit_up, this.quote.limit_down].forEach((value, index) => {
+      const currentDayLimits = String(this.quote.quote_time || "").slice(0, 10) === this.visibleLastBar.date ? [this.quote.limit_up, this.quote.limit_down] : []
+      currentDayLimits.forEach((value, index) => {
         const price = Number(value)
         if (!Number.isFinite(price) || price < low || price > high) return
         context.setLineDash([4, 4])
@@ -3715,7 +3977,27 @@ createApp({
         context.stroke()
         context.setLineDash([])
       })
-      this.drawDailyAnnotations(context, bars, left, top, plotBottom, xStep, y)
+      if (this.showChartStructure && this.chartStructure) {
+        this.chartStructure.anchors.forEach(anchor => {
+          const index = bars.findIndex(bar => bar.date === anchor.date)
+          if (index < 0 || anchor.price < low || anchor.price > high) return
+          const x = left + (index + .5) * xStep
+          const pointY = y(anchor.price)
+          context.strokeStyle = "#f0b768"
+          context.fillStyle = "#171d21"
+          context.lineWidth = 2
+          context.beginPath()
+          context.arc(x, pointY, 4, 0, Math.PI * 2)
+          context.fill()
+          context.stroke()
+          context.fillStyle = "#f0b768"
+          context.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+          context.textAlign = "center"
+          const labelY = pointY < (top + plotBottom) / 2 ? Math.max(top + 12, pointY - 10) : Math.min(plotBottom - 4, pointY + 18)
+          const halfWidth = context.measureText(anchor.label).width / 2
+          context.fillText(anchor.label, Math.max(left + halfWidth, Math.min(width - right - halfWidth, x)), labelY)
+        })
+      }
       context.strokeStyle = "#2b363c"
       context.beginPath()
       context.moveTo(left, plotBottom)
@@ -3734,6 +4016,9 @@ createApp({
     },
   },
   mounted() {
+    if (this.workspaceMode === "market") this.load(this.requestedSymbol)
+    this.loadPlanMonitors()
+    if (this.workspaceMode === "monitor" && this.monitorView === "experiment") this.loadPlanExperiment()
     this.loadIndices()
     this.loadSentiment()
     this.loadBoards()
@@ -3743,6 +4028,9 @@ createApp({
     this.loadAIConfig()
     this.timer = window.setInterval(() => {
       if (this.workspaceMode === "market") this.load(this.requestedSymbol)
+      if (this.workspaceMode === "monitor" || (this.workspaceMode === "market" && this.chartMode === "daily")) this.loadPlanMonitors()
+      if (this.workspaceMode === "monitor" && this.monitorView === "experiment") this.loadPlanExperiment()
+      if (this.planMonitors.some(item => item.enabled)) this.loadAssistantAlerts()
       this.loadIndices()
       this.loadSentiment()
       this.loadBoards()
@@ -3761,6 +4049,8 @@ createApp({
   },
   beforeUnmount() {
     window.clearInterval(this.timer)
+    window.clearTimeout(this.chartAnalysisTimer)
+    if (this.chartAnalysisController) this.chartAnalysisController.abort()
     if (this.assistantJobTimer != null) window.clearTimeout(this.assistantJobTimer)
     if (this.crosshairFrame != null) window.cancelAnimationFrame(this.crosshairFrame)
     this.setAssistantBodyLock(false)

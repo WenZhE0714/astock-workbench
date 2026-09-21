@@ -232,6 +232,16 @@ type Server struct {
 	shadowProfiles            map[string]shadowExecutionProfile
 	aiChatService             AIChatService
 	aiConfigService           AIConfigService
+	tradePlans                tradePlanArchive
+	planMonitors              planMonitorArchive
+	planMonitorMu             sync.Mutex
+	planMonitorCycleMu        sync.Mutex
+	planMonitorRuntime        planMonitorRuntime
+	planMonitorWake           chan struct{}
+	planExperiment            planExperimentArchive
+	planExperimentMu          sync.Mutex
+	planExperimentCycleMu     sync.Mutex
+	planExperimentRuntime     planExperimentRuntime
 	assistantContextMu        sync.Mutex
 	assistantContexts         map[string]assistantContextCacheEntry
 	assistantJobsMu           sync.Mutex
@@ -405,6 +415,9 @@ type stockResponse struct {
 	Bars          []chartBar              `json:"bars,omitempty"`
 	Minutes       []minutePointResponse   `json:"minutes,omitempty"`
 	Technical     *domain.TechnicalSignal `json:"technical,omitempty"`
+	ChartAnalysis *domain.ChartAnalysis   `json:"chart_analysis,omitempty"`
+	ChartError    string                  `json:"chart_error,omitempty"`
+	PlansEnabled  bool                    `json:"plans_enabled"`
 	FetchedAt     string                  `json:"fetched_at"`
 	QuoteError    string                  `json:"quote_error,omitempty"`
 	HistoryError  string                  `json:"history_error,omitempty"`
@@ -858,6 +871,7 @@ func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistory
 		assistantContexts:  make(map[string]assistantContextCacheEntry),
 		assistantJobs:      make(map[string]*assistantChatJob),
 		automationTasks:    make(map[string]storage.AutomationTaskState),
+		planMonitorWake:    make(chan struct{}, 1),
 		now:                time.Now,
 	}
 	for _, option := range options {
@@ -1029,6 +1043,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/global/markets", s.handleGlobalMarkets)
 	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
 	mux.HandleFunc("/api/stock", s.handleStock)
+	mux.HandleFunc("/api/chart-analysis", s.handleChartAnalysis)
+	mux.HandleFunc("/api/trade-plans", s.handleTradePlans)
+	mux.HandleFunc("/api/trade-plan-monitors", s.handlePlanMonitors)
+	mux.HandleFunc("/api/plan-experiment", s.handlePlanExperiment)
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
 	mux.HandleFunc("/api/strategy/candidates", s.handleStrategyCandidates)
@@ -1075,6 +1093,7 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 		s.automationMu.Unlock()
 	}()
 	go s.runAutomationLoop(automationCtx)
+	go s.runPlanMonitorLoop(automationCtx)
 	serveError := make(chan error, 1)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -2413,7 +2432,7 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 		historyChannel <- struct {
 			bars []domain.DailyBar
 			err  error
-		}{bars: limitBars(bars, request.URL.Query().Get("limit")), err: fetchError}
+		}{bars: bars, err: fetchError}
 	}()
 	go func() {
 		points, fetchError := s.fetchMinutePoints(ctx, symbol)
@@ -2439,6 +2458,7 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 		}
 	}
 	response := stockResponse{Symbol: symbol, Kind: market.AssetKindOf(symbol), FetchedAt: time.Now().Format(time.RFC3339)}
+	response.PlansEnabled = s.tradePlans != nil && supportsStockPlan(symbol)
 	if quoteResult.err != nil {
 		response.QuoteError = quoteResult.err.Error()
 	} else {
@@ -2449,9 +2469,14 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 	if historyResult.err != nil {
 		response.HistoryError = historyResult.err.Error()
 	} else {
-		response.Bars = newChartBars(historyResult.bars)
+		response.Bars = newChartBars(limitBars(historyResult.bars, request.URL.Query().Get("limit")))
 		if technical, technicalErr := strategy.AnalyzeTechnical(symbol, historyResult.bars); technicalErr == nil {
 			response.Technical = &technical
+		}
+		if analysis, analysisErr := strategy.AnalyzeChart(symbol, historyResult.bars, s.now(), ""); analysisErr == nil {
+			response.ChartAnalysis = &analysis
+		} else {
+			response.ChartError = analysisErr.Error()
 		}
 	}
 	if minuteResult.err != nil {

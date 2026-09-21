@@ -839,6 +839,9 @@ func technicalSignalLines(signal *domain.TechnicalSignal, flow *domain.FundFlow,
 		lines = append(lines, labeledTechnicalLines("仓位策略", signal.PositionPlan, width, color)...)
 	}
 	lines = append(lines, labeledTechnicalLines("关键位置", "支撑 "+signal.Support+"  ·  压力 "+signal.Resistance, width, color)...)
+	if signal.Chart != nil {
+		lines = append(lines, chartAnalysisLines(*signal.Chart, width, color)...)
+	}
 	if context := technicalContext(flow, boards, dragonTiger); context != "" {
 		lines = append(lines, labeledTechnicalLines("短线侧证", context+"（不参与基础信号）", width, color)...)
 	}

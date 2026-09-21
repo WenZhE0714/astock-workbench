@@ -204,6 +204,8 @@ type TechnicalSignal struct {
 	PositionPlan string   `json:"position_plan"`
 	Evidence     []string `json:"evidence"`
 	Error        string   `json:"error,omitempty"`
+
+	Chart *ChartAnalysis `json:"chart_analysis,omitempty"`
 }
 
 // FundFlow is an Eastmoney main-fund-flow snapshot. MainNet is denominated in

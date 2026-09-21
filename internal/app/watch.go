@@ -1248,6 +1248,9 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			var signal domain.TechnicalSignal
 			if fetchError == nil {
 				signal, fetchError = strategy.AnalyzeTechnical(symbol, bars)
+				if chart, chartErr := strategy.AnalyzeChart(symbol, bars, time.Now(), ""); chartErr == nil {
+					signal.Chart = &chart
+				}
 			}
 			select {
 			case technicalResults <- technicalResult{symbol: symbol, signal: signal, err: fetchError}:

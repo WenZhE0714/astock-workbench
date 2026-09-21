@@ -1,0 +1,60 @@
+.plan-experiment { min-width:0; letter-spacing:0; }
+.experiment-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; padding:10px 0; }
+.experiment-toolbar>.icon-button { margin-left:auto; }
+.experiment-status { flex:1 1 220px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.experiment-policy { display:flex; flex-wrap:wrap; gap:5px 18px; padding:8px 0 14px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
+.experiment-summary-wrap,.experiment-table-wrap { max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; }
+.experiment-summary,.experiment-detail-table { width:100%; border-collapse:collapse; font-size:12px; text-align:left; }
+.experiment-summary { min-width:950px; }
+.experiment-summary th,.experiment-summary td,.experiment-detail-table th,.experiment-detail-table td { padding:12px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; vertical-align:top; }
+.experiment-summary th,.experiment-detail-table th { color:var(--muted); font-size:11px; font-weight:500; }
+.experiment-summary tbody th { color:var(--text); font-size:12px; white-space:nowrap; }
+.experiment-summary td { white-space:nowrap; text-align:right; }
+.experiment-summary thead th:not(:first-child) { text-align:right; }
+.experiment-summary td strong { font-size:14px; }
+.experiment-mobile-balances { display:none; }
+.experiment-comparison { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:12px; padding:16px 0; }
+.experiment-comparison>div { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 14px; }
+.experiment-comparison span { color:var(--muted); font-size:11px; }
+.experiment-comparison strong { font-size:19px; font-variant-numeric:tabular-nums; }
+.experiment-comparison b { font-size:12px; font-weight:500; font-variant-numeric:tabular-nums; }
+.experiment-chart { margin:0; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.experiment-chart figcaption { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; min-height:28px; font-size:11px; }
+.experiment-chart figcaption strong { margin-right:auto; font-size:13px; }
+.experiment-chart figcaption .range { color:var(--accent); }
+.experiment-chart figcaption .confirmed { color:var(--warn); }
+.experiment-chart canvas { display:block; width:100%; height:220px; touch-action:pan-y; }
+.experiment-chart-readout { min-height:32px; padding-top:5px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.experiment-section-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-top:18px; }
+.experiment-section-head h2 { margin:0; font-size:14px; }
+.experiment-section-head>span { font-size:11px; color:var(--muted); }
+.experiment-plan-list { margin-top:8px; }
+.experiment-plan-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px 18px; padding:10px 0; border-bottom:1px solid var(--line); }
+.experiment-plan-row>span { font-size:11px; color:var(--muted); }
+.experiment-plan-row>small { flex-basis:100%; font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.experiment-detail-controls { display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; margin:18px 0 10px; }
+.experiment-detail-table { min-width:840px; }
+.experiment-detail-table small { display:block; margin-top:4px; color:var(--muted); font-size:10px; }
+.experiment-detail-table td:last-child { min-width:190px; max-width:330px; overflow-wrap:anywhere; }
+.experiment-detail-table strong { font-size:13px; white-space:nowrap; }
+.experiment-rejected { color:var(--warn); }
+.plan-experiment :is(button,input,a):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media (max-width:600px) {
+  .experiment-summary-wrap { display:none; }
+  .experiment-mobile-balances { display:block; }
+  .experiment-mobile-balances>div { padding:12px 0; border-bottom:1px solid var(--line); }
+  .experiment-mobile-profit { display:flex; align-items:baseline; flex-wrap:wrap; gap:5px 10px; }
+  .experiment-mobile-profit>span { flex-basis:100%; color:var(--muted); font-size:12px; }
+  .experiment-mobile-profit>strong { font-size:19px; font-variant-numeric:tabular-nums; }
+  .experiment-mobile-profit>small { font-size:12px; }
+  .experiment-mobile-balances dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 14px; margin:10px 0 0; }
+  .experiment-mobile-balances dt { color:var(--muted); font-size:10px; }
+  .experiment-mobile-balances dd { margin:3px 0 0; font-size:12px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .experiment-toolbar { gap:6px 12px; }
+  .experiment-status { order:3; flex-basis:100%; }
+  .experiment-comparison strong { font-size:17px; }
+  .experiment-chart canvas { height:190px; }
+  .experiment-detail-controls .dashboard-segment { max-width:100%; }
+  .experiment-plan-row .plan-monitor-switch { white-space:normal; }
+  .experiment-plan-row input { flex-shrink:0; }
+}

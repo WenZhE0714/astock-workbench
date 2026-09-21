@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.8bcc5f8c.js"></script>
-  <link rel="stylesheet" href="/assets/index.5698c02f.css">
+  <script type="module" crossorigin src="/assets/index.e86b199b.js"></script>
+  <link rel="stylesheet" href="/assets/index.5716b767.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -59,6 +59,7 @@
           <nav class="workspace-nav" aria-label="工作台视图">
             <strong>ASTOCK</strong><select aria-label="切换工作区" :value="workspaceMode" @change="switchWorkspace($event.target.value)"><option v-for="item in workspaceNavigation" :key="item.id" :value="item.id" v-text="item.label"></option></select>
             <button type="button" class="icon-button" title="我的自选" aria-label="我的自选" @click="watchlistOpen = true"><star :size="18"></star></button>
+            <button type="button" class="icon-button mobile-assistant-action" title="打开 AI 研究助手" :aria-label="'打开 AI 研究助手' + (assistantUnread ? '，未读 ' + assistantUnread : '')" @click="assistantToggle"><message-circle :size="18"></message-circle><b class="assistant-unread" v-if="assistantUnread" aria-hidden="true" v-text="assistantUnread > 99 ? '99+' : assistantUnread"></b></button>
           </nav>
           <section class="boards-view" v-if="workspaceMode === 'boards'">
             <header class="boards-head"><div class="title-row"><button type="button" class="mobile-drawer-button" title="打开自选" aria-label="打开自选" @click="watchlistOpen = true">☰</button><div><div class="eyebrow">MARKET / SECTOR ROTATION</div><h1>板块行情</h1><p class="sentiment-note">实时行业横截面、资金方向与盘中轮动采样。</p></div></div><div class="sentiment-status"><span>板块样本</span><strong v-text="boardsLoading ? '刷新中…' : boardItems.length + ' 个'"></strong></div></header>
@@ -197,7 +198,9 @@
             <details class="dashboard-data-status" v-if="dashboardWarnings.length"><summary v-text="'数据状态 · ' + dashboardWarnings.length + ' 项提示'"></summary><p v-for="warning in dashboardWarnings" :key="warning" v-text="warning"></p></details>
           </section>
           <section class="monitor-view" v-if="workspaceMode === 'monitor'">
-            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1><span class="dashboard-phase">策略信号</span></div><div class="dashboard-head-status"><span v-text="realtimeStateLabel(realtimeMarketState)"></span><button type="button" class="dashboard-icon" title="刷新信号快照" aria-label="刷新信号快照" :disabled="realtimeSnapshotLoading" @click="loadRealtimeSnapshot"><refresh-cw :size="16"></refresh-cw></button></div></header>
+            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1></div><div class="dashboard-head-status"><span v-text="monitorView !== 'signals' ? planMonitorRuntimeLabel : realtimeStateLabel(realtimeMarketState)"></span><button type="button" class="dashboard-icon" title="刷新监控状态" aria-label="刷新监控状态" :disabled="planMonitorLoading || realtimeSnapshotLoading || planExperimentLoading" @click="refreshMonitorWorkspace"><refresh-cw :size="16"></refresh-cw></button></div></header>
+            <div class="monitor-view-tabs dashboard-segment" role="tablist" aria-label="监控类型"><button type="button" role="tab" :aria-selected="monitorView === 'signals'" :aria-pressed="monitorView === 'signals'" @click="monitorView = 'signals'">策略信号</button><button type="button" role="tab" :aria-selected="monitorView === 'plans'" :aria-pressed="monitorView === 'plans'" @click="monitorView = 'plans'; loadPlanMonitors()">计划监控 <b v-text="planMonitors.filter(item => item.enabled).length"></b></button><button type="button" role="tab" :aria-selected="monitorView === 'experiment'" :aria-pressed="monitorView === 'experiment'" @click="monitorView = 'experiment'; loadPlanExperiment()">影子实验</button></div>
+            <template v-if="monitorView === 'signals'">
             <div class="monitor-toolbar"><div class="dashboard-segment" aria-label="信号状态"><button type="button" v-for="item in monitorStates" :key="item.key" :aria-pressed="monitorFilter === item.key" @click="monitorFilter = item.key"><span v-text="item.label"></span><b v-text="item.count"></b></button></div><input aria-label="筛选监控股票" v-model.trim="monitorQuery" placeholder="股票名称、代码或行业"></div>
             <div class="monitor-snapshot"><span v-text="'快照 ' + formatDateTime(realtimeResult?.generated_at)"></span><span v-text="realtimeSnapshotScopeLabel"></span><span v-if="realtimeFrozen">交易时段外 · 保留最近信号</span><span v-text="monitorSignals.length + ' 条结果'"></span></div>
             <div class="monitor-table-wrap">
@@ -215,6 +218,20 @@
             </div>
             <div class="dashboard-empty" v-if="!monitorSignals.length" v-text="realtimeSnapshotLoading ? '正在读取信号快照' : '当前条件下暂无信号'"></div>
             <div class="dashboard-data-status" v-if="realtimeError" v-text="realtimeError"></div>
+            </template>
+            <section class="plan-monitor-center" v-else-if="monitorView === 'plans'" aria-label="计划监控列表">
+              <div class="plan-monitor-center-toolbar"><label class="chart-layer-toggle"><input type="checkbox" v-model="planMonitorActiveOnly"><span>仅运行中</span></label><input v-model.trim="monitorQuery" aria-label="筛选计划监控" placeholder="股票代码或计划名称"><button type="button" class="icon-button" title="立即检查计划" aria-label="立即检查计划" :disabled="!planMonitorRuntime.running || planMonitorRuntime.checking" @click="checkPlanMonitors"><refresh-cw :size="15"></refresh-cw></button><small v-text="'最近检查 ' + formatMonitorTime(planMonitorRuntime.last_cycle_at)"></small></div>
+              <p class="chart-plan-error" v-if="planMonitorRuntime.last_error" role="alert" v-text="planMonitorRuntime.last_error"></p>
+              <p class="chart-plan-error" v-if="planMonitorError" role="alert" v-text="planMonitorError"></p>
+              <p class="chart-plan-notice" v-if="planMonitorNotice" role="status" v-text="planMonitorNotice"></p>
+              <div class="plan-monitor-record" v-for="item in filteredPlanMonitors" :key="item.plan_id">
+                <div class="plan-monitor-record-head"><button type="button" class="plan-monitor-stock" @click="openMonitoredStock(item)"><strong v-text="displayCode(item.symbol)"></strong><span v-text="item.name"></span><arrow-up-right :size="14"></arrow-up-right></button><span class="plan-monitor-phase" :class="item.phase" v-text="planMonitorPhase(item)"></span><label class="plan-monitor-switch"><input type="checkbox" :checked="item.enabled" :disabled="planMonitorBusy[item.plan_id] || !monitorCanToggle(item, item.expires_on, monitorToday)" :aria-label="'监控 ' + item.symbol + ' ' + item.plan_id.slice(0, 8)" @change="setPlanMonitoring(item, $event)"><span>后台监控</span></label></div>
+                <div class="plan-monitor-record-levels"><span v-text="'入场 ' + number(item.rule.levels.entry_low) + ' - ' + number(item.rule.levels.entry_high)"></span><span v-text="'失效 ' + number(item.rule.levels.invalidation)"></span><span v-text="'有效至 ' + item.expires_on"></span><span v-text="'分析日 ' + item.analysis_date"></span></div>
+                <details class="plan-monitor-center-details"><summary><span :class="item.data_status" v-text="planMonitorHealth(item)"></span><span v-text="item.sequence + ' 条事件'"></span></summary><plan-monitor-details :monitor="item" :format-time="formatMonitorTime"></plan-monitor-details></details>
+              </div>
+              <div class="chart-analysis-empty" v-if="!filteredPlanMonitors.length" v-text="planMonitorLoading ? '读取中' : '暂无符合条件的计划监控'"></div>
+            </section>
+            <plan-experiment-view v-else :state="planExperiment" :runtime="planExperimentRuntime" :config="planExperimentConfig" :monitors="planMonitors" :busy="planExperimentBusy" :error="planExperimentError" @configure="configurePlanExperiment" @open-stock="openMonitoredStock"></plan-experiment-view>
           </section>
           <section class="global-view" v-if="workspaceMode === 'global'">
             <header class="global-view-head">
@@ -366,16 +383,70 @@
                 </div>
                 <span class="panel-title" v-text="chartMode === 'intraday' ? '分时 · 当日' : '日 K · 未复权'"></span>
                 <div class="legend" v-if="chartMode === 'intraday'"><span class="price-line" v-text="intradayWhiteLabel()"></span><span class="average-line" v-text="intradayYellowLabel()"></span><span class="previous-line">昨收</span><span class="volume-line">成交量</span></div>
-                <div class="legend" v-else><span class="kline">K线</span><span class="ma5">MA5</span><span class="ma20">MA20</span><span class="ma60">MA60</span><span class="pressure-line">压力</span><span class="support-line">支撑</span></div>
+                <div class="legend" v-else><span class="kline">K线</span><span class="ma5">MA5</span><span class="ma20">MA20</span><span class="ma60">MA60</span><span class="pressure-line">前高</span><span class="support-line">前低</span></div>
               </div>
               <div class="chart-wrap"><canvas ref="chart" :class="{pannable: chartMode === 'daily', dragging: dailyDragging}" :title="chartMode === 'daily' ? '滚轮或双指缩放，拖动查看历史，双击恢复6个月' : '移动光标查看分时明细'" :aria-label="chartMode === 'intraday' ? '分时图' : '日K线图'" @pointerdown="handleChartPointerDown" @pointermove="handleChartPointerMove" @pointerup="handleChartPointerUp" @pointercancel="handleChartPointerUp" @pointerleave="handleChartPointerLeave" @wheel="handleChartWheel" @dblclick="chartMode === 'daily' && resetDailyViewport()"></canvas></div>
+              <section class="chart-analysis-band" v-if="chartMode === 'daily'" aria-label="图表结构分析" :aria-busy="chartAnalysisLoading">
+                <div class="chart-analysis-head">
+                  <h2>结构观察</h2>
+                  <span v-if="chartAnalysis" class="chart-analysis-date" v-text="chartAnalysis.data_date + (chartAnalysis.complete ? ' · 已收盘' : ' · 未收盘')"></span>
+                  <button type="button" class="icon-button" title="刷新结构分析" aria-label="刷新结构分析" :disabled="chartAnalysisLoading || !bars.length" @click="scheduleChartAnalysis(true)"><refresh-cw :size="14"></refresh-cw></button>
+                </div>
+                <div class="chart-analysis-empty" v-if="!chartAnalysis" role="status" v-text="chartAnalysisLoading ? '正在读取所选日期的结构' : (chartAnalysisError || data.chart_error || '暂无结构数据')"></div>
+                <template v-else>
+                  <p class="chart-history-warning" v-if="chartDataWarning" role="status" v-text="chartDataWarning"></p>
+                  <div class="chart-structure-controls">
+                    <label class="chart-structure-select"><span>形态</span><select v-model="chartStructureID" @change="tradePlanNotice = ''; scheduleChartDraw()" aria-label="观察形态"><option v-for="item in chartAnalysis.structures" :key="item.id" :value="item.id" v-text="item.name"></option></select></label>
+                    <span class="chart-structure-state" :class="chartStructure.state" v-text="chartStructureState(chartStructure.state)"></span>
+                    <label class="chart-layer-toggle"><input type="checkbox" v-model="showChartStructure" @change="scheduleChartDraw()"><span>结构标注</span></label>
+                    <label class="chart-layer-toggle"><input type="checkbox" v-model="showChartPlan" @change="scheduleChartDraw()" :disabled="!chartPlan"><span>计划价位</span></label>
+                  </div>
+                  <div class="chart-structure-evidence" v-if="chartStructure"><p v-for="evidence in chartStructure.evidence" :key="evidence" v-text="evidence"></p><div class="chart-anchor-dates"><span v-for="anchor in chartStructure.anchors" :key="anchor.date + anchor.label" v-text="anchor.label + ' ' + anchor.date + ' · ' + number(anchor.price)"></span></div></div>
+                  <div class="chart-weekly-context"><span>完整周线</span><strong :class="chartAnalysis.weekly.state" v-text="chartWeeklyState(chartAnalysis.weekly.state)"></strong><span v-if="chartAnalysis.weekly.data_date" v-text="'截至 ' + chartAnalysis.weekly.data_date"></span><span v-if="chartAnalysis.weekly.ma5 != null" v-text="'MA5 / MA10 ' + number(chartAnalysis.weekly.ma5) + ' / ' + number(chartAnalysis.weekly.ma10)"></span></div>
+                  <template v-if="chartPlan">
+                    <div class="chart-plan-values">
+                      <div><span>入场观察区间</span><strong v-text="number(chartPlan.entry_low) + ' - ' + number(chartPlan.entry_high)"></strong></div>
+                      <div><span>结构失效位</span><strong v-text="number(chartPlan.invalidation)"></strong></div>
+                      <div><span>1R / 2R 目标测算</span><strong v-text="number(chartPlan.target_1) + ' / ' + number(chartPlan.target_2)"></strong></div>
+                      <div><span>每股参考风险</span><strong v-text="number(chartPlan.risk_per_share) + ' 元'"></strong></div>
+                    </div>
+                    <p class="chart-plan-condition" v-text="chartPlan.confirmation"></p>
+                    <div class="chart-plan-save" v-if="data.plans_enabled">
+                      <label><span>有效至</span><input type="date" v-model="tradePlanExpiresOn" :min="tradePlansToday" aria-label="计划有效期"></label>
+                      <button type="button" :disabled="!canSaveChartPlan" @click="saveChartPlan"><bookmark-plus :size="16"></bookmark-plus><span v-text="tradePlanSaving ? '保存中' : '保存观察计划'"></span></button>
+                      <span class="chart-plan-state">仅研究 · 不下单</span>
+                    </div>
+                    <p class="chart-plan-risk" v-text="chartPlan.risk_basis"></p>
+                  </template>
+                  <p class="chart-plan-risk" v-for="warning in chartAnalysis.warnings" :key="warning" v-text="warning"></p>
+                </template>
+                <p class="chart-plan-error" v-if="chartAnalysis && chartAnalysisError" role="alert" v-text="chartAnalysisError"></p>
+                <p class="chart-plan-error" v-if="tradePlansError" role="alert" v-text="tradePlansError"></p>
+                <p class="chart-plan-notice" v-if="tradePlanNotice" role="status" v-text="tradePlanNotice"></p>
+                <details class="chart-saved-plans" v-if="data.plans_enabled" :open="tradePlansOpen" @toggle="tradePlansOpen = $event.target.open">
+                  <summary><strong>已保存计划</strong><span v-text="tradePlansLoading ? '读取中' : tradePlans.length + ' 条'"></span></summary>
+                  <p class="chart-analysis-empty" v-if="!tradePlans.length && !tradePlansLoading">暂无已保存计划</p>
+                  <details class="chart-saved-plan" v-for="plan in tradePlans" :key="plan.id">
+                    <summary><span><strong v-text="plan.structure.name"></strong><small v-text="'分析日 ' + plan.analysis.data_date"></small></span><span><b v-text="savedPlanDisplayState(plan)"></b><small v-text="formatDateTime(plan.created_at)"></small></span></summary>
+                    <div class="chart-saved-plan-body">
+                      <div class="plan-monitor-controls" v-if="planMonitorRuntime.supported"><label class="plan-monitor-switch"><input type="checkbox" :checked="!!monitorForPlan(plan.id)?.enabled" :disabled="planMonitorBusy[plan.id] || !monitorCanToggle(monitorForPlan(plan.id), plan.expires_on, monitorToday)" :aria-label="'监控计划 ' + plan.id.slice(0, 8)" @change="setPlanMonitoring(plan, $event)"><span>后台监控</span></label><span v-text="planMonitorRuntimeLabel"></span><button type="button" class="icon-button" title="打开计划监控中心" aria-label="打开计划监控中心" @click="openPlanMonitors"><arrow-up-right :size="15"></arrow-up-right></button></div>
+                      <p class="chart-plan-error" v-if="planMonitorError" role="alert" v-text="planMonitorError"></p>
+                      <dl><div><dt>入场区间</dt><dd v-text="number(plan.structure.plan.entry_low) + ' - ' + number(plan.structure.plan.entry_high)"></dd></div><div><dt>失效位</dt><dd v-text="number(plan.structure.plan.invalidation)"></dd></div><div><dt>1R / 2R 目标测算</dt><dd v-text="number(plan.structure.plan.target_1) + ' / ' + number(plan.structure.plan.target_2)"></dd></div><div><dt>有效至</dt><dd v-text="plan.expires_on"></dd></div></dl>
+                      <p v-text="plan.structure.plan.confirmation"></p>
+                      <p v-for="evidence in plan.structure.evidence" :key="evidence" v-text="evidence"></p>
+                      <small v-text="(plan.analysis.source || '--') + ' · 未复权 · ' + (plan.analysis.complete ? '已收盘快照' : '未收盘快照') + ' · ' + plan.analysis.version + ' · ' + plan.id.slice(0, 10)"></small>
+                      <plan-monitor-details v-if="monitorForPlan(plan.id)" :monitor="monitorForPlan(plan.id)" :format-time="formatMonitorTime"></plan-monitor-details>
+                    </div>
+                  </details>
+                </details>
+              </section>
             </section>
             <aside class="side-panel">
               <div class="panel-head"><span class="panel-title">行情摘要</span><span class="symbol" v-text="chartMode === 'intraday' ? minutes.length + ' 分钟' : bars.length + ' 根'"></span></div>
               <div class="side-section"><h2>涨跌停边界</h2><div class="rows"><div class="row"><span>涨停价</span><b class="up" v-text="quote.limit_up || '--'"></b></div><div class="row"><span>跌停价</span><b class="down" v-text="quote.limit_down || '--'"></b></div></div></div>
               <div class="side-section" v-if="chartMode === 'intraday'"><h2>最新分时</h2><div class="rows"><div class="row"><span>行情源</span><b v-text="quote.source || '--'"></b></div><div class="row"><span>交易日</span><b v-text="lastMinute.trade_date || '--'"></b></div><div class="row"><span>时间</span><b v-text="lastMinute.time || '--'"></b></div><div class="row"><span v-text="intradayWhiteLabel()"></span><b v-text="number(lastMinute.price)"></b></div><div class="row"><span v-text="intradayYellowLabel()"></span><b v-text="number(isMarketIndex(data.symbol) ? lastMinute.leading : lastMinute.average)"></b></div><div class="row"><span>分钟成交量</span><b v-text="compact(lastMinute.volume)"></b></div><div class="row"><span>分时源</span><b v-text="lastMinute.source || '--'"></b></div></div></div>
-              <div class="side-section" v-if="chartMode === 'daily'"><h2>9 类关键价位</h2><div class="rows"><div class="row" v-for="item in (dailyLevels.keyLevels || [])" :key="item.label"><span v-text="item.label"></span><b v-text="item.value"></b></div><div class="row"><span>最新收盘</span><b v-text="number(dailyLevels.close)"></b></div></div></div>
-              <div class="side-section" v-if="chartMode === 'daily' && data.technical"><h2>技术指标</h2><div class="rows"><div class="row"><span>EMA5 / EMA20 / EMA60</span><b v-text="number(data.technical.ema5) + ' / ' + number(data.technical.ema20) + ' / ' + number(data.technical.ema60)"></b></div><div class="row"><span>BOLL 上 / 中 / 下</span><b v-text="number(data.technical.boll_upper) + ' / ' + number(data.technical.boll_middle) + ' / ' + number(data.technical.boll_lower)"></b></div><div class="row"><span>KDJ K / D / J</span><b v-text="number(data.technical.kdj_k, 1) + ' / ' + number(data.technical.kdj_d, 1) + ' / ' + number(data.technical.kdj_j, 1)"></b></div><div class="row"><span>ATR14</span><b v-text="number(data.technical.atr14)"></b></div></div></div>
+              <div class="side-section chart-key-levels" v-if="chartMode === 'daily'"><h2>关键价位 <small v-text="chartAnalysis ? chartAnalysis.data_date : ''"></small></h2><div class="rows"><div class="row" v-for="item in dailyLevels.keyLevels" :key="item.key" :title="item.basis"><span v-text="item.label"></span><b v-text="item.value"></b></div><div class="row" v-if="chartAnalysis"><span v-text="chartAnalysis.complete ? '观察日收盘' : '未收盘价'"></span><b v-text="number(dailyLevels.close)"></b></div></div><p class="chart-analysis-empty" v-if="!chartAnalysis" v-text="chartAnalysisLoading ? '读取中' : '暂不可用'"></p></div>
+              <div class="side-section" v-if="chartMode === 'daily' && data.technical && data.technical.data_date === visibleLastBar.date"><h2>技术指标</h2><div class="rows"><div class="row"><span>EMA5 / EMA20 / EMA60</span><b v-text="number(data.technical.ema5) + ' / ' + number(data.technical.ema20) + ' / ' + number(data.technical.ema60)"></b></div><div class="row"><span>BOLL 上 / 中 / 下</span><b v-text="number(data.technical.boll_upper) + ' / ' + number(data.technical.boll_middle) + ' / ' + number(data.technical.boll_lower)"></b></div><div class="row"><span>KDJ K / D / J</span><b v-text="number(data.technical.kdj_k, 1) + ' / ' + number(data.technical.kdj_d, 1) + ' / ' + number(data.technical.kdj_j, 1)"></b></div><div class="row"><span>ATR14</span><b v-text="number(data.technical.atr14)"></b></div></div></div>
               <div class="side-section" v-if="chartMode === 'daily'"><h2>可视日 K</h2><div class="rows"><div class="row"><span>日期</span><b v-text="visibleLastBar.date || '--'"></b></div><div class="row"><span>收盘</span><b v-text="number(visibleLastBar.close)"></b></div><div class="row"><span>成交量</span><b v-text="compact(visibleLastBar.volume)"></b></div><div class="row"><span>数据源</span><b v-text="visibleLastBar.source || '--'"></b></div></div></div>
               <div class="side-section"><h2>说明</h2><div class="symbol" v-text="chartMode === 'intraday' ? (isMarketIndex(data.symbol) ? '白线为上证指数，黄线为上证领先（全市场平均涨跌幅）。' : '白线为实时成交价，黄线为当日成交均价（VWAP）。') : '价格与均线沿用未复权日 K 口径。图表用于观察，不构成买卖建议。'"></div></div>
             </aside>

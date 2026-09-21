@@ -46,6 +46,7 @@ type Config struct {
 	// eligibility and execution semantics unchanged.
 	UseMonsterRadar                bool    `json:"use_monster_radar,omitempty"`
 	EnableIntradayT                bool    `json:"enable_intraday_t"`
+	DisableIntradayT               bool    `json:"disable_intraday_t,omitempty"`
 	TCorePositionPercent           float64 `json:"t_core_position_percent"`
 	TTranchePercent                float64 `json:"t_tranche_percent"`
 	TMaxDailyRounds                int     `json:"t_max_daily_rounds"`
@@ -101,6 +102,7 @@ type Options struct {
 }
 
 type ShadowOrder struct {
+	PlanID            string   `json:"plan_id,omitempty"`
 	ID                string   `json:"id"`
 	EventID           string   `json:"event_id,omitempty"`
 	EventSource       string   `json:"event_source,omitempty"`
@@ -132,6 +134,7 @@ const (
 )
 
 type ShadowRejection struct {
+	PlanID        string   `json:"plan_id,omitempty"`
 	OrderID       string   `json:"order_id"`
 	EventID       string   `json:"event_id,omitempty"`
 	EventTime     string   `json:"event_time,omitempty"`
@@ -148,6 +151,7 @@ type ShadowRejection struct {
 }
 
 type ShadowTrade struct {
+	PlanID                   string  `json:"plan_id,omitempty"`
 	ID                       string  `json:"id"`
 	EntryOrderID             string  `json:"entry_order_id,omitempty"`
 	ExitOrderID              string  `json:"exit_order_id,omitempty"`
@@ -2614,6 +2618,10 @@ func industryInvestedCost(active map[string]shadowPosition, industry string) flo
 
 func entryBudget(cfg Config, signal realtime.Signal, rawPrice, cash, deployedToday float64, active map[string]shadowPosition, position shadowPosition, exists bool) (float64, float64, string) {
 	targetPercent := targetPositionPercentAtPrice(signal, rawPrice, cfg)
+	return entryBudgetForTarget(cfg, signal, rawPrice, cash, deployedToday, active, position, exists, targetPercent)
+}
+
+func entryBudgetForTarget(cfg Config, signal realtime.Signal, rawPrice, cash, deployedToday float64, active map[string]shadowPosition, position shadowPosition, exists bool, targetPercent float64) (float64, float64, string) {
 	reserve := cfg.InitialCash * cfg.CashReservePercent / 100
 	availableCash := cash - reserve
 	if availableCash <= 0 {
@@ -3197,7 +3205,9 @@ func canonicalConfig(cfg Config) Config {
 	if cfg.RotationMinimumHoldDays <= 0 || cfg.RotationMinimumHoldDays > 60 {
 		cfg.RotationMinimumHoldDays = defaults.RotationMinimumHoldDays
 	}
-	if !cfg.EnableIntradayT {
+	if cfg.DisableIntradayT {
+		cfg.EnableIntradayT = false
+	} else if !cfg.EnableIntradayT {
 		cfg.EnableIntradayT = defaults.EnableIntradayT
 	}
 	if cfg.TCorePositionPercent <= 0 || cfg.TCorePositionPercent >= 100 || !finite(cfg.TCorePositionPercent) {

@@ -295,6 +295,7 @@ func (s *Server) handleAssistantContext(writer http.ResponseWriter, request *htt
 	}
 	latest, latestErr := s.latestRealtimeSnapshot()
 	alerts := sortAssistantAlerts(append(buildAssistantAlerts(latest, symbol), assistantFactLevelAlerts(prepared.Facts)...), 12)
+	alerts = sortAssistantAlerts(append(alerts, s.planMonitorAlerts(symbol)...), 12)
 	response := assistantContextResponse{
 		Symbol: prepared.Symbol, Name: prepared.Name, FactsAt: prepared.Facts.GeneratedAt,
 		FactsHash: prepared.Facts.SnapshotHash, Facts: prepared.Facts,
@@ -329,6 +330,7 @@ func (s *Server) handleAssistantAlerts(writer http.ResponseWriter, request *http
 	}
 	result, err := s.latestRealtimeSnapshot()
 	alerts := buildAssistantAlerts(result, symbol)
+	alerts = append(alerts, s.planMonitorAlerts(symbol)...)
 	alerts = sortAssistantAlerts(append(alerts, s.cachedAssistantFactAlerts(symbol)...), 24)
 	response := assistantAlertsResponse{Symbol: symbol, Alerts: alerts}
 	if !result.GeneratedAt.IsZero() {
