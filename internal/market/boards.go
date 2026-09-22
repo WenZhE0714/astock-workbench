@@ -254,7 +254,7 @@ func ParseBoardFlowPayload(raw string) map[string]domain.BoardFlow {
 			continue
 		}
 		result[code] = domain.BoardFlow{
-			Code: code, Name: item.Name,
+			Code: code, Name: item.Name, Source: "东方财富",
 			Percent: rawNumber(item.Percent), Turnover: rawNumber(item.Turnover),
 			MainNet: rawNumber(item.MainNet), MainRatio: rawNumber(item.MainRatio),
 			RiseCount: item.RiseCount, FallCount: item.FallCount, FlatCount: item.FlatCount,
@@ -549,7 +549,10 @@ func (client EastmoneyClient) FetchBoards(ctx context.Context, symbol string) ([
 	go func() { rankResults <- client.fetchBoardRanks(ctx, memberships) }()
 	fetchedFlows := <-flowResults
 	if fetchedFlows.err != nil {
-		return nil, fetchedFlows.err
+		if transientHTTPReadError(fetchedFlows.err) {
+			return nil, fmt.Errorf("关联板块实时行情暂时断开，已重试可用节点，请稍后再试")
+		}
+		return nil, fmt.Errorf("关联板块实时行情暂不可用，已尝试可用节点")
 	}
 	ranks := <-rankResults
 	flows := fetchedFlows.flows
@@ -559,11 +562,14 @@ func (client EastmoneyClient) FetchBoards(ctx context.Context, symbol string) ([
 		item, ok := flows[membership.Code]
 		if !ok {
 			item = domain.BoardFlow{
-				Code: membership.Code, Name: membership.Name,
+				Code: membership.Code, Name: membership.Name, Source: "东方财富",
 				Percent: math.NaN(), MainNet: math.NaN(), MainRatio: math.NaN(), Turnover: math.NaN(), LeaderPercent: math.NaN(),
 			}
 		}
 		item.Kind = membership.Kind
+		if item.Source == "" {
+			item.Source = "东方财富"
+		}
 		if item.Name == "" {
 			item.Name = membership.Name
 		}

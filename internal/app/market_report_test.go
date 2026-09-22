@@ -130,7 +130,7 @@ func TestSelectMomentumBoardsWorksWhenMainFlowIsUnavailable(t *testing.T) {
 	}
 }
 
-type marketReportScanMock struct{}
+type marketReportScanMock struct{ announcementDate string }
 
 func (marketReportScanMock) FetchIndustryRanking(_ context.Context, _ domain.MarketScanMetric, descending bool, _ int) ([]domain.BoardFlow, error) {
 	if !descending {
@@ -157,9 +157,13 @@ func (marketReportScanMock) FetchStocks(context.Context, []string) ([]domain.Mar
 	return []domain.MarketStockSnapshot{testMarketStock()}, nil
 }
 
-func (marketReportScanMock) FetchAnnouncements(context.Context, []string, int) ([]domain.MarketAnnouncement, error) {
+func (mock marketReportScanMock) FetchAnnouncements(context.Context, []string, int) ([]domain.MarketAnnouncement, error) {
+	date := mock.announcementDate
+	if date == "" {
+		date = "2026-08-11"
+	}
 	return []domain.MarketAnnouncement{{
-		Symbol: "sh600001", Name: "测试股份", Date: "2026-08-11", Title: "测试股份:关于回购股份的公告",
+		Symbol: "sh600001", Name: "测试股份", Date: date, Title: "测试股份:关于回购股份的公告",
 	}}, nil
 }
 
@@ -197,17 +201,22 @@ func (marketReportHistoryMock) FetchDailyBars(_ context.Context, symbol string) 
 }
 
 type countingResearchMock struct {
-	mu    sync.Mutex
-	calls []string
+	mu          sync.Mutex
+	calls       []string
+	publishedAt string
 }
 
 func (mock *countingResearchMock) FetchBrokerResearch(_ context.Context, symbol string, _ time.Time, _ time.Time, _ int) ([]domain.BrokerResearchItem, error) {
 	mock.mu.Lock()
 	mock.calls = append(mock.calls, symbol)
 	mock.mu.Unlock()
+	publishedAt := mock.publishedAt
+	if publishedAt == "" {
+		publishedAt = "2026-08-11"
+	}
 	return []domain.BrokerResearchItem{{
 		Symbol: symbol, Name: "测试股份", Title: "测试研报", Organization: "测试证券",
-		PublishedAt: "2026-08-11", SourceID: "R-" + symbol, Rating: "增持",
+		PublishedAt: publishedAt, SourceID: "R-" + symbol, Rating: "增持",
 	}}, nil
 }
 
@@ -248,9 +257,10 @@ func (marketReportAIMock) Synthesize(_ context.Context, prompt string) (string, 
 }
 
 func TestGenerateMarketReportBuildsScoresRunsAIAndPersists(t *testing.T) {
-	research := &countingResearchMock{}
+	fixtureDate := time.Now().In(shanghaiLocation).AddDate(0, 0, -1).Format(time.DateOnly)
+	research := &countingResearchMock{publishedAt: fixtureDate}
 	app := &App{
-		marketScan: marketReportScanMock{}, quotes: marketReportQuoteMock{}, flows: marketReportFlowMock{},
+		marketScan: marketReportScanMock{announcementDate: fixtureDate}, quotes: marketReportQuoteMock{}, flows: marketReportFlowMock{},
 		amounts: marketReportAmountMock{}, scanHistory: marketReportHistoryMock{}, marketReportAI: marketReportAIMock{},
 		marketReports: storage.NewMarketReportStore(t.TempDir()), research: research,
 	}

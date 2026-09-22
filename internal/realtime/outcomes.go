@@ -185,6 +185,15 @@ func (e *OutcomeEvaluator) Report(limit int, now time.Time) (OutcomeReport, erro
 	return BuildOutcomeReport(items, now, nil), nil
 }
 
+// Outcomes exposes the immutable latest revision per signal/horizon for
+// read-only audit views such as the signal lifecycle timeline.
+func (e *OutcomeEvaluator) Outcomes(limit int) ([]SignalOutcome, error) {
+	if e == nil || e.store == nil {
+		return nil, fmt.Errorf("实时信号结果评估器未初始化")
+	}
+	return e.store.List(limit)
+}
+
 func (e *OutcomeEvaluator) fetchHistories(ctx context.Context, bySymbol map[string][]Signal) (map[string][]domain.DailyBar, []string) {
 	barMap := make(map[string][]domain.DailyBar, len(bySymbol))
 	warnings := make([]string, 0)

@@ -44,15 +44,32 @@ func ConfigurePlanMonitor(plan domain.TradePlan, current domain.PlanMonitor, ena
 	state.Events = append([]domain.PlanMonitorEvent{}, current.Events...)
 	if state.Version == 0 {
 		rule := domain.PlanMonitorRule{Version: "plan-monitor-v1", StructureID: plan.Structure.ID, Levels: *plan.Structure.Plan, VolumeDays: 20, MinimumVolume: 1.2, CooldownSecs: 300}
-		switch rule.StructureID {
-		case "range-breakout", "compression-breakout":
+		if plan.MonitorRule != nil {
+			rule = *plan.MonitorRule
+			rule.Levels = *plan.Structure.Plan
+		}
+		switch monitorRuleKind(rule) {
+		case "breakout":
 			if len(plan.Structure.Anchors) == 0 || plan.Structure.Anchors[0].Price <= 0 {
-				return current, fmt.Errorf("计划缺少冻结的突破锚点")
+				if rule.BreakoutPrice <= 0 {
+					return current, fmt.Errorf("计划缺少冻结的突破锚点")
+				}
 			}
-			rule.BreakoutPrice = plan.Structure.Anchors[0].Price
-			rule.Description = fmt.Sprintf("完整日K收盘高于冻结锚点 %.2f，日成交量至少为此前20日均量的1.20倍", rule.BreakoutPrice)
-		case "ma-pullback":
-			rule.Description = fmt.Sprintf("当期MA20高于MA60；完整日K最低不高于冻结区间上沿 %.2f，收盘不低于冻结区间下沿 %.2f", rule.Levels.EntryHigh, rule.Levels.EntryLow)
+			if rule.BreakoutPrice <= 0 {
+				rule.BreakoutPrice = plan.Structure.Anchors[0].Price
+			}
+			if strings.TrimSpace(rule.Description) == "" {
+				rule.Description = fmt.Sprintf("完整日K收盘高于冻结锚点 %.2f，日成交量至少为此前%d日均量的%.2f倍", rule.BreakoutPrice, rule.VolumeDays, rule.MinimumVolume)
+			}
+		case "pullback":
+			if strings.TrimSpace(rule.Description) == "" {
+				prefix := ""
+				if rule.RequireTrend || rule.StructureID == "ma-pullback" {
+					prefix = "当期MA20高于MA60；"
+					rule.RequireTrend = true
+				}
+				rule.Description = fmt.Sprintf("%s完整日K最低不高于冻结区间上沿 %.2f，收盘不低于冻结区间下沿 %.2f", prefix, rule.Levels.EntryHigh, rule.Levels.EntryLow)
+			}
 		default:
 			return current, fmt.Errorf("暂不支持该计划的机器条件，请保存新版本计划")
 		}
@@ -176,8 +193,11 @@ func AdvancePlanMonitor(current domain.PlanMonitor, observation PlanMonitorObser
 		state.HistoryDate = bars[len(bars)-1].Date
 	}
 	requiredBars := state.Rule.VolumeDays + 1
-	if state.Rule.StructureID == "ma-pullback" {
-		requiredBars = 60
+	if monitorRuleKind(state.Rule) == "pullback" {
+		requiredBars = 1
+		if monitorRuleRequiresTrend(state.Rule) {
+			requiredBars = 60
+		}
 	}
 	if len(bars) < requiredBars || bars[len(bars)-1].Date != expected {
 		monitorHealth(&state, "stale_history", fmt.Sprintf("完整日K需截至 %s 且至少%d根，当前截至 %s；暂停条件判断", expected, requiredBars, state.HistoryDate), now)
@@ -249,8 +269,8 @@ func monitorCompletedBars(symbol string, input []domain.DailyBar, through string
 
 func monitorDailyConfirmation(rule domain.PlanMonitorRule, bars []domain.DailyBar) bool {
 	latest := bars[len(bars)-1]
-	switch rule.StructureID {
-	case "range-breakout", "compression-breakout":
+	switch monitorRuleKind(rule) {
+	case "breakout":
 		if latest.Close <= rule.BreakoutPrice || len(bars) <= rule.VolumeDays {
 			return false
 		}
@@ -259,14 +279,36 @@ func monitorDailyConfirmation(rule domain.PlanMonitorRule, bars []domain.DailyBa
 			volume += bar.Volume
 		}
 		return volume > 0 && latest.Volume/(volume/float64(rule.VolumeDays)) >= rule.MinimumVolume
-	case "ma-pullback":
-		if len(bars) < 60 {
+	case "pullback":
+		if monitorRuleRequiresTrend(rule) && len(bars) < 60 {
 			return false
 		}
-		values := closes(bars)
-		return average(values[len(values)-20:]) > average(values[len(values)-60:]) && latest.Low <= rule.Levels.EntryHigh && latest.Close >= rule.Levels.EntryLow
+		trendOK := true
+		if monitorRuleRequiresTrend(rule) {
+			values := closes(bars)
+			trendOK = average(values[len(values)-20:]) > average(values[len(values)-60:])
+		}
+		return trendOK && latest.Low <= rule.Levels.EntryHigh && latest.Close >= rule.Levels.EntryLow
 	}
 	return false
+}
+
+func monitorRuleKind(rule domain.PlanMonitorRule) string {
+	if kind := strings.ToLower(strings.TrimSpace(rule.Kind)); kind != "" {
+		return kind
+	}
+	switch rule.StructureID {
+	case "range-breakout", "compression-breakout", "assistant-breakout":
+		return "breakout"
+	case "ma-pullback", "assistant-pullback":
+		return "pullback"
+	default:
+		return ""
+	}
+}
+
+func monitorRuleRequiresTrend(rule domain.PlanMonitorRule) bool {
+	return rule.RequireTrend || (strings.TrimSpace(rule.Kind) == "" && rule.StructureID == "ma-pullback")
 }
 
 func monitorQuoteTime(value string) time.Time {

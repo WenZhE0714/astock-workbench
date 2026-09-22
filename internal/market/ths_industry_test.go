@@ -2,9 +2,13 @@ package market
 
 import (
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func TestParseTHSIndustryDetail(t *testing.T) {
@@ -73,5 +77,63 @@ func TestParseTHSIndustryCandidates(t *testing.T) {
 	items = ParseTHSIndustryCandidates(raw, "881116")
 	if len(items) != 1 || items[0].Symbol != "th881116" || items[0].Name != "半导体及元件" {
 		t.Fatalf("unexpected code candidates: %+v", items)
+	}
+}
+
+func TestParseTHSStockIndustryAndMatchDirectory(t *testing.T) {
+	profile := `<div>主营业务：白酒生产</div><span>所属申万行业：</span><a href="/field/">白酒Ⅱ</a><span>| 概念行情</span>`
+	industry := ParseTHSStockIndustry(profile)
+	if industry != "白酒Ⅱ" {
+		t.Fatalf("unexpected stock industry: %q", industry)
+	}
+	directory := `<a href="/thshy/detail/code/881121/">饮料制造</a>
+	<a href="/thshy/detail/code/881125/"><span>白酒</span></a>`
+	matched, ok := matchTHSIndustry(ParseTHSIndustryDirectory(directory), industry)
+	if !ok || matched.Symbol != "th881125" || matched.Name != "白酒" {
+		t.Fatalf("unexpected industry match: %+v, %v", matched, ok)
+	}
+}
+
+func TestParseTHSStockIndustryUsesGenericFallback(t *testing.T) {
+	profile := `<li>所属行业：<strong>银行Ⅲ</strong>；所属地域：上海</li>`
+	if got := ParseTHSStockIndustry(profile); got != "银行Ⅲ" {
+		t.Fatalf("unexpected fallback industry: %q", got)
+	}
+}
+
+func TestTHSStockBoardClientFetchesIndependentIndustryFallback(t *testing.T) {
+	encodeGB18030 := func(body string) string {
+		encoded, err := simplifiedchinese.GB18030.NewEncoder().String(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	originalClient := directHTTPClient
+	t.Cleanup(func() { directHTTPClient = originalClient })
+	directHTTPClient = &http.Client{Transport: httpRetryRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := ""
+		switch request.URL.Path {
+		case "/profile/600519":
+			body = `<span>所属申万行业：</span><a>白酒Ⅱ</a>`
+		case "/directory":
+			body = `<a href="/thshy/detail/code/881125/">白酒</a>`
+		case "/detail/881125":
+			body = `<h3>白酒<span>881125</span></h3><span class="board-xj">1888.88</span><p class="board-zdf">8.88&nbsp;&nbsp;1.25%</p><dl><dt>资金净流入(亿)</dt><dd>2.30</dd></dl>`
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Status: "404 Not Found", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("missing"))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(encodeGB18030(body)))}, nil
+	})}
+	t.Setenv("ASTOCK_THS_STOCK_PROFILE_URL", "https://example.test/profile/{code}")
+	t.Setenv("ASTOCK_THS_INDUSTRY_DIRECTORY_URL", "https://example.test/directory")
+	t.Setenv("ASTOCK_THS_INDUSTRY_API_URL", "https://example.test/detail/{code}")
+
+	items, err := (THSStockBoardClient{}).FetchBoards(t.Context(), "sh600519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Code != "th881125" || items[0].Name != "白酒" || items[0].Percent != 1.25 || math.Abs(items[0].MainNet-2.30e8) > 0.01 || !strings.Contains(items[0].Source, "同花顺") {
+		t.Fatalf("unexpected THS stock-board fallback: %+v", items)
 	}
 }

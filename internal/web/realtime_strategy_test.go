@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -194,6 +195,15 @@ type realtimeOutcomeStub struct {
 	options       *realtime.OutcomeOptions
 }
 
+type realtimeOutcomeListStub struct {
+	realtimeOutcomeStub
+	items []realtime.SignalOutcome
+}
+
+func (stub realtimeOutcomeListStub) Outcomes(int) ([]realtime.SignalOutcome, error) {
+	return append([]realtime.SignalOutcome(nil), stub.items...), nil
+}
+
 type realtimeOutcomeFunc struct {
 	evaluate func(context.Context, []realtime.Signal, realtime.OutcomeOptions) (realtime.OutcomeReport, error)
 	report   func(int, time.Time) (realtime.OutcomeReport, error)
@@ -268,6 +278,59 @@ func TestRealtimeStrategyEndpointRunsAndReturnsHistory(t *testing.T) {
 	}
 	if len(history.History) != 1 || history.History[0].ID != "signal" {
 		t.Fatalf("unexpected history response: %+v", history)
+	}
+}
+
+func TestRealtimeLifecycleEndpointJoinsSignalsAndOutcomes(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	first := time.Date(2026, 9, 21, 9, 35, 0, 0, location)
+	second := first.Add(5 * time.Minute)
+	archive := realtimeArchiveStub{items: []realtime.Signal{
+		{ID: "second", Symbol: "sh600519", Name: "贵州茅台", State: realtime.StateTriggered, Score: 75, AsOf: second},
+		{ID: "first", Symbol: "sh600519", Name: "贵州茅台", State: realtime.StateWatching, Score: 60, AsOf: first},
+	}}
+	outcomes := realtimeOutcomeListStub{items: []realtime.SignalOutcome{{
+		Symbol: "sh600519", SignalDate: "2026-09-21", Horizon: 1, Status: realtime.OutcomeReady, ReturnPercent: 2.5,
+	}}}
+	server := NewServer(resolverStub{}, nil, nil, nil, "", WithRealtimeStrategy(realtimeScannerStub{}, archive), WithRealtimeOutcomes(outcomes))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/strategy/realtime?view=lifecycle&limit=10", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response realtimeStrategyResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Lifecycles) != 1 || response.Lifecycles[0].LatestState != realtime.StateTriggered || response.Lifecycles[0].MatureHorizon != 1 || len(response.Lifecycles[0].Events) != 2 {
+		t.Fatalf("unexpected lifecycle response: %+v", response.Lifecycles)
+	}
+}
+
+func TestRealtimeLifecycleBrowserFixture(t *testing.T) {
+	address := os.Getenv("ASTOCK_LIFECYCLE_TEST_ADDR")
+	if address == "" {
+		t.Skip("browser fixture is opt-in")
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	first := time.Date(2026, 9, 21, 9, 35, 0, 0, location)
+	second := first.Add(5 * time.Minute)
+	signals := []realtime.Signal{
+		{ID: "c", Symbol: "sh600519", Name: "贵州茅台", Industry: "白酒", State: realtime.StateTriggered, Score: 75, Price: 1460, TriggerPrice: 1458, InvalidationPrice: 1410, EntryShapeLabel: "平台突破", AsOf: second, CandidateSources: []string{"自选"}, Reasons: []string{"放量确认"}},
+		{ID: "b", Symbol: "sh600519", Name: "贵州茅台", Industry: "白酒", State: realtime.StateWatching, Score: 60, Price: 1450, AsOf: first, Reasons: []string{"回踩观察"}},
+		{ID: "a", Symbol: "sz000001", Name: "平安银行", Industry: "银行", State: realtime.StateInvalid, Score: 0, Price: 11.2, AsOf: first.Add(-24 * time.Hour), Warnings: []string{"关联板块行情暂不可用"}},
+	}
+	archive := realtimeArchiveStub{items: signals, latest: realtime.ScanResult{
+		GeneratedAt: second, Universe: "watchlist+leaders", MarketState: realtime.MarketStateTrading,
+		TradingDate: "2026-09-21", TradingDay: true, CalendarKnown: true, Signals: signals[:1],
+	}}
+	outcomes := realtimeOutcomeListStub{items: []realtime.SignalOutcome{
+		{Key: "sh600519:2026-09-21:1", Symbol: "sh600519", Name: "贵州茅台", SignalDate: "2026-09-21", SignalAsOf: second, Horizon: 1, Status: realtime.OutcomeReady, ReturnPercent: 2.5},
+		{Key: "sh600519:2026-09-21:3", Symbol: "sh600519", Name: "贵州茅台", SignalDate: "2026-09-21", SignalAsOf: second, Horizon: 3, Status: realtime.OutcomePending},
+	}}
+	server := NewServer(resolverStub{}, nil, nil, nil, "600519", WithRealtimeStrategy(realtimeScannerStub{}, archive), WithRealtimeOutcomes(outcomes))
+	if err := http.ListenAndServe(address, server.Handler()); err != nil {
+		t.Fatal(err)
 	}
 }
 

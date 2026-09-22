@@ -151,6 +151,10 @@ func aiChatViewControls(moyu bool) string {
 }
 
 func aiChatPrompt(facts domain.StockReportFacts, history []domain.AIChatTurn, question string) (string, error) {
+	return aiChatPromptWithChart(facts, history, question, nil)
+}
+
+func aiChatPromptWithChart(facts domain.StockReportFacts, history []domain.AIChatTurn, question string, chart *domain.AssistantChartContext) (string, error) {
 	facts = prequalifyStockReportFacts(facts)
 	type historyContext struct {
 		AskedAt  time.Time `json:"asked_at"`
@@ -166,13 +170,15 @@ func aiChatPrompt(facts domain.StockReportFacts, history []domain.AIChatTurn, qu
 		})
 	}
 	payload := struct {
-		MarketStatus string                  `json:"market_status"`
-		Facts        domain.StockReportFacts `json:"facts"`
-		History      []historyContext        `json:"conversation_history_intent_only,omitempty"`
-		Question     string                  `json:"current_question"`
+		MarketStatus string                        `json:"market_status"`
+		Facts        domain.StockReportFacts       `json:"facts"`
+		Chart        *domain.AssistantChartContext `json:"verified_chart_context,omitempty"`
+		History      []historyContext              `json:"conversation_history_intent_only,omitempty"`
+		Question     string                        `json:"current_question"`
 	}{
 		MarketStatus: marketSessionAt(facts.GeneratedAt).Label,
 		Facts:        facts,
+		Chart:        chart,
 		History:      intentHistory,
 		Question:     strings.TrimSpace(question),
 	}
@@ -187,6 +193,7 @@ func aiChatPrompt(facts domain.StockReportFacts, history []domain.AIChatTurn, qu
 2. 用户询问是否买入、卖出、持有或加减仓时，必须先给条件式结论，再列出依据、触发条件、失效条件和主要风险；禁止给无条件买卖指令。
 3. 用户没有提供持仓成本、仓位和周期时，不得自行假定；必要时分别说明“未持有”和“已持有”的观察方式。
 4. 关键价位只能引用facts.technical中的support、resistance、buy_trigger、sell_trigger和invalidation，不得创造新价位。
+4a. verified_chart_context存在时，可同时引用其中analysis.levels、selected_structure锚点和计划价位，但必须说明图表周期、分析日和结构状态；它由服务端按fingerprint核验。visible_from/visible_to只表示用户当时查看范围，不得据此假设范围之外不存在其他结构。
 5. price_boundary.available为true时，它是报价交易日的硬价格边界：任何高于limit_up或低于limit_down的技术位，只能标成“跨交易日结构位/后续交易日观察位”，不得描述为当日、今日、盘中或当日收盘能够完成的买卖、突破、跌破、止盈、止损或确认条件；回答涉及关键价位时必须明确当日涨停价和跌停价。available为false时不得自行推算涨跌停价，需说明边界缺失并降低关键点位置信度。
 6. 资金结论必须区分当日累计main_net与fund_movement中的1/3/5分钟增量；不得把资金行为描述为确定性主力意图。
 7. warnings提示数据缺失时必须降低置信度；缺失字段清洗后的0不得解释为资金持平、无风险或确定事实。
@@ -257,6 +264,18 @@ func (app *App) answerAIChatQuestionDetailed(
 	question string,
 	progress stockReportProgress,
 ) (aiChatAnswer, error) {
+	return app.answerAIChatQuestionDetailedWithChart(ctx, symbol, movement, history, question, nil, progress)
+}
+
+func (app *App) answerAIChatQuestionDetailedWithChart(
+	ctx context.Context,
+	symbol string,
+	movement *domain.FundMovement,
+	history []domain.AIChatTurn,
+	question string,
+	chart *domain.AssistantChartContext,
+	progress stockReportProgress,
+) (aiChatAnswer, error) {
 	if app.marketReportAI == nil {
 		return aiChatAnswer{}, fmt.Errorf("Codex Agent 未初始化")
 	}
@@ -266,7 +285,10 @@ func (app *App) answerAIChatQuestionDetailed(
 	}
 	facts = prequalifyStockReportFacts(facts)
 	setSnapshotHash(&facts)
-	prompt, err := aiChatPrompt(facts, history, question)
+	if chart != nil && chart.Symbol != facts.Quote.Symbol {
+		return aiChatAnswer{}, fmt.Errorf("图表上下文与实时事实股票不一致")
+	}
+	prompt, err := aiChatPromptWithChart(facts, history, question, chart)
 	if err != nil {
 		return aiChatAnswer{}, err
 	}

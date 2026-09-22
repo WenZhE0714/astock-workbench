@@ -77,4 +77,48 @@ type TradePlan struct {
 	ExpiresOn string         `json:"expires_on"`
 	Analysis  ChartAnalysis  `json:"analysis"`
 	Structure ChartStructure `json:"structure"`
+	// MonitorRule is present only for a user-confirmed assistant rule. Legacy
+	// chart plans derive the same frozen rule from Structure.ID.
+	MonitorRule *PlanMonitorRule `json:"monitor_rule,omitempty"`
+}
+
+// AssistantChartContext is recomputed and verified by the server before it is
+// supplied to an AI. Client-provided prices are never trusted as chart facts.
+type AssistantChartContext struct {
+	Version           string         `json:"version"`
+	Symbol            string         `json:"symbol"`
+	Timeframe         string         `json:"timeframe"`
+	VisibleFrom       string         `json:"visible_from,omitempty"`
+	VisibleTo         string         `json:"visible_to,omitempty"`
+	SelectedStructure ChartStructure `json:"selected_structure"`
+	Analysis          ChartAnalysis  `json:"analysis"`
+}
+
+// AssistantRuleProposal is the small, bounded language an AI may propose.
+// It is not executable until normalized, fingerprinted and confirmed.
+type AssistantRuleProposal struct {
+	Kind               string  `json:"kind"`
+	Name               string  `json:"name"`
+	Description        string  `json:"description"`
+	EntryLow           float64 `json:"entry_low"`
+	EntryHigh          float64 `json:"entry_high"`
+	Invalidation       float64 `json:"invalidation"`
+	ConfirmationPrice  float64 `json:"confirmation_price"`
+	VolumeDays         int     `json:"volume_days"`
+	MinimumVolumeRatio float64 `json:"minimum_volume_ratio"`
+	RequireTrend       bool    `json:"require_trend"`
+}
+
+type AssistantRuleDraft struct {
+	Version             string                `json:"version"`
+	ID                  string                `json:"id"`
+	Symbol              string                `json:"symbol"`
+	CreatedAt           time.Time             `json:"created_at"`
+	ExpiresOn           string                `json:"expires_on"`
+	SourceQuestion      string                `json:"source_question"`
+	AnalysisDate        string                `json:"analysis_date"`
+	AnalysisFingerprint string                `json:"analysis_fingerprint"`
+	StructureID         string                `json:"structure_id"`
+	Proposal            AssistantRuleProposal `json:"proposal"`
+	Warnings            []string              `json:"warnings,omitempty"`
 }

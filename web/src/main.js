@@ -10,6 +10,7 @@ import "./style.css"
 import "./dashboard.css"
 import "./chart-analysis.css"
 import "./plan-experiment.css"
+import "./trade-playbook.css"
 
 const defaultSymbol = document.querySelector('meta[name="astock-default-symbol"]')?.content || "600519"
 const initialView = new URLSearchParams(window.location.search)
@@ -95,9 +96,10 @@ createApp({
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
-      workspaceMode: ["market", "monitor"].includes(initialView.get("view")) ? initialView.get("view") : "dashboard",
-      monitorView: ["plans", "experiment"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
+      workspaceMode: workspaceNavigation.some(item => item.id === initialView.get("view")) ? initialView.get("view") : "dashboard",
+      monitorView: ["plans", "experiment", "playbook"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
       planExperiment: null,
+      planExperimentReview: null,
       planExperimentRuntime: {},
       planExperimentConfig: {},
       planExperimentLoading: false,
@@ -112,6 +114,16 @@ createApp({
       planMonitorBusy: {},
       planMonitorError: "",
       planMonitorNotice: "",
+      tradePlaybook: null,
+      tradePlaybookLoading: false,
+      tradePlaybookRequestID: 0,
+      tradePlaybookError: "",
+      tradePlaybookView: "setups",
+      tradePlaybookFilter: "all",
+      tradePlaybookQuery: "",
+      tradePlaybookRowsShown: 50,
+      playbookPlanTarget: null,
+      focusedPlanID: "",
       workspaceNavigation,
       monitorFilter: "all",
       monitorQuery: "",
@@ -153,6 +165,10 @@ createApp({
       realtimeError: "",
       realtimeResult: null,
       realtimeHistory: [],
+      realtimeLifecycles: [],
+      realtimeLifecycleLoading: false,
+      realtimeLifecycleError: "",
+      realtimeLifecycleSelectedKey: "",
       realtimeAutoAt: 0,
       realtimeSessionCheckedAt: 0,
       realtimeMarketState: "",
@@ -168,7 +184,7 @@ createApp({
       realtimeOutcomeReport: null,
       realtimeOutcomeHorizon: 5,
       realtimeOutcomeView: "scores",
-      realtimeSection: "candidates",
+      realtimeSection: ["candidates", "lifecycle", "shadow", "validation"].includes(initialView.get("realtime")) ? initialView.get("realtime") : "candidates",
       realtimeMonsterOnly: false,
       shadowLoading: false,
       shadowError: "",
@@ -205,6 +221,13 @@ createApp({
       tradePlanExpiresOn: localDate(Date.now() + 7 * 86400000),
       tradePlanSaving: false,
       tradePlanNotice: "",
+      planReviews: {},
+      planReviewForms: {},
+      planReviewDirty: {},
+      planReviewsRequestID: 0,
+      planReviewBusy: {},
+      planReviewError: "",
+      planReviewNotice: "",
       chartPointers: new Map(),
       dailyPanState: null,
       dailyPinchState: null,
@@ -239,6 +262,10 @@ createApp({
       assistantAlertsCheckedAt: 0,
       assistantContextCheckedAt: 0,
       assistantJobTimer: null,
+      assistantRuleDraft: null,
+      assistantRuleLoading: false,
+      assistantRuleConfirming: false,
+      assistantRuleError: "",
       assistantUnread: 0,
       assistantAlertSeen: new Set(),
       assistantAlertInitialized: false,
@@ -469,6 +496,16 @@ createApp({
 	  return this.candidateStatusLabel(this.strategyCandidateLifecycle.status, this.strategyActiveCandidate.research_stage)
 	},
     realtimeSignals() { return this.realtimeResult && Array.isArray(this.realtimeResult.signals) ? this.realtimeResult.signals : [] },
+    realtimeSelectedLifecycle() {
+      return this.realtimeLifecycles.find(item => item && item.key === this.realtimeLifecycleSelectedKey) || this.realtimeLifecycles[0] || null
+    },
+    realtimeLifecycleCounts() {
+      return this.realtimeLifecycles.reduce((result, item) => {
+        const key = item && item.status ? item.status : "observing"
+        result[key] = (result[key] || 0) + 1
+        return result
+      }, {})
+    },
     marketPulseSignals() {
       return selectMonitorSignals(this.realtimeSignals).slice(0, 8)
     },
@@ -785,6 +822,31 @@ createApp({
       const query = String(this.monitorQuery || "").trim().toLowerCase()
       return this.planMonitors.filter(item => (!this.planMonitorActiveOnly || item.enabled) && (!query || `${item.symbol} ${item.name}`.toLowerCase().includes(query)))
     },
+    tradePlaybookMetrics() {
+      if (!this.tradePlaybook) return []
+      return this.tradePlaybookView === "tags" ? (this.tradePlaybook.tags || []) : (this.tradePlaybook.setups || [])
+    },
+    tradePlaybookRecent() {
+      const items = this.tradePlaybook && Array.isArray(this.tradePlaybook.recent) ? this.tradePlaybook.recent : []
+      const query = String(this.tradePlaybookQuery || "").trim().toLowerCase()
+      return items.filter(item => {
+        if (this.tradePlaybookFilter === "reviewed" && !item.reviewed) return false
+        if (this.tradePlaybookFilter === "completed" && item.realized_r == null) return false
+        if (this.tradePlaybookFilter === "deviated" && item.execution_status !== "deviated" && item.discipline !== "deviated") return false
+        if (!query) return true
+        return `${item.symbol} ${item.name || this.playbookStockName(item.symbol)} ${item.structure_name} ${(item.tags || []).join(" ")} ${item.exit_reason || ""}`.toLowerCase().includes(query)
+      })
+    },
+    tradePlaybookDistributionPeak() {
+      const items = this.tradePlaybook && Array.isArray(this.tradePlaybook.r_distribution) ? this.tradePlaybook.r_distribution : []
+      return Math.max(1, ...items.map(item => Number(item.count) || 0))
+    },
+    tradePlaybookRuntimeLabel() {
+      if (this.tradePlaybookLoading) return "统计中"
+      if (this.tradePlaybookError) return "统计异常"
+      if (!this.tradePlaybook) return "等待复盘数据"
+      return `${this.tradePlaybook.reviewed_plans || 0} 条复盘 · ${this.tradePlaybook.completed_trades || 0} 笔完成`
+    },
     planMonitorRuntimeLabel() {
       if (!this.planMonitorRuntime.supported) return "监控未配置"
       if (!this.planMonitorRuntime.running) return "后台离线"
@@ -842,6 +904,7 @@ createApp({
         if (!response.ok) throw new Error(payload.error || "读取影子实验失败")
         if (requestID !== this.planExperimentRequestID) return
         this.planExperiment = payload.state || null
+        this.planExperimentReview = payload.review || null
         this.planExperimentRuntime = payload.runtime || {}
         this.planExperimentConfig = payload.config || {}
         this.planExperimentError = ""
@@ -849,6 +912,23 @@ createApp({
         if (requestID === this.planExperimentRequestID) this.planExperimentError = error.message || String(error)
       } finally {
         if (requestID === this.planExperimentRequestID) this.planExperimentLoading = false
+      }
+    },
+    async loadTradePlaybook(force = false) {
+      if (this.tradePlaybookLoading && !force) return
+      const requestID = ++this.tradePlaybookRequestID
+      this.tradePlaybookLoading = true
+      this.tradePlaybookError = ""
+      try {
+        const response = await fetch("/api/trade-playbook", { cache: "no-store" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "读取交易剧本失败")
+        if (requestID !== this.tradePlaybookRequestID) return
+        this.tradePlaybook = payload.report || null
+      } catch (error) {
+        if (requestID === this.tradePlaybookRequestID) this.tradePlaybookError = error.message || String(error)
+      } finally {
+        if (requestID === this.tradePlaybookRequestID) this.tradePlaybookLoading = false
       }
     },
     async configurePlanExperiment(input, control) {
@@ -874,6 +954,7 @@ createApp({
     },
     refreshMonitorWorkspace() {
       if (this.monitorView === "experiment") this.loadPlanExperiment(true)
+      else if (this.monitorView === "playbook") this.loadTradePlaybook(true)
       else if (this.monitorView === "plans") this.loadPlanMonitors(true)
       else this.loadRealtimeSnapshot()
     },
@@ -955,6 +1036,54 @@ createApp({
       this.switchWorkspace("market")
       this.tradePlansOpen = true
     },
+    openPlaybookItem(item) {
+      if (!item || !item.symbol) return
+      this.playbookPlanTarget = { symbol: item.symbol, planID: item.plan_id }
+      this.chartMode = "daily"
+      this.requestedSymbol = item.symbol
+      this.switchWorkspace("market")
+      this.tradePlansOpen = true
+    },
+    playbookStockName(symbol) {
+      for (const group of this.watchlist.groups || []) {
+        const item = (group.items || []).find(item => item.symbol === symbol)
+        if (item?.name) return item.name
+      }
+      return this.displayCode(symbol)
+    },
+    async focusPlaybookPlan() {
+      const target = this.playbookPlanTarget
+      if (!target || this.workspaceMode !== "market" || this.data.symbol !== target.symbol) return
+      this.tradePlansOpen = true
+      this.focusedPlanID = target.planID
+      await this.$nextTick()
+      const element = [...document.querySelectorAll(".chart-saved-plan")].find(item => item.dataset.planId === target.planID)
+      if (!element) return
+      element.open = true
+      const review = element.querySelector(".plan-review")
+      if (review) review.open = true
+      element.querySelector("summary")?.focus({ preventScroll: true })
+      element.scrollIntoView({ block: "start", behavior: "auto" })
+      if (this.playbookPlanTarget === target) this.playbookPlanTarget = null
+    },
+    openTradePlaybook() {
+      this.monitorView = "playbook"
+      this.switchWorkspace("monitor")
+    },
+    tradePlaybookStatusLabel(status) {
+      return ({ watching: "继续观察", followed: "按计划执行", deviated: "偏离计划", skipped: "主动放弃", not_traded: "未交易" })[status] || "未复盘"
+    },
+    tradePlaybookDisciplineLabel(value) {
+      return ({ followed: "完全遵守", partial: "部分遵守", deviated: "明显偏离", not_applicable: "不适用" })[value] || "未评价"
+    },
+    optionalPercent(value) {
+      return value == null || !Number.isFinite(Number(value)) ? "--" : `${Number(value).toFixed(1)}%`
+    },
+    optionalR(value) {
+      if (value == null || !Number.isFinite(Number(value))) return "--"
+      const number = Number(value)
+      return `${number > 0 ? "+" : ""}${number.toFixed(2)}R`
+    },
     chartStructureState,
     chartWeeklyState,
     savedPlanState,
@@ -994,13 +1123,18 @@ createApp({
       const requestID = ++this.tradePlansRequestID
       this.tradePlansLoading = true
       try {
-        const response = await fetch(`/api/trade-plans?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" })
+        const query = new URLSearchParams({ symbol })
+        if (this.playbookPlanTarget?.symbol === symbol) query.set("plan_id", this.playbookPlanTarget.planID)
+        else if (this.tradePlans.some(plan => plan.id === this.focusedPlanID && plan.symbol === symbol)) query.set("plan_id", this.focusedPlanID)
+        const response = await fetch(`/api/trade-plans?${query}`, { cache: "no-store" })
         const payload = await response.json()
         if (!response.ok) throw new Error(payload.error || "读取计划失败")
         if (requestID !== this.tradePlansRequestID || this.data.symbol !== symbol) return
         this.tradePlans = payload.items || []
         this.tradePlansToday = payload.today || localDate(new Date())
         this.tradePlansError = ""
+        await this.loadTradePlanReviews(symbol)
+        if (requestID === this.tradePlansRequestID) await this.focusPlaybookPlan()
       } catch (error) {
         if (requestID === this.tradePlansRequestID && this.data.symbol === symbol) this.tradePlansError = error.message || String(error)
       } finally {
@@ -1032,6 +1166,85 @@ createApp({
         if (this.data.symbol === symbol) this.tradePlansError = error.message || String(error)
       } finally {
         this.tradePlanSaving = false
+      }
+    },
+    reviewTimeInput(value) {
+      if (!value || String(value).startsWith("0001")) return ""
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return ""
+      const parts = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(date)
+      const values = Object.fromEntries(parts.map(item => [item.type, item.value]))
+      return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`
+    },
+    reviewFormFrom(review) {
+      const current = review?.current || {}
+      return {
+        note: current.note || "",
+        tags: (current.tags || []).join("、"),
+        execution_status: current.execution_status || "watching",
+        actual_entry: current.actual_entry ?? "",
+        actual_exit: current.actual_exit ?? "",
+        entry_at: this.reviewTimeInput(current.entry_at),
+        exit_at: this.reviewTimeInput(current.exit_at),
+        exit_reason: current.exit_reason || "",
+        discipline: current.discipline || "",
+      }
+    },
+    async loadTradePlanReviews(symbol = this.data.symbol) {
+      if (!symbol || !this.data.plans_enabled) return
+      const requestID = ++this.planReviewsRequestID
+      try {
+        const response = await fetch(`/api/trade-plan-reviews?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "读取计划复盘失败")
+        if (requestID !== this.planReviewsRequestID || this.data.symbol !== symbol) return
+        this.planReviews = Object.fromEntries((payload.items || []).map(item => [item.plan_id, item]))
+        this.planReviewForms = Object.fromEntries(this.tradePlans.map(plan => [plan.id,
+          (this.planReviewDirty[plan.id] || this.planReviewBusy[plan.id]) && this.planReviewForms[plan.id]
+            ? this.planReviewForms[plan.id] : this.reviewFormFrom(this.planReviews[plan.id]),
+        ]))
+        this.planReviewError = ""
+      } catch (error) {
+        if (requestID === this.planReviewsRequestID && this.data.symbol === symbol) this.planReviewError = error instanceof Error ? error.message : String(error)
+      }
+    },
+    planReviewStatusLabel(value) {
+      return ({ watching: "继续观察", followed: "按计划执行", deviated: "偏离计划", skipped: "主动放弃", not_traded: "未交易" })[value] || "未记录"
+    },
+    async savePlanReview(plan) {
+      const form = this.planReviewForms[plan.id]
+      if (!form || this.planReviewBusy[plan.id]) return
+      const submittedForm = JSON.stringify(form)
+      this.planReviewsRequestID += 1
+      this.planReviewBusy = { ...this.planReviewBusy, [plan.id]: true }
+      this.planReviewError = ""
+      this.planReviewNotice = ""
+      const optionalNumber = value => value === "" || value == null ? null : Number(value)
+      const tags = String(form.tags || "").split(/[、,，]/).map(item => item.trim()).filter(Boolean)
+      try {
+        const response = await fetch("/api/trade-plan-reviews", {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify({
+            symbol: plan.symbol, plan_id: plan.id, note: form.note, tags,
+            execution_status: form.execution_status, actual_entry: optionalNumber(form.actual_entry), actual_exit: optionalNumber(form.actual_exit),
+            entry_at: form.entry_at || "", exit_at: form.exit_at || "", exit_reason: form.exit_reason, discipline: form.discipline,
+          }),
+        })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "保存计划复盘失败")
+        if (this.data.symbol !== plan.symbol) return
+        this.planReviewsRequestID += 1
+        this.planReviews = { ...this.planReviews, [plan.id]: payload }
+        if (JSON.stringify(this.planReviewForms[plan.id]) === submittedForm) {
+          this.planReviewForms = { ...this.planReviewForms, [plan.id]: this.reviewFormFrom(payload) }
+          this.planReviewDirty = { ...this.planReviewDirty, [plan.id]: false }
+        }
+        this.planReviewNotice = `计划 ${plan.id.slice(0, 8)} 的复盘已保存，当前 ${payload.sequence} 个版本`
+        this.tradePlaybook = null
+      } catch (error) {
+        if (this.data.symbol === plan.symbol) this.planReviewError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.planReviewBusy = { ...this.planReviewBusy, [plan.id]: false }
       }
     },
     number(value, digits = 2) {
@@ -1337,10 +1550,11 @@ createApp({
       this.assistantJobStatus = "queued"
       this.assistantJobProgress = "等待Agent启动"
       try {
+        const chart = this.assistantChartPayload(symbol)
         const response = await fetch("/api/assistant/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbol, question }),
+          body: JSON.stringify({ symbol, question, ...(chart ? { chart } : {}) }),
           cache: "no-store",
         })
         const body = await response.text()
@@ -1364,6 +1578,68 @@ createApp({
         this.assistantError = error instanceof Error ? error.message : String(error)
         this.assistantSending = false
         this.assistantJobStatus = ""
+      }
+    },
+    assistantChartPayload(symbol = this.assistantSymbol) {
+      const analysis = this.chartAnalysis
+      const structure = this.chartStructure
+      if (this.workspaceMode !== "market" || this.chartMode !== "daily" || !analysis || !structure || analysis.symbol !== symbol || !analysis.fingerprint || !analysis.data_date) return null
+      const end = this.dailyViewEnd
+      const start = Math.max(0, end - Math.max(1, Number(this.dailyVisibleCount) || 1))
+      return {
+        timeframe: "1d",
+        through: analysis.data_date,
+        fingerprint: analysis.fingerprint,
+        structure_id: structure.id,
+        visible_from: this.bars[start]?.date || "",
+        visible_to: this.bars[Math.max(0, end - 1)]?.date || analysis.data_date,
+      }
+    },
+    async draftAssistantRule() {
+      const question = String(this.assistantDraft || "").trim()
+      const symbol = String((this.assistantContext && this.assistantContext.symbol) || this.assistantSymbol || "").trim()
+      const chart = this.assistantChartPayload(symbol)
+      if (!question || !chart || this.assistantRuleLoading || this.assistantBusy) {
+        this.assistantRuleError = chart ? "请输入要监控的条件" : "请先在当前股票的日K结构页生成并选中一个结构"
+        return
+      }
+      this.assistantRuleLoading = true
+      this.assistantRuleError = ""
+      try {
+        const response = await fetch("/api/assistant/rule-drafts", {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify({ action: "draft", symbol, question, expires_on: this.tradePlanExpiresOn, chart }),
+        })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "规则草案生成失败")
+        this.assistantRuleDraft = payload.draft || null
+        this.scrollAssistantThread()
+      } catch (error) {
+        this.assistantRuleError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.assistantRuleLoading = false
+      }
+    },
+    async confirmAssistantRule() {
+      if (!this.assistantRuleDraft || this.assistantRuleConfirming) return
+      const symbol = this.assistantRuleDraft.symbol
+      this.assistantRuleConfirming = true
+      this.assistantRuleError = ""
+      try {
+        const response = await fetch("/api/assistant/rule-drafts", {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify({ action: "confirm", draft: this.assistantRuleDraft }),
+        })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || "确认规则草案失败")
+        this.tradePlanNotice = payload.created ? "助手规则已确认并保存为观察计划" : "相同助手规则已经保存"
+        this.tradePlansOpen = true
+        this.assistantRuleDraft = null
+        if (this.data.symbol === symbol) await this.loadTradePlans(symbol)
+      } catch (error) {
+        this.assistantRuleError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.assistantRuleConfirming = false
       }
     },
     async pollAssistantJob() {
@@ -1581,8 +1857,9 @@ createApp({
       })
     },
     switchRealtimeSection(section) {
-      if (!['candidates', 'shadow', 'validation'].includes(section)) return
+      if (!['candidates', 'lifecycle', 'shadow', 'validation'].includes(section)) return
       this.realtimeSection = section
+      if (section === 'lifecycle') this.loadRealtimeLifecycles()
       if (section === 'shadow') this.loadShadowReport()
       if (section === 'validation' && !this.realtimeOutcomeReport) this.loadRealtimeOutcomes()
       window.scrollTo({ top: 0, behavior: 'auto' })
@@ -1590,6 +1867,7 @@ createApp({
     switchWorkspace(mode) {
       if (!workspaceNavigation.some(item => item.id === mode)) return
       this.workspaceMode = mode
+      if (mode !== "market") this.playbookPlanTarget = null
       this.watchlistOpen = false
       window.scrollTo({ top: 0, behavior: "auto" })
       this.strategyCrosshair = null
@@ -1603,6 +1881,7 @@ createApp({
       } else if (mode === "realtime") {
         this.loadRealtimeSnapshot()
         this.loadRealtimeHistory()
+        this.loadRealtimeLifecycles()
         this.loadRealtimeOutcomes()
         this.loadShadowReport()
       } else if (mode === "global") {
@@ -1618,6 +1897,7 @@ createApp({
         this.loadRealtimeSnapshot()
         this.loadPlanMonitors(true)
         if (this.monitorView === "experiment") this.loadPlanExperiment(true)
+        if (this.monitorView === "playbook") this.loadTradePlaybook(true)
       } else if (mode === "dashboard") {
         this.loadIndices()
         this.loadSentiment(true)
@@ -1835,6 +2115,25 @@ createApp({
       if (state === "triggered") return "realtime-triggered"
       if (state === "watching") return "realtime-watching"
       return "realtime-weak"
+    },
+    lifecycleStatusLabel(status) {
+      return ({ matured: "结果已成熟", observing: "持续观察", "data-limited": "数据受限" })[status] || "持续观察"
+    },
+    lifecycleEventLabel(kind) {
+      return ({ "first-seen": "首次进入", "state-change": "状态变化", "score-change": "分数变化", "data-warning": "数据变化", observation: "观察" })[kind] || "观察"
+    },
+    lifecycleEventDetail(event) {
+      if (!event) return "--"
+      if (event.kind === "state-change" && String(event.detail || "").includes("→")) {
+        return String(event.detail).split("→").map(item => this.realtimeStateLabel(item.trim())).join(" → ")
+      }
+      return event.detail || this.realtimeStateLabel(event.state)
+    },
+    lifecycleOutcomeText(item) {
+      if (!item) return "--"
+      if (item.status === "ready") return `${item.horizon}日 ${this.percentText(item.return_percent)}`
+      if (item.status === "pending") return `${item.horizon}日 待成熟`
+      return `${item.horizon}日 无效`
     },
     monsterStageClass(stage) {
       return ({ "潜伏": "monster-dormant", "启动": "monster-starting", "加速": "monster-accelerating", "高位分歧": "monster-diverging", "退潮": "monster-ebbing", "数据不足": "monster-insufficient" })[stage] || "monster-insufficient"
@@ -2067,6 +2366,25 @@ createApp({
         this.realtimeHistory = Array.isArray(payload.history) ? payload.history : []
       } catch (error) {
         this.realtimeError = error instanceof Error ? error.message : String(error)
+      }
+    },
+    async loadRealtimeLifecycles() {
+      if (this.realtimeLifecycleLoading) return
+      this.realtimeLifecycleLoading = true
+      this.realtimeLifecycleError = ""
+      try {
+        const response = await fetch("/api/strategy/realtime?view=lifecycle&limit=60", { cache: "no-store" })
+        const body = await response.text()
+        const payload = body ? JSON.parse(body) : {}
+        if (!response.ok) throw new Error(payload.error || "信号生命周期读取失败")
+        this.realtimeLifecycles = Array.isArray(payload.lifecycles) ? payload.lifecycles : []
+        if (!this.realtimeLifecycles.some(item => item.key === this.realtimeLifecycleSelectedKey)) {
+          this.realtimeLifecycleSelectedKey = this.realtimeLifecycles[0]?.key || ""
+        }
+      } catch (error) {
+        this.realtimeLifecycleError = error instanceof Error ? error.message : String(error)
+      } finally {
+        this.realtimeLifecycleLoading = false
       }
     },
     async loadRealtimeOutcomes() {
@@ -2883,6 +3201,7 @@ createApp({
       this.updateDailyViewport(nextCount, nextStart + nextCount)
     },
     async load(symbol) {
+      if (this.playbookPlanTarget && this.requestedSymbol !== this.playbookPlanTarget.symbol) this.playbookPlanTarget = null
       if (this.loading) return
       this.loading = true
       this.error = ""
@@ -2892,6 +3211,7 @@ createApp({
         if (!body) throw new Error("行情响应不完整，请稍后自动重试")
         const payload = JSON.parse(body)
         if (!response.ok) throw new Error(payload.error || payload.board_error || "行情请求失败")
+        if (this.playbookPlanTarget && this.playbookPlanTarget.symbol !== payload.symbol) return
         const symbolChanged = this.data.symbol && payload.symbol && this.data.symbol !== payload.symbol
         this.data = payload
         this.chartHistoricalAnalysis = null
@@ -2900,7 +3220,14 @@ createApp({
           this.tradePlans = []
           this.tradePlansError = ""
           this.tradePlanNotice = ""
-          this.tradePlansOpen = false
+          this.planReviews = {}
+          this.planReviewForms = {}
+          this.planReviewDirty = {}
+          this.planReviewsRequestID += 1
+          this.focusedPlanID = ""
+          this.planReviewError = ""
+          this.planReviewNotice = ""
+          this.tradePlansOpen = this.playbookPlanTarget?.symbol === payload.symbol
           this.chartStructureID = "range-breakout"
           this.dailyVisibleCount = 120
           this.dailyEndIndex = null
@@ -2908,6 +3235,8 @@ createApp({
           this.crosshair = null
           if (this.assistantOpen) {
             this.assistantContext = null
+            this.assistantRuleDraft = null
+            this.assistantRuleError = ""
             this.assistantConversation = []
             this.assistantError = ""
           }
@@ -2925,6 +3254,9 @@ createApp({
         this.error = error instanceof Error ? error.message : String(error)
       } finally {
         this.loading = false
+        if (this.workspaceMode === "market" && this.playbookPlanTarget && this.playbookPlanTarget.symbol !== symbol) {
+          this.load(this.playbookPlanTarget.symbol)
+        }
       }
     },
     prepareStrategyCanvas() {
@@ -4019,11 +4351,18 @@ createApp({
     if (this.workspaceMode === "market") this.load(this.requestedSymbol)
     this.loadPlanMonitors()
     if (this.workspaceMode === "monitor" && this.monitorView === "experiment") this.loadPlanExperiment()
+    if (this.workspaceMode === "monitor" && this.monitorView === "playbook") this.loadTradePlaybook()
     this.loadIndices()
     this.loadSentiment()
     this.loadBoards()
     this.loadMarketRankings()
     this.loadRealtimeSnapshot()
+    if (this.workspaceMode === "realtime") {
+      this.loadRealtimeHistory()
+      if (this.realtimeSection === "lifecycle") this.loadRealtimeLifecycles()
+      if (this.realtimeSection === "validation") this.loadRealtimeOutcomes()
+      if (this.realtimeSection === "shadow") this.loadShadowReport()
+    }
     this.loadWatchlist()
     this.loadAIConfig()
     this.timer = window.setInterval(() => {

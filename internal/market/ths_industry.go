@@ -10,14 +10,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const (
 	thsIndustryDirectoryURL = "https://q.10jqka.com.cn/thshy/"
 	thsIndustryDetailURL    = "https://q.10jqka.com.cn/thshy/detail/code/{code}/"
+	thsStockProfileURL      = "https://basic.10jqka.com.cn/{code}/"
 )
 
 var (
@@ -29,6 +32,8 @@ var (
 	thsIndustryRowPattern     = regexp.MustCompile(`(?is)<tr>(.*?)</tr>`)
 	thsIndustryCellPattern    = regexp.MustCompile(`(?is)<td[^>]*>(.*?)</td>`)
 	thsHTMLTagPattern         = regexp.MustCompile(`(?is)<[^>]+>`)
+	thsStockIndustryPattern   = regexp.MustCompile(`所属申万行业\s*[：:]\s*([^\s|，,；;]{1,40})`)
+	thsStockIndustryFallback  = regexp.MustCompile(`所属行业\s*[：:]\s*([^\s|，,；;]{1,40})`)
 )
 
 // IsTHSIndustrySymbol recognizes the 88xxxx industry-index namespace used by
@@ -72,6 +77,35 @@ func stripTHSHTML(value string) string {
 	value = thsHTMLTagPattern.ReplaceAllString(value, " ")
 	value = html.UnescapeString(value)
 	return strings.Join(strings.Fields(value), " ")
+}
+
+func decodeTHSAuto(raw string) string {
+	if utf8.ValidString(raw) {
+		return raw
+	}
+	decoded, err := simplifiedchinese.GB18030.NewDecoder().String(raw)
+	if err != nil {
+		return raw
+	}
+	return decoded
+}
+
+// fetchTHSDecoded makes the independent provider independent at the network
+// layer too. Try the public mainland pages without the process-wide proxy, then
+// retain the configured proxy as a fallback for environments that require it.
+func fetchTHSDecoded(ctx context.Context, address string, decoder encoding.Encoding, headers map[string]string) (string, error) {
+	result, directErr := fetchDecodedDirectWithHeaders(ctx, address, decoder, headers)
+	if directErr == nil {
+		return result, nil
+	}
+	if ctx.Err() != nil {
+		return "", directErr
+	}
+	result, proxyErr := fetchDecodedWithHeaders(ctx, address, decoder, headers)
+	if proxyErr == nil {
+		return result, nil
+	}
+	return "", directErr
 }
 
 func parseTHSFloat(value string) float64 {
@@ -127,7 +161,7 @@ func ParseTHSIndustryDetailLimit(raw, requestedCode string, limit int) (domain.B
 		return domain.BoardFlow{}, nil, fmt.Errorf("未找到同花顺行业代码 %s", requestedCode)
 	}
 	flow := domain.BoardFlow{
-		Code: "th" + requestedCode, Name: stripTHSHTML(heading[1]), Kind: domain.BoardKindIndustry,
+		Code: "th" + requestedCode, Name: stripTHSHTML(heading[1]), Kind: domain.BoardKindIndustry, Source: "同花顺公开行业页",
 		Percent: math.NaN(), MainNet: math.NaN(), MainRatio: math.NaN(), Turnover: math.NaN(), LeaderPercent: math.NaN(),
 		Quote: &domain.BoardQuoteSnapshot{
 			Price: math.NaN(), Delta: math.NaN(), Open: math.NaN(), PreviousClose: math.NaN(),
@@ -219,12 +253,7 @@ func ParseTHSIndustryDetailLimit(raw, requestedCode string, limit int) (domain.B
 
 type THSIndustryClient struct{}
 
-func ParseTHSIndustryCandidates(raw, input string) []domain.Candidate {
-	needle := strings.TrimSpace(input)
-	if needle == "" {
-		return nil
-	}
-	upperNeedle := strings.ToUpper(needle)
+func ParseTHSIndustryDirectory(raw string) []domain.Candidate {
 	result := make([]domain.Candidate, 0)
 	seen := make(map[string]bool)
 	for _, match := range thsIndustryLinkPattern.FindAllStringSubmatch(raw, -1) {
@@ -236,13 +265,135 @@ func ParseTHSIndustryCandidates(raw, input string) []domain.Candidate {
 		if name == "" || seen[code] {
 			continue
 		}
-		if !strings.Contains(name, needle) && !strings.Contains(code, upperNeedle) {
-			continue
-		}
 		seen[code] = true
 		result = append(result, domain.Candidate{Symbol: "th" + code, Name: name})
 	}
 	return result
+}
+
+func ParseTHSIndustryCandidates(raw, input string) []domain.Candidate {
+	needle := strings.TrimSpace(input)
+	if needle == "" {
+		return nil
+	}
+	upperNeedle := strings.ToUpper(needle)
+	result := make([]domain.Candidate, 0)
+	for _, item := range ParseTHSIndustryDirectory(raw) {
+		if !strings.Contains(item.Name, needle) && !strings.Contains(strings.ToUpper(item.Symbol), upperNeedle) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+// ParseTHSStockIndustry extracts the Shenwan industry label from a public F10
+// page. Parsing text after stripping markup tolerates both linked and plain
+// industry names used by different versions of the page.
+func ParseTHSStockIndustry(raw string) string {
+	plain := stripTHSHTML(raw)
+	for _, pattern := range []*regexp.Regexp{thsStockIndustryPattern, thsStockIndustryFallback} {
+		if match := pattern.FindStringSubmatch(plain); len(match) == 2 {
+			return strings.TrimSpace(match[1])
+		}
+	}
+	return ""
+}
+
+func normalizeTHSIndustryName(value string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), "")
+	value = strings.TrimSuffix(value, "行业")
+	for _, suffix := range []string{"Ⅳ", "Ⅲ", "Ⅱ", "Ⅰ", "IV", "III", "II", "I"} {
+		value = strings.TrimSuffix(value, suffix)
+	}
+	return strings.ToLower(value)
+}
+
+func matchTHSIndustry(items []domain.Candidate, industry string) (domain.Candidate, bool) {
+	wanted := normalizeTHSIndustryName(industry)
+	if wanted == "" {
+		return domain.Candidate{}, false
+	}
+	for _, item := range items {
+		if normalizeTHSIndustryName(item.Name) == wanted {
+			return item, true
+		}
+	}
+	for _, item := range items {
+		name := normalizeTHSIndustryName(item.Name)
+		if strings.Contains(name, wanted) || strings.Contains(wanted, name) {
+			return item, true
+		}
+	}
+	return domain.Candidate{}, false
+}
+
+func thsStockProfileAddress(base, symbol string) string {
+	code := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(symbol)), "sh"), "sz")
+	if strings.Contains(base, "{code}") {
+		return strings.Replace(base, "{code}", code, 1)
+	}
+	return strings.TrimRight(base, "/") + "/" + code + "/"
+}
+
+// THSStockBoardClient is the independent related-board fallback. It maps a
+// stock to its Shenwan industry through Tonghuashun F10, resolves the matching
+// Tonghuashun industry index, then fetches that index's live snapshot.
+type THSStockBoardClient struct{}
+
+func (THSStockBoardClient) FetchBoards(ctx context.Context, symbol string) ([]domain.BoardFlow, error) {
+	if !ValidPrefixedSymbol(symbol) {
+		return nil, fmt.Errorf("无效股票代码 %q", symbol)
+	}
+	profileBase := os.Getenv("ASTOCK_THS_STOCK_PROFILE_URL")
+	if profileBase == "" {
+		profileBase = thsStockProfileURL
+	}
+	profile, err := fetchTHSDecoded(ctx, thsStockProfileAddress(profileBase, symbol), nil, map[string]string{
+		"Referer": "https://basic.10jqka.com.cn/",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("同花顺个股行业映射不可用")
+	}
+	industry := ParseTHSStockIndustry(decodeTHSAuto(profile))
+	if industry == "" {
+		return nil, fmt.Errorf("同花顺未返回所属行业")
+	}
+
+	directoryBase := os.Getenv("ASTOCK_THS_INDUSTRY_DIRECTORY_URL")
+	if directoryBase == "" {
+		directoryBase = thsIndustryDirectoryURL
+	}
+	directory, err := fetchTHSDecoded(ctx, directoryBase, simplifiedchinese.GB18030, map[string]string{
+		"Referer": thsIndustryDirectoryURL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("同花顺行业目录不可用")
+	}
+	matched, ok := matchTHSIndustry(ParseTHSIndustryDirectory(directory), industry)
+	if !ok {
+		return nil, fmt.Errorf("同花顺行业目录未匹配 %s", industry)
+	}
+	flow, _, err := (THSIndustryClient{}).FetchBoard(ctx, matched.Symbol)
+	if err != nil {
+		// The F10 page and industry directory already establish the related
+		// industry. Keep that relationship when the optional live industry
+		// snapshot is down, while leaving all unavailable numeric fields as NaN
+		// so callers render "--" instead of inventing a quote.
+		return []domain.BoardFlow{{
+			Code:          matched.Symbol,
+			Name:          matched.Name,
+			Kind:          domain.BoardKindIndustry,
+			Source:        "同花顺个股F10行业映射（行情暂不可用）",
+			Percent:       math.NaN(),
+			MainNet:       math.NaN(),
+			MainRatio:     math.NaN(),
+			Turnover:      math.NaN(),
+			LeaderPercent: math.NaN(),
+		}}, nil
+	}
+	flow.Source = "同花顺公开行业页（东方财富回退）"
+	return []domain.BoardFlow{flow}, nil
 }
 
 // SearchBoards searches Tonghuashun's industry directory. 88xxxx symbols
@@ -258,7 +409,7 @@ func (THSIndustryClient) SearchBoards(ctx context.Context, input string) ([]doma
 	}
 	requestContext, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	raw, err := fetchDecodedWithHeaders(requestContext, base, simplifiedchinese.GB18030, map[string]string{
+	raw, err := fetchTHSDecoded(requestContext, base, simplifiedchinese.GB18030, map[string]string{
 		"Referer": thsIndustryDirectoryURL,
 	})
 	if err != nil {
@@ -278,7 +429,7 @@ func (THSIndustryClient) FetchBoard(ctx context.Context, symbol string) (domain.
 	}
 	requestContext, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	raw, err := fetchDecodedWithHeaders(requestContext, thsIndustryAddress(base, code), simplifiedchinese.GB18030, map[string]string{
+	raw, err := fetchTHSDecoded(requestContext, thsIndustryAddress(base, code), simplifiedchinese.GB18030, map[string]string{
 		"Referer": "https://q.10jqka.com.cn/thshy/",
 	})
 	if err != nil {

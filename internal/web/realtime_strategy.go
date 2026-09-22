@@ -23,21 +23,26 @@ const (
 var realtimeWebLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type realtimeStrategyResponse struct {
-	Result        *realtime.ScanResult    `json:"result,omitempty"`
-	History       []realtime.Signal       `json:"history,omitempty"`
-	Report        *realtime.OutcomeReport `json:"report,omitempty"`
-	MarketState   string                  `json:"market_state,omitempty"`
-	TradingDay    *bool                   `json:"trading_day,omitempty"`
-	CalendarKnown *bool                   `json:"calendar_known,omitempty"`
-	ScanAllowed   *bool                   `json:"scan_allowed,omitempty"`
-	Frozen        *bool                   `json:"frozen,omitempty"`
-	NextScanAt    string                  `json:"next_scan_at,omitempty"`
-	Cached        bool                    `json:"cached,omitempty"`
-	Automation    AutomationStatus        `json:"automation"`
+	Result        *realtime.ScanResult       `json:"result,omitempty"`
+	History       []realtime.Signal          `json:"history,omitempty"`
+	Lifecycles    []realtime.SignalLifecycle `json:"lifecycles,omitempty"`
+	Report        *realtime.OutcomeReport    `json:"report,omitempty"`
+	MarketState   string                     `json:"market_state,omitempty"`
+	TradingDay    *bool                      `json:"trading_day,omitempty"`
+	CalendarKnown *bool                      `json:"calendar_known,omitempty"`
+	ScanAllowed   *bool                      `json:"scan_allowed,omitempty"`
+	Frozen        *bool                      `json:"frozen,omitempty"`
+	NextScanAt    string                     `json:"next_scan_at,omitempty"`
+	Cached        bool                       `json:"cached,omitempty"`
+	Automation    AutomationStatus           `json:"automation"`
 }
 
 func (s *Server) handleRealtimeStrategy(writer http.ResponseWriter, request *http.Request) {
 	view := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("view")))
+	if view == "lifecycle" || view == "lifecycles" {
+		s.writeRealtimeLifecycles(writer, request)
+		return
+	}
 	if view == "outcomes" || view == "performance" {
 		s.writeRealtimeOutcomes(writer, request)
 		return
@@ -54,6 +59,52 @@ func (s *Server) handleRealtimeStrategy(writer http.ResponseWriter, request *htt
 	default:
 		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "实时量化扫描只支持 GET、POST"})
 	}
+}
+
+type realtimeOutcomeLister interface {
+	Outcomes(int) ([]realtime.SignalOutcome, error)
+}
+
+func (s *Server) writeRealtimeLifecycles(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSON(writer, http.StatusMethodNotAllowed, errorResponse{Error: "信号生命周期只支持 GET"})
+		return
+	}
+	if s.realtimeArchive == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, errorResponse{Error: "实时信号归档未初始化"})
+		return
+	}
+	limit := 40
+	if raw := strings.TrimSpace(request.URL.Query().Get("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 200 {
+			writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "生命周期数量必须在 1 到 200 之间"})
+			return
+		}
+		limit = value
+	}
+	// A 30-second scanner with a 50-stock universe can emit roughly 24,000
+	// observations per trading day. Read enough history to reconstruct a full
+	// session before the lifecycle builder collapses repeated snapshots.
+	signals, err := s.realtimeArchive.List(50000)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取信号生命周期失败: " + err.Error()})
+		return
+	}
+	outcomes := []realtime.SignalOutcome(nil)
+	if lister, ok := s.realtimeOutcomes.(realtimeOutcomeLister); ok {
+		outcomes, err = lister.Outcomes(-1)
+		if err != nil {
+			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取信号结果失败: " + err.Error()})
+			return
+		}
+	} else if s.realtimeOutcomes != nil {
+		report, reportErr := s.realtimeOutcomes.Report(-1, s.currentTime())
+		if reportErr == nil {
+			outcomes = report.Recent
+		}
+	}
+	writeJSON(writer, http.StatusOK, realtimeStrategyResponse{Lifecycles: realtime.BuildSignalLifecycles(signals, outcomes, limit), Cached: true})
 }
 
 func (s *Server) writeRealtimeOutcomes(writer http.ResponseWriter, request *http.Request) {

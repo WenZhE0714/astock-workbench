@@ -178,3 +178,46 @@ func TestTradePlanUsesWorstEntryRiskAndStableIdentity(t *testing.T) {
 		t.Fatal("expired validity accepted")
 	}
 }
+
+func TestAssistantRuleDraftIsBoundedTamperEvidentAndCreatesFrozenRule(t *testing.T) {
+	bars := chartTestBars(80)
+	now := chartTestTime(bars[79].Date, 16)
+	analysis, err := AnalyzeChart("sh600519", bars, now, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	structure := analysis.Structures[0]
+	levels := structure.Plan
+	proposal := domain.AssistantRuleProposal{
+		Kind: "breakout", Name: "放量突破后观察", Description: "完整日K收盘突破区间高点并满足量能条件",
+		EntryLow: levels.EntryLow, EntryHigh: levels.EntryHigh, Invalidation: levels.Invalidation,
+		ConfirmationPrice: levels.EntryLow,
+	}
+	draft, err := BuildAssistantRuleDraft(analysis, structure, "突破以后回踩区间时提醒我", now.AddDate(0, 0, 7).Format(time.DateOnly), proposal, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(draft.ID) != 64 || draft.Proposal.VolumeDays != 20 || draft.Proposal.MinimumVolumeRatio != 1.2 || len(draft.Warnings) == 0 {
+		t.Fatalf("draft was not normalized: %+v", draft)
+	}
+	plan, err := BuildAssistantTradePlan(analysis, draft, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Structure.ID != "assistant-breakout" || plan.MonitorRule == nil || plan.MonitorRule.Kind != "breakout" || plan.MonitorRule.Levels != *plan.Structure.Plan {
+		t.Fatalf("assistant plan did not freeze the validated rule: %+v", plan)
+	}
+	monitor, err := ConfigurePlanMonitor(plan, domain.PlanMonitor{}, true, now.Add(2*time.Minute))
+	if err != nil || monitor.Rule.BreakoutPrice != draft.Proposal.ConfirmationPrice {
+		t.Fatalf("assistant plan cannot be monitored: %v %+v", err, monitor)
+	}
+	tampered := draft
+	tampered.Proposal.EntryHigh++
+	if _, err := BuildAssistantTradePlan(analysis, tampered, now.Add(time.Minute)); err == nil {
+		t.Fatal("tampered draft was accepted")
+	}
+	proposal.EntryLow = analysis.Price * 2
+	if _, err := BuildAssistantRuleDraft(analysis, structure, "范围外价格", draft.ExpiresOn, proposal, now); err == nil {
+		t.Fatal("out-of-range AI price was accepted")
+	}
+}

@@ -19,6 +19,7 @@ type Paths struct {
 	AIChatsDir                  string
 	TradePlansDir               string
 	PlanMonitorsDir             string
+	PlanReviewsDir              string
 	PlanExperimentFile          string
 	BacktestsDir                string
 	OptimizationsDir            string
@@ -74,6 +75,7 @@ func ResolvePaths() (Paths, error) {
 		AIChatsDir:                  filepath.Join(dataDir, "ai-chats"),
 		TradePlansDir:               filepath.Join(dataDir, "trade-plans"),
 		PlanMonitorsDir:             filepath.Join(dataDir, "trade-plan-monitors"),
+		PlanReviewsDir:              filepath.Join(dataDir, "trade-plan-reviews"),
 		PlanExperimentFile:          filepath.Join(dataDir, "paper", "plan-experiment.json"),
 		BacktestsDir:                filepath.Join(dataDir, "backtests"),
 		OptimizationsDir:            filepath.Join(dataDir, "backtests", "optimizations"),

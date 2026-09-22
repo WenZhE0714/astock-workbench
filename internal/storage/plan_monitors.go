@@ -28,8 +28,23 @@ func (store *PlanMonitorStore) path(id string) (string, error) {
 }
 
 func validatePlanMonitor(state domain.PlanMonitor) error {
-	if state.Version != 1 || !validTradePlanID(state.PlanID) || !tradePlanSymbol.MatchString(state.Symbol) || state.Fingerprint == "" || state.Rule.Version != "plan-monitor-v1" || state.Rule.VolumeDays != 20 || state.Rule.MinimumVolume != 1.2 || state.Rule.CooldownSecs != 300 || state.Sequence != uint64(len(state.Events)) {
+	if state.Version != 1 || !validTradePlanID(state.PlanID) || !tradePlanSymbol.MatchString(state.Symbol) || state.Fingerprint == "" || state.Rule.Version != "plan-monitor-v1" || state.Rule.VolumeDays < 5 || state.Rule.VolumeDays > 60 || state.Rule.MinimumVolume < .5 || state.Rule.MinimumVolume > 5 || state.Rule.CooldownSecs < 60 || state.Rule.CooldownSecs > 3600 || state.Sequence != uint64(len(state.Events)) {
 		return fmt.Errorf("计划监控格式无效")
+	}
+	kind := strings.ToLower(strings.TrimSpace(state.Rule.Kind))
+	if kind == "" {
+		switch state.Rule.StructureID {
+		case "range-breakout", "compression-breakout":
+			kind = "breakout"
+		case "ma-pullback":
+			kind = "pullback"
+		}
+	}
+	if kind != "breakout" && kind != "pullback" {
+		return fmt.Errorf("计划监控规则类型无效")
+	}
+	if kind == "breakout" && !positiveStoredMonitorPrice(state.Rule.BreakoutPrice) {
+		return fmt.Errorf("计划监控突破确认价无效")
 	}
 	if _, err := time.Parse(time.DateOnly, state.ExpiresOn); err != nil {
 		return fmt.Errorf("监控有效期无效")
@@ -59,6 +74,10 @@ func validatePlanMonitor(state domain.PlanMonitor) error {
 		}
 	}
 	return nil
+}
+
+func positiveStoredMonitorPrice(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func (store *PlanMonitorStore) Load(id string) (domain.PlanMonitor, error) {

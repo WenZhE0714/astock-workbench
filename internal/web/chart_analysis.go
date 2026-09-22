@@ -98,6 +98,23 @@ func (s *Server) handleTradePlans(writer http.ResponseWriter, request *http.Requ
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 			return
 		}
+		if id := strings.TrimSpace(request.URL.Query().Get("plan_id")); id != "" {
+			plan, loadErr := s.tradePlans.Load(symbol, id)
+			if loadErr != nil {
+				writeJSON(writer, http.StatusBadRequest, errorResponse{Error: "读取指定计划失败: " + loadErr.Error()})
+				return
+			}
+			found := false
+			for _, item := range plans {
+				if item.ID == id {
+					found = true
+					break
+				}
+			}
+			if !found {
+				plans = append([]domain.TradePlan{plan}, plans...)
+			}
+		}
 		writeJSON(writer, http.StatusOK, struct {
 			Items []domain.TradePlan `json:"items"`
 			Today string             `json:"today"`

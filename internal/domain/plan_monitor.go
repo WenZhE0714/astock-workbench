@@ -5,11 +5,13 @@ import "time"
 type PlanMonitorRule struct {
 	Version       string          `json:"version"`
 	StructureID   string          `json:"structure_id"`
+	Kind          string          `json:"kind,omitempty"`
 	Description   string          `json:"description"`
 	Levels        ChartPlanLevels `json:"levels"`
 	BreakoutPrice float64         `json:"breakout_price"`
 	VolumeDays    int             `json:"volume_days"`
 	MinimumVolume float64         `json:"minimum_volume_ratio"`
+	RequireTrend  bool            `json:"require_trend,omitempty"`
 	CooldownSecs  int             `json:"cooldown_seconds"`
 }
 

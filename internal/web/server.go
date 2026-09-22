@@ -233,6 +233,7 @@ type Server struct {
 	aiChatService             AIChatService
 	aiConfigService           AIConfigService
 	tradePlans                tradePlanArchive
+	planReviews               tradePlanReviewArchive
 	planMonitors              planMonitorArchive
 	planMonitorMu             sync.Mutex
 	planMonitorCycleMu        sync.Mutex
@@ -433,6 +434,7 @@ type boardResponse struct {
 	Code          string                `json:"code"`
 	Name          string                `json:"name"`
 	Kind          string                `json:"kind"`
+	Source        string                `json:"source,omitempty"`
 	Quote         *boardQuoteResponse   `json:"quote,omitempty"`
 	Percent       *float64              `json:"percent"`
 	MainNet       *float64              `json:"main_net_yuan"`
@@ -1045,6 +1047,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/stock", s.handleStock)
 	mux.HandleFunc("/api/chart-analysis", s.handleChartAnalysis)
 	mux.HandleFunc("/api/trade-plans", s.handleTradePlans)
+	mux.HandleFunc("/api/trade-plan-reviews", s.handleTradePlanReviews)
+	mux.HandleFunc("/api/trade-playbook", s.handleTradePlaybook)
 	mux.HandleFunc("/api/trade-plan-monitors", s.handlePlanMonitors)
 	mux.HandleFunc("/api/plan-experiment", s.handlePlanExperiment)
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
@@ -1056,6 +1060,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/assistant/context", s.handleAssistantContext)
 	mux.HandleFunc("/api/assistant/alerts", s.handleAssistantAlerts)
 	mux.HandleFunc("/api/assistant/chat", s.handleAssistantChat)
+	mux.HandleFunc("/api/assistant/rule-drafts", s.handleAssistantRuleDraft)
 	mux.HandleFunc("/api/ai/config", s.handleAIConfig)
 	mux.HandleFunc("/api/ai/config/test", s.handleAIConfigTest)
 	mux.HandleFunc("/api/ai/config/reset", s.handleAIConfigReset)
@@ -2485,14 +2490,28 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 		response.Minutes = newMinutePoints(minuteResult.points)
 	}
 	if s.relatedBoards != nil || s.stockNews != nil {
-		relatedCtx, cancelRelated := context.WithTimeout(ctx, 5*time.Second)
+		// Leave enough budget for the independent board fallback. The primary
+		// provider can consume part of its own timeout before Tonghuashun is tried.
+		relatedCtx, cancelRelated := context.WithTimeout(ctx, 12*time.Second)
 		defer cancelRelated()
-		boardsCh := make(chan []domain.BoardFlow, 1)
+		boardsCh := make(chan struct {
+			items []domain.BoardFlow
+			err   error
+		}, 1)
 		newsCh := make(chan []domain.StockNewsItem, 1)
 		if s.relatedBoards != nil {
-			go func() { boards, _ := s.relatedBoards.FetchBoards(relatedCtx, symbol); boardsCh <- boards }()
+			go func() {
+				boards, err := s.relatedBoards.FetchBoards(relatedCtx, symbol)
+				boardsCh <- struct {
+					items []domain.BoardFlow
+					err   error
+				}{items: boards, err: err}
+			}()
 		} else {
-			boardsCh <- nil
+			boardsCh <- struct {
+				items []domain.BoardFlow
+				err   error
+			}{}
 		}
 		if s.stockNews != nil {
 			go func() {
@@ -2505,7 +2524,11 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 		} else {
 			newsCh <- nil
 		}
-		for _, flow := range <-boardsCh {
+		boardsResult := <-boardsCh
+		if boardsResult.err != nil {
+			response.BoardError = boardsResult.err.Error()
+		}
+		for _, flow := range boardsResult.items {
 			var leaders []domain.MarketStockSnapshot
 			if s.boardDetails != nil && flow.Code != "" {
 				_, leaders, _ = s.fetchBoard(relatedCtx, flow.Code)
@@ -2579,7 +2602,7 @@ func finitePointer(value float64) *float64 {
 
 func newBoardResponse(flow domain.BoardFlow, leaders []domain.MarketStockSnapshot) *boardResponse {
 	result := &boardResponse{
-		Code: flow.Code, Name: flow.Name, Kind: flow.Kind,
+		Code: flow.Code, Name: flow.Name, Kind: flow.Kind, Source: flow.Source,
 		Percent: finitePointer(flow.Percent), MainNet: finitePointer(flow.MainNet),
 		MainRatio: finitePointer(flow.MainRatio), Turnover: finitePointer(flow.Turnover),
 		RiseCount: flow.RiseCount, FallCount: flow.FallCount, FlatCount: flow.FlatCount,

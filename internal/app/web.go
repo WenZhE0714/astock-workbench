@@ -92,6 +92,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAIChatService(webAIChatService{app: app}),
 		web.WithAIConfigService(webAIConfigService{app: app}),
 		web.WithTradePlans(storage.NewTradePlanStore(app.paths.TradePlansDir)),
+		web.WithTradePlanReviews(storage.NewTradePlanReviewStore(app.paths.PlanReviewsDir)),
 		web.WithPlanMonitors(storage.NewPlanMonitorStore(app.paths.PlanMonitorsDir)),
 		web.WithPlanExperiment(storage.NewPlanExperimentStore(app.paths.PlanExperimentFile)),
 		web.WithMarketAmount(app.amounts),
@@ -106,7 +107,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 			market.EastmoneyGlobalChartClient{},
 		)),
 		web.WithBoardDetails(market.EastmoneyClient{}),
-		web.WithRelatedData(market.EastmoneyClient{}, market.EastmoneyClient{}),
+		web.WithRelatedData(app.boards, market.EastmoneyClient{}),
 		web.WithStrategyResearch(
 			strategyEngine,
 			storage.NewBacktestStore(app.paths.BacktestsDir),

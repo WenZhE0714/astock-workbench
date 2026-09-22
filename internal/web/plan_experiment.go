@@ -11,6 +11,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
+	"github.com/wenzhe/astock-workbench/internal/storage"
 	"github.com/wenzhe/astock-workbench/internal/strategy"
 )
 
@@ -53,6 +54,26 @@ func (s *Server) handlePlanExperiment(writer http.ResponseWriter, request *http.
 				state = &loaded
 			}
 		}
+		review := paper.BuildPlanExperimentReview(paper.PlanExperiment{})
+		if state != nil {
+			review = paper.BuildPlanExperimentReview(*state)
+		}
+		if s.nameCacheFile != "" {
+			if names, err := storage.LoadNameCache(s.nameCacheFile); err == nil {
+				for index := range review.Plans {
+					review.Plans[index].Name = names.LookupName(review.Plans[index].Symbol)
+				}
+			}
+		}
+		if request.URL.Query().Get("view") == "review" {
+			if request.URL.Query().Get("download") == "1" {
+				writer.Header().Set("Content-Disposition", `attachment; filename="plan-experiment-review.json"`)
+			}
+			writeJSON(writer, http.StatusOK, struct {
+				Review paper.PlanExperimentReview `json:"review"`
+			}{Review: review})
+			return
+		}
 		if request.URL.Query().Get("download") == "1" {
 			writer.Header().Set("Content-Disposition", `attachment; filename="plan-experiment.json"`)
 		} else if state != nil {
@@ -73,10 +94,11 @@ func (s *Server) handlePlanExperiment(writer http.ResponseWriter, request *http.
 			}
 		}
 		writeJSON(writer, http.StatusOK, struct {
-			State   *paper.PlanExperiment `json:"state,omitempty"`
-			Runtime planExperimentRuntime `json:"runtime"`
-			Config  paper.Config          `json:"config"`
-		}{state, s.experimentRuntime(), paper.PlanExperimentConfig()})
+			State   *paper.PlanExperiment      `json:"state,omitempty"`
+			Runtime planExperimentRuntime      `json:"runtime"`
+			Config  paper.Config               `json:"config"`
+			Review  paper.PlanExperimentReview `json:"review"`
+		}{state, s.experimentRuntime(), paper.PlanExperimentConfig(), review})
 		return
 	}
 	if request.Method != http.MethodPost {

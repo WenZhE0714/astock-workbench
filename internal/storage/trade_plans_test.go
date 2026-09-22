@@ -80,3 +80,23 @@ func TestTradePlanStoreRejectsUnsafePathsAndReportsCorruption(t *testing.T) {
 		t.Fatal("corrupt snapshot hidden")
 	}
 }
+
+func TestTradePlanStoreAllListsAcrossSymbols(t *testing.T) {
+	store := NewTradePlanStore(t.TempDir())
+	first := tradePlanFixture()
+	second := tradePlanFixture()
+	second.ID = strings.Repeat("c", 64)
+	second.Symbol = "sz000001"
+	second.Analysis.Symbol = second.Symbol
+	second.Analysis.Fingerprint = strings.Repeat("d", 64)
+	second.CreatedAt = first.CreatedAt.Add(time.Hour)
+	for _, plan := range []domain.TradePlan{first, second} {
+		if _, _, err := store.Save(plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := store.All(10)
+	if err != nil || len(items) != 2 || items[0].Symbol != second.Symbol || items[1].Symbol != first.Symbol {
+		t.Fatalf("cross-symbol plans were not listed: %v %+v", err, items)
+	}
+}

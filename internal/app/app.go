@@ -71,6 +71,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	primaryHistory := market.NewFallbackDailyHistoryClient(market.EastmoneyClient{}, market.TencentClient{})
 	primaryScanHistory := market.TencentClient{}
 	quoteClient := market.TencentClient{}
+	boardClient := market.NewFallbackBoardFlowClient(market.EastmoneyClient{}, market.THSStockBoardClient{})
 	historyClient := market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history-execution"))
 	app := &App{
 		out:             output,
@@ -82,7 +83,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		httpQuotes:      quoteClient,
 		flows:           market.EastmoneyClient{},
 		industryFlows:   market.EastmoneyClient{},
-		boards:          market.EastmoneyClient{},
+		boards:          boardClient,
 		dragonTiger:     market.EastmoneyClient{},
 		amounts:         market.SinaAmountClient{},
 		globalMarkets:   market.SinaGlobalIndexClient{},

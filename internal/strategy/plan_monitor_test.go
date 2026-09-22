@@ -248,6 +248,39 @@ func TestPlanMonitorPullbackRequiresSixtyCompletedBars(t *testing.T) {
 	}
 }
 
+func TestAssistantPullbackWithoutTrendUsesOnlyItsPriceRule(t *testing.T) {
+	bars := chartTestBars(80)
+	now := chartTestTime(bars[79].Date, 16)
+	analysis, err := AnalyzeChart("sh600519", bars, now, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := domain.AssistantRuleProposal{
+		Kind: "pullback", Name: "价格回踩", Description: "完整日K进入区间并收盘守住下沿",
+		EntryLow: 99, EntryHigh: 101, Invalidation: 97, ConfirmationPrice: 100,
+		VolumeDays: 20, MinimumVolumeRatio: 1.2, RequireTrend: false,
+	}
+	draft, err := BuildAssistantRuleDraft(analysis, analysis.Structures[0], "只按价格回踩观察", now.AddDate(0, 0, 7).Format(time.DateOnly), proposal, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildAssistantTradePlan(analysis, draft, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := ConfigurePlanMonitor(plan, domain.PlanMonitor{}, true, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = AdvancePlanMonitor(state, PlanMonitorObservation{
+		Now: now, Session: "closing", ClosingSlot: bars[79].Date + ":primary", CalendarKnown: true,
+		TradingDate: bars[79].Date, PreviousTradingDate: bars[78].Date, Bars: bars[79:],
+	})
+	if state.Phase != "confirmed" || state.DataStatus != "healthy" {
+		t.Fatalf("bounded pullback rule incorrectly required MA history: %+v", state)
+	}
+}
+
 func TestMonitorQuoteDayAttestationIsNotWeekdayGuessing(t *testing.T) {
 	now := time.Date(2026, 9, 21, 10, 0, 0, 0, chartLocation)
 	quote := domain.Quote{Symbol: "sh600519", Current: "100.00", QuoteTime: now.Format(time.RFC3339)}

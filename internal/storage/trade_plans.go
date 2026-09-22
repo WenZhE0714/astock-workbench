@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,6 +36,16 @@ func validateStoredTradePlan(plan domain.TradePlan) error {
 	id, err := hex.DecodeString(plan.ID)
 	if err != nil || len(id) != 32 || plan.ID != strings.ToLower(plan.ID) || plan.Version != 1 || !tradePlanSymbol.MatchString(plan.Symbol) || plan.Analysis.Symbol != plan.Symbol || plan.Analysis.Fingerprint == "" || plan.Structure.Plan == nil || plan.CreatedAt.IsZero() {
 		return fmt.Errorf("交易计划快照格式无效")
+	}
+	if plan.MonitorRule != nil {
+		rule := plan.MonitorRule
+		if rule.Version != "plan-monitor-v1" || rule.StructureID != plan.Structure.ID || rule.Levels != *plan.Structure.Plan ||
+			(rule.Kind != "breakout" && rule.Kind != "pullback") || strings.TrimSpace(rule.Description) == "" ||
+			rule.VolumeDays < 5 || rule.VolumeDays > 60 || rule.MinimumVolume < .5 || rule.MinimumVolume > 5 ||
+			rule.CooldownSecs < 60 || rule.CooldownSecs > 3600 || math.IsNaN(rule.BreakoutPrice) || math.IsInf(rule.BreakoutPrice, 0) ||
+			(rule.Kind == "breakout" && rule.BreakoutPrice <= 0) {
+			return fmt.Errorf("交易计划自定义监控规则无效")
+		}
 	}
 	return nil
 }
@@ -156,4 +167,38 @@ func (store *TradePlanStore) List(symbol string, limit int) ([]domain.TradePlan,
 		plans = plans[:limit]
 	}
 	return plans, nil
+}
+
+func (store *TradePlanStore) All(limit int) ([]domain.TradePlan, error) {
+	if store == nil || strings.TrimSpace(store.root) == "" {
+		return nil, fmt.Errorf("交易计划目录未初始化")
+	}
+	entries, err := os.ReadDir(store.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []domain.TradePlan{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.TradePlan, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || !tradePlanSymbol.MatchString(entry.Name()) {
+			continue
+		}
+		plans, listErr := store.List(entry.Name(), 0)
+		if listErr != nil {
+			return nil, listErr
+		}
+		result = append(result, plans...)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }

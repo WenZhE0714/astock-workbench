@@ -52,6 +52,16 @@ type AIChatService interface {
 	Save(context.Context, string, string, []domain.AIChatTurn) error
 }
 
+// AIChartChatService is optional. Servers keep compatibility with simple chat
+// implementations while production can attach a verified visible chart.
+type AIChartChatService interface {
+	AskWithChart(context.Context, string, string, []domain.AIChatTurn, *domain.AssistantChartContext, func(string)) (AIChatAnswer, error)
+}
+
+type AITradeRuleService interface {
+	DraftRule(context.Context, string, string, string, domain.AssistantChartContext) (domain.AssistantRuleDraft, error)
+}
+
 const (
 	assistantContextTimeout  = 90 * time.Second
 	assistantContextCacheTTL = 3 * time.Minute
@@ -121,8 +131,9 @@ type assistantAlertsResponse struct {
 }
 
 type assistantChatRequest struct {
-	Symbol   string `json:"symbol"`
-	Question string `json:"question"`
+	Symbol   string               `json:"symbol"`
+	Question string               `json:"question"`
+	Chart    *assistantChartInput `json:"chart,omitempty"`
 }
 
 type assistantChatResponse struct {
@@ -156,6 +167,7 @@ type assistantChatJob struct {
 	name       string
 	question   string
 	history    []domain.AIChatTurn
+	chart      *domain.AssistantChartContext
 	status     string
 	progress   string
 	createdAt  time.Time
@@ -431,7 +443,12 @@ func (s *Server) startAssistantChat(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	history := assistantHistoryForModel(conversation.Turns)
-	job, existing := s.createAssistantJob(symbol, conversation.Name, input.Question, history)
+	chart, err := s.resolveAssistantChartContext(ctx, symbol, input.Chart)
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, errorResponse{Error: err.Error()})
+		return
+	}
+	job, existing := s.createAssistantJob(symbol, conversation.Name, input.Question, history, chart)
 	if existing {
 		writeJSON(writer, http.StatusConflict, job.assistantJobView())
 		return
@@ -518,7 +535,7 @@ func assistantHistoryForWeb(turns []domain.AIChatTurn) []domain.AIChatTurn {
 	return result
 }
 
-func (s *Server) createAssistantJob(symbol, name, question string, history []domain.AIChatTurn) (*assistantChatJob, bool) {
+func (s *Server) createAssistantJob(symbol, name, question string, history []domain.AIChatTurn, chart *domain.AssistantChartContext) (*assistantChatJob, bool) {
 	if s == nil {
 		return nil, false
 	}
@@ -544,7 +561,8 @@ func (s *Server) createAssistantJob(symbol, name, question string, history []dom
 	id := fmt.Sprintf("ai-%d-%d", now.UnixNano(), sequence)
 	job := &assistantChatJob{
 		id: id, symbol: symbol, name: strings.TrimSpace(name), question: question,
-		history: append([]domain.AIChatTurn(nil), history...), status: "queued", progress: "等待Agent启动", createdAt: now,
+		history: append([]domain.AIChatTurn(nil), history...), chart: cloneAssistantChartContext(chart),
+		status: "queued", progress: "等待Agent启动", createdAt: now,
 	}
 	s.assistantJobs[id] = job
 	return job, false
@@ -575,9 +593,14 @@ func (s *Server) runAssistantJob(job *assistantChatJob) {
 	job.mu.Unlock()
 	defer cancel()
 	job.setRunning("采集当前股票多维数据", s.currentTime())
-	answer, err := s.aiChatService.Ask(jobContext, job.symbol, job.question, assistantHistoryForModel(job.history), func(progress string) {
-		job.setProgress(progress)
-	})
+	progress := func(value string) { job.setProgress(value) }
+	var answer AIChatAnswer
+	var err error
+	if chartService, ok := s.aiChatService.(AIChartChatService); ok && job.chart != nil {
+		answer, err = chartService.AskWithChart(jobContext, job.symbol, job.question, assistantHistoryForModel(job.history), cloneAssistantChartContext(job.chart), progress)
+	} else {
+		answer, err = s.aiChatService.Ask(jobContext, job.symbol, job.question, assistantHistoryForModel(job.history), progress)
+	}
 	if err != nil {
 		job.fail(err, s.currentTime())
 		return

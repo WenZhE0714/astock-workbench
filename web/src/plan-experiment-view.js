@@ -1,12 +1,13 @@
 import { ArrowUpRight, Download } from "lucide-vue-next"
 import { finiteNumber } from "./dashboard.mjs"
 import { experimentComparison, experimentOperations, experimentTrialLabel } from "./plan-experiment.mjs"
+import { PlanExperimentReviewView } from "./plan-experiment-review-view.js"
 
 export const PlanExperimentView = {
-  components: { ArrowUpRight, Download },
-  props: { state: Object, runtime: Object, config: Object, monitors: Array, busy: Boolean, error: String },
-  emits: ["configure", "open-stock"],
-  data() { return { selectedArm: "range", detailView: "positions", hovered: null, resizeObserver: null } },
+  components: { ArrowUpRight, Download, PlanExperimentReviewView },
+  props: { state: Object, review: Object, runtime: Object, config: Object, monitors: Array, busy: Boolean, error: String },
+  emits: ["configure", "open-stock", "open-plan"],
+  data() { return { pane: new URLSearchParams(window.location.search).get("experiment") === "review" ? "review" : "account", selectedArm: "range", detailView: "positions", hovered: null, resizeObserver: null } },
   computed: {
     arms() { return this.state?.arms || [] },
     arm() { return this.arms.find(item => item.id === this.selectedArm) || this.arms[0] || null },
@@ -26,6 +27,7 @@ export const PlanExperimentView = {
   },
   watch: {
     state: { handler() { this.$nextTick(() => this.draw()) }, deep: false },
+    pane() { this.$nextTick(() => this.draw()) },
   },
   methods: {
     experimentTrialLabel,
@@ -48,6 +50,7 @@ export const PlanExperimentView = {
       if (!canvas) return
       const rect = canvas.getBoundingClientRect()
       const width = rect.width, height = rect.height, dpr = window.devicePixelRatio || 1
+      if (width <= 0 || height <= 0) return
       canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr)
       const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr)
       ctx.clearRect(0, 0, width, height)
@@ -81,8 +84,10 @@ export const PlanExperimentView = {
   mounted() { this.resizeObserver = new ResizeObserver(() => this.draw()); this.resizeObserver.observe(this.$refs.chart); this.draw() },
   beforeUnmount() { this.resizeObserver?.disconnect() },
   template: `<section class="plan-experiment" aria-label="双组影子实验">
-    <div class="experiment-toolbar"><label class="plan-monitor-switch"><input type="checkbox" :checked="!!state?.entries_enabled" :disabled="busy || !runtime?.supported" aria-label="允许实验新开仓" @change="configureEntries"><span>允许新开仓</span></label><span class="experiment-status">{{ state?.message || '实验尚未初始化' }}</span><a class="icon-button" href="/api/plan-experiment?download=1" download="plan-experiment.json" title="导出实验账本" aria-label="导出实验账本"><download :size="16" /></a></div>
+    <div class="dashboard-segment experiment-view-tabs" role="tablist" aria-label="影子实验视图"><button type="button" role="tab" :aria-selected="pane === 'account'" :aria-pressed="pane === 'account'" @click="pane = 'account'">账户</button><button type="button" role="tab" :aria-selected="pane === 'review'" :aria-pressed="pane === 'review'" @click="pane = 'review'">自动复盘</button></div>
     <p class="chart-plan-error" v-if="error || runtime?.error" role="alert">{{ error || runtime.error }}</p>
+    <div v-show="pane === 'account'">
+    <div class="experiment-toolbar"><label class="plan-monitor-switch"><input type="checkbox" :checked="!!state?.entries_enabled" :disabled="busy || !runtime?.supported" aria-label="允许实验新开仓" @change="configureEntries"><span>允许新开仓</span></label><span class="experiment-status">{{ state?.message || '实验尚未初始化' }}</span><a class="icon-button" href="/api/plan-experiment?download=1" download="plan-experiment.json" title="导出实验账本" aria-label="导出实验账本"><download :size="16" /></a></div>
     <div class="experiment-policy"><span>每组初始 {{ money(config?.initial_cash) }} 元</span><span>单股 {{ config?.max_position_percent }}%</span><span>现金预留 {{ config?.cash_reserve_percent }}%</span><span>每日新增 ≤ {{ config?.max_daily_deployment_percent }}%</span><span>未分类行业共用 {{ config?.max_industry_percent }}% 额度</span><span>T+1 · 下一报价撮合 · 单计划单次开仓</span></div>
     <div class="experiment-mobile-balances"><div v-for="item in arms" :key="item.id"><div class="experiment-mobile-profit"><span>{{ item.name }}</span><strong :class="tone(item.report.total_profit)">{{ money(item.report.total_profit) }} 元</strong><small :class="tone(item.report.total_return_percent)">{{ number(item.report.total_return_percent) }}%</small></div><dl><div><dt>总资产</dt><dd>{{ money(item.report.total_equity) }}</dd></div><div><dt>可用资金</dt><dd>{{ money(item.report.remaining_cash) }}</dd></div><div><dt>持仓市值</dt><dd>{{ money(item.report.total_market_value) }}</dd></div><div><dt>费用 / 最大回撤</dt><dd>{{ money(item.report.total_fees) }} / {{ number(item.max_drawdown_percent) }}%</dd></div></dl></div></div>
     <div class="experiment-summary-wrap"><table class="experiment-summary"><thead><tr><th>实验组</th><th>总资产</th><th>总收益</th><th>收益率</th><th>可用资金</th><th>持仓市值</th><th>费用</th><th>最大回撤</th></tr></thead><tbody><tr v-for="item in arms" :key="item.id"><th>{{ item.name }}</th><td>{{ money(item.report.total_equity) }}</td><td :class="tone(item.report.total_profit)"><strong>{{ money(item.report.total_profit) }}</strong></td><td :class="tone(item.report.total_return_percent)">{{ number(item.report.total_return_percent) }}%</td><td>{{ money(item.report.remaining_cash) }}</td><td>{{ money(item.report.total_market_value) }}</td><td>{{ money(item.report.total_fees) }}</td><td>{{ number(item.max_drawdown_percent) }}%</td></tr></tbody></table></div>
@@ -93,5 +98,7 @@ export const PlanExperimentView = {
     <div class="experiment-detail-controls"><div class="dashboard-segment" role="tablist" aria-label="实验账户"><button type="button" role="tab" v-for="item in arms" :key="item.id" :aria-selected="selectedArm === item.id" :aria-pressed="selectedArm === item.id" @click="selectedArm = item.id">{{ item.name }}</button></div><div class="dashboard-segment" aria-label="实验明细"><button type="button" :aria-pressed="detailView === 'positions'" @click="detailView = 'positions'">持仓 {{ report.open_positions || 0 }}</button><button type="button" :aria-pressed="detailView === 'operations'" @click="detailView = 'operations'">操作记录</button></div></div>
     <div class="experiment-table-wrap" v-if="detailView === 'positions'"><table class="experiment-detail-table"><thead><tr><th>股票 / 计划</th><th>浮动盈亏</th><th>持仓 / 可卖</th><th>成本 / 现价</th><th>开仓时间</th><th>失效 / 2R目标</th><th>状态</th></tr></thead><tbody><tr v-for="position in (report.positions || [])" :key="position.signal_id"><td><button type="button" class="plan-monitor-stock" @click="$emit('open-stock', {symbol:position.symbol})">{{ position.symbol.slice(2) }}<arrow-up-right :size="13" /></button><small>{{ planName(position.signal_id) }}</small></td><td :class="tone(position.unrealized_profit)"><strong>{{ money(position.unrealized_profit) }} 元</strong><small>{{ number(position.unrealized_return_percent) }}%</small></td><td>{{ position.quantity }} / {{ position.available_quantity }}</td><td>{{ number(position.entry_price) }} / {{ number(position.last_price) }}</td><td>{{ time(position.entry_time) }}</td><td>{{ number(position.invalidation_price) }} / {{ number(state.selections[position.signal_id]?.plan.structure.plan.target_2) }}</td><td>{{ experimentTrialLabel(trial(position.signal_id).status) }}<small>{{ trial(position.signal_id).reason }}</small></td></tr></tbody></table><p class="chart-analysis-empty" v-if="!(report.positions || []).length">暂无实验持仓</p></div>
     <div class="experiment-table-wrap" v-else><table class="experiment-detail-table"><thead><tr><th>执行时间</th><th>股票 / 计划</th><th>操作</th><th>数量</th><th>模拟成交价</th><th>依据</th></tr></thead><tbody><tr v-for="operation in operations" :key="operation.id"><td>{{ time(operation.at) }}</td><td>{{ operation.symbol.slice(2) }}<small>{{ planName(operation.plan_id) }}</small></td><td :class="operation.status === 'rejected' ? 'experiment-rejected' : ''">{{ operation.kind }}</td><td>{{ operation.quantity || '--' }}</td><td>{{ number(operation.price) }}</td><td>{{ operation.reason }}</td></tr></tbody></table><p class="chart-analysis-empty" v-if="!operations.length">暂无模拟操作</p></div>
+    </div>
+    <plan-experiment-review-view v-if="pane === 'review'" :review="review" @open-plan="$emit('open-plan', $event)" />
   </section>`,
 }

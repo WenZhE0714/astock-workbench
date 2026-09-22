@@ -40,6 +40,12 @@ func (resolverStub) Resolve(_ context.Context, input string) (string, error) {
 
 type boardDetailStub struct{}
 
+type relatedBoardErrorStub struct{}
+
+func (relatedBoardErrorStub) FetchBoards(context.Context, string) ([]domain.BoardFlow, error) {
+	return nil, fmt.Errorf("关联板块数据源均不可用（测试）")
+}
+
 func TestSortNewsByTimePutsNewestFirstAndUnknownLast(t *testing.T) {
 	items := sortNewsByTime([]domain.StockNewsItem{
 		{Title: "old", Date: "2026-09-01 09:30:00"},
@@ -330,6 +336,22 @@ func TestStockEndpointReturnsQuoteHistoryAndMinutes(t *testing.T) {
 	}
 	if response.Minutes[0].Time != "09:30" || response.Minutes[0].Average != 12.2 {
 		t.Fatalf("unexpected minute response: %+v", response.Minutes[0])
+	}
+}
+
+func TestStockEndpointExposesRelatedBoardError(t *testing.T) {
+	server := NewServer(resolverStub{}, quoteStub{}, historyStub{}, minuteStub{}, "600519", WithRelatedData(relatedBoardErrorStub{}, nil))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/stock?symbol=600519", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response stockResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.BoardError != "关联板块数据源均不可用（测试）" {
+		t.Fatalf("board error was not exposed: %+v", response)
 	}
 }
 

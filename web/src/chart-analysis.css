@@ -53,6 +53,19 @@
 .chart-saved-plan-body dt { color:var(--muted); font-size:11px; }
 .chart-saved-plan-body dd { margin:3px 0 0; font-size:12px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .chart-saved-plan-body p { margin:8px 0 0; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.plan-review { margin-top:12px; border-top:1px dashed var(--line); }
+.plan-review>summary { display:flex; align-items:center; gap:8px; min-height:38px; cursor:pointer; color:var(--muted); font-size:10px; }
+.plan-review>summary b { margin-left:auto; color:var(--accent); font-size:10px; }
+.plan-review>summary small { margin:0; }
+.plan-review-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.plan-review-grid label { display:flex; min-width:0; flex-direction:column; gap:4px; color:var(--muted); font-size:10px; }
+.plan-review-grid label.wide { grid-column:1/-1; }
+.plan-review-grid input,.plan-review-grid select,.plan-review-grid textarea { width:100%; min-height:30px; padding:5px 7px; border:1px solid var(--line); background:var(--panel-strong); color:var(--text); font:11px/1.4 inherit; }
+.plan-review-grid textarea { resize:vertical; }
+.plan-review-result { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-top:8px; }
+.plan-review-result span { color:var(--accent); font-size:11px; font-weight:600; }
+.plan-review-result button { min-height:30px; padding:5px 9px; border:1px solid var(--accent); background:#224f5c; color:#eaffff; font-size:10px; }
+@media (max-width:640px) { .plan-review-grid { grid-template-columns:1fr; } .plan-review-grid label.wide { grid-column:auto; } }
 .chart-key-levels h2 { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:6px; }
 .chart-key-levels h2 small { color:var(--muted); font-size:10px; font-weight:400; }
 .chart-key-levels .row { flex-wrap:wrap; gap:3px 8px; font-size:12px; }

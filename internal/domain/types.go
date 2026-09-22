@@ -245,12 +245,14 @@ const (
 	BoardKindConcept  = "concept"
 )
 
-// BoardFlow is an Eastmoney industry/concept board snapshot associated with
-// one stock. MainNet is denominated in yuan.
+// BoardFlow is an industry/concept board snapshot associated with one stock.
+// MainNet is denominated in yuan. Source identifies the provider because the
+// related-board path may transparently fall back to an independent source.
 type BoardFlow struct {
 	Code          string              `json:"code"`
 	Name          string              `json:"name"`
 	Kind          string              `json:"kind"`
+	Source        string              `json:"source,omitempty"`
 	Quote         *BoardQuoteSnapshot `json:"quote,omitempty"`
 	Percent       float64             `json:"percent"`
 	MainNet       float64             `json:"main_net_yuan"`

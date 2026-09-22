@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
@@ -312,4 +313,157 @@ func BuildTradePlan(analysis domain.ChartAnalysis, structureID, expiresOn string
 		}, nil
 	}
 	return domain.TradePlan{}, fmt.Errorf("结构不存在，请刷新分析")
+}
+
+func BuildAssistantRuleDraft(analysis domain.ChartAnalysis, structure domain.ChartStructure, question, expiresOn string, proposal domain.AssistantRuleProposal, createdAt time.Time) (domain.AssistantRuleDraft, error) {
+	if createdAt.IsZero() || analysis.Version != "chart-v1" || analysis.Fingerprint == "" || analysis.Symbol == "" || structure.ID == "" {
+		return domain.AssistantRuleDraft{}, fmt.Errorf("缺少可验证的图表上下文")
+	}
+	question = strings.TrimSpace(question)
+	if question == "" || len([]rune(question)) > 500 {
+		return domain.AssistantRuleDraft{}, fmt.Errorf("规则描述须为1至500个字")
+	}
+	if err := validatePlanExpiry(expiresOn, createdAt); err != nil {
+		return domain.AssistantRuleDraft{}, err
+	}
+	normalized, warnings, err := normalizeAssistantRuleProposal(analysis, structure, proposal)
+	if err != nil {
+		return domain.AssistantRuleDraft{}, err
+	}
+	draft := domain.AssistantRuleDraft{
+		Version: "assistant-rule-v1", Symbol: analysis.Symbol, CreatedAt: createdAt, ExpiresOn: expiresOn,
+		SourceQuestion: question, AnalysisDate: analysis.DataDate, AnalysisFingerprint: analysis.Fingerprint,
+		StructureID: structure.ID, Proposal: normalized, Warnings: warnings,
+	}
+	draft.ID = assistantRuleDraftID(draft)
+	return draft, nil
+}
+
+func BuildAssistantTradePlan(analysis domain.ChartAnalysis, draft domain.AssistantRuleDraft, createdAt time.Time) (domain.TradePlan, error) {
+	if createdAt.IsZero() || draft.Version != "assistant-rule-v1" || draft.Symbol != analysis.Symbol || draft.AnalysisDate != analysis.DataDate || draft.AnalysisFingerprint != analysis.Fingerprint || draft.ID == "" || draft.ID != assistantRuleDraftID(draft) {
+		return domain.TradePlan{}, fmt.Errorf("规则草案与当前图表快照不一致")
+	}
+	if err := validatePlanExpiry(draft.ExpiresOn, createdAt); err != nil {
+		return domain.TradePlan{}, err
+	}
+	var selected domain.ChartStructure
+	for _, item := range analysis.Structures {
+		if item.ID == draft.StructureID {
+			selected = item
+			break
+		}
+	}
+	if selected.ID == "" {
+		return domain.TradePlan{}, fmt.Errorf("规则草案引用的结构已不存在")
+	}
+	proposal, _, err := normalizeAssistantRuleProposal(analysis, selected, draft.Proposal)
+	if err != nil {
+		return domain.TradePlan{}, err
+	}
+	if encoded, _ := json.Marshal(proposal); string(encoded) != mustJSON(draft.Proposal) {
+		return domain.TradePlan{}, fmt.Errorf("规则草案未经过规范化校验")
+	}
+	confirmation := fmt.Sprintf("完整日K收盘高于 %.2f，成交量达到此前%d日均量的%.2f倍；后续交易日仅在入场区间内观察", proposal.ConfirmationPrice, proposal.VolumeDays, proposal.MinimumVolumeRatio)
+	if proposal.Kind == "pullback" {
+		trend := ""
+		if proposal.RequireTrend {
+			trend = "MA20高于MA60；"
+		}
+		confirmation = fmt.Sprintf("%s完整日K最低进入 %.2f - %.2f 且收盘不低于 %.2f；后续交易日才观察入场", trend, proposal.EntryLow, proposal.EntryHigh, proposal.EntryLow)
+	}
+	levels := chartPlanLevels(proposal.EntryLow, proposal.EntryHigh, proposal.Invalidation, confirmation)
+	if levels == nil {
+		return domain.TradePlan{}, fmt.Errorf("规则草案无法形成有效风险区间")
+	}
+	structureID := "assistant-" + proposal.Kind
+	structure := domain.ChartStructure{
+		ID: structureID, Name: proposal.Name, State: "watching",
+		Anchors:  append([]domain.ChartAnchor(nil), selected.Anchors...),
+		Evidence: []string{proposal.Description, "由研究助手提出，经程序校验并由用户确认；原始意图：" + draft.SourceQuestion},
+		Plan:     levels,
+	}
+	rule := &domain.PlanMonitorRule{
+		Version: "plan-monitor-v1", StructureID: structureID, Kind: proposal.Kind,
+		Description: proposal.Description, Levels: *levels, BreakoutPrice: proposal.ConfirmationPrice,
+		VolumeDays: proposal.VolumeDays, MinimumVolume: proposal.MinimumVolumeRatio,
+		RequireTrend: proposal.RequireTrend, CooldownSecs: 300,
+	}
+	digest := sha256.Sum256([]byte(analysis.Fingerprint + ":assistant:" + draft.ID + ":" + draft.ExpiresOn))
+	return domain.TradePlan{
+		ID: hex.EncodeToString(digest[:]), Version: 1, Symbol: analysis.Symbol, CreatedAt: createdAt,
+		ExpiresOn: draft.ExpiresOn, Analysis: analysis, Structure: structure, MonitorRule: rule,
+	}, nil
+}
+
+func validatePlanExpiry(expiresOn string, at time.Time) error {
+	date, err := time.Parse(time.DateOnly, expiresOn)
+	now := at.In(chartLocation)
+	if err != nil || expiresOn < now.Format(time.DateOnly) || date.Format(time.DateOnly) > now.AddDate(0, 0, 90).Format(time.DateOnly) {
+		return fmt.Errorf("有效期须在今天至未来90个自然日内")
+	}
+	return nil
+}
+
+func normalizeAssistantRuleProposal(analysis domain.ChartAnalysis, structure domain.ChartStructure, proposal domain.AssistantRuleProposal) (domain.AssistantRuleProposal, []string, error) {
+	proposal.Kind = strings.ToLower(strings.TrimSpace(proposal.Kind))
+	proposal.Name = strings.TrimSpace(proposal.Name)
+	proposal.Description = strings.TrimSpace(proposal.Description)
+	if proposal.Kind != "breakout" && proposal.Kind != "pullback" {
+		return proposal, nil, fmt.Errorf("仅支持突破或回踩两类可审计规则")
+	}
+	if proposal.Name == "" || len([]rune(proposal.Name)) > 24 || proposal.Description == "" || len([]rune(proposal.Description)) > 240 {
+		return proposal, nil, fmt.Errorf("规则名称或说明长度无效")
+	}
+	round := func(value float64) float64 { return math.Round(value*100) / 100 }
+	proposal.EntryLow, proposal.EntryHigh = round(proposal.EntryLow), round(proposal.EntryHigh)
+	proposal.Invalidation, proposal.ConfirmationPrice = round(proposal.Invalidation), round(proposal.ConfirmationPrice)
+	proposal.MinimumVolumeRatio = math.Round(proposal.MinimumVolumeRatio*100) / 100
+	if proposal.VolumeDays == 0 {
+		proposal.VolumeDays = 20
+	}
+	if proposal.MinimumVolumeRatio == 0 {
+		proposal.MinimumVolumeRatio = 1.2
+	}
+	prices := []float64{proposal.EntryLow, proposal.EntryHigh, proposal.Invalidation, proposal.ConfirmationPrice}
+	for _, value := range prices {
+		if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) || value < analysis.Price*.5 || value > analysis.Price*1.5 {
+			return proposal, nil, fmt.Errorf("规则价位超出当前价格的可校验范围")
+		}
+	}
+	if proposal.EntryLow > proposal.EntryHigh || proposal.Invalidation >= proposal.EntryLow || proposal.EntryHigh-proposal.EntryLow > analysis.Price*.15 {
+		return proposal, nil, fmt.Errorf("入场区间、失效位或区间宽度无效")
+	}
+	if proposal.Kind == "breakout" && proposal.ConfirmationPrice < proposal.EntryLow {
+		return proposal, nil, fmt.Errorf("突破确认价不能低于入场区间下沿")
+	}
+	if proposal.VolumeDays < 5 || proposal.VolumeDays > 60 || proposal.MinimumVolumeRatio < .5 || proposal.MinimumVolumeRatio > 5 {
+		return proposal, nil, fmt.Errorf("量能窗口或最低量比超出允许范围")
+	}
+	warnings := []string{"AI只提出受限规则；价格、有效期和风险顺序已由程序校验，仍不代表收益预测"}
+	if structure.State == "invalidated" {
+		return proposal, nil, fmt.Errorf("所选图表结构已经失效")
+	}
+	if !analysis.Complete {
+		warnings = append(warnings, "观察日日K尚未收盘，草案只能等待后续完整日K确认")
+	}
+	return proposal, warnings, nil
+}
+
+func assistantRuleDraftID(draft domain.AssistantRuleDraft) string {
+	payload := struct {
+		Version, Symbol, ExpiresOn, SourceQuestion, AnalysisDate, AnalysisFingerprint, StructureID string
+		Proposal                                                                                   domain.AssistantRuleProposal
+	}{
+		Version: draft.Version, Symbol: draft.Symbol, ExpiresOn: draft.ExpiresOn,
+		SourceQuestion: draft.SourceQuestion, AnalysisDate: draft.AnalysisDate,
+		AnalysisFingerprint: draft.AnalysisFingerprint, StructureID: draft.StructureID, Proposal: draft.Proposal,
+	}
+	encoded, _ := json.Marshal(payload)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func mustJSON(value any) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
