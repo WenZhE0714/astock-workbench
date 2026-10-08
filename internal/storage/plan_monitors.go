@@ -46,6 +46,11 @@ func validatePlanMonitor(state domain.PlanMonitor) error {
 	if kind == "breakout" && !positiveStoredMonitorPrice(state.Rule.BreakoutPrice) {
 		return fmt.Errorf("计划监控突破确认价无效")
 	}
+	if state.Rule.PatternReadyOn != "" {
+		if _, err := time.Parse(time.DateOnly, state.Rule.PatternReadyOn); err != nil || state.Rule.PatternReadyOn > state.AnalysisDate || kind != "breakout" {
+			return fmt.Errorf("形态监控起点无效")
+		}
+	}
 	if _, err := time.Parse(time.DateOnly, state.ExpiresOn); err != nil {
 		return fmt.Errorf("监控有效期无效")
 	}

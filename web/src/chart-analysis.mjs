@@ -29,3 +29,53 @@ export function chartDataLagNotice(analysis, quoteTime, latestVisible) {
   if (!latestVisible || !analysis || !match || !analysis.data_date || analysis.data_date >= match[0]) return ""
   return `行情交易日 ${match[0]}，日K仅截至 ${analysis.data_date}；当前展示历史结构，不能视为最新交易日确认。`
 }
+
+export function chartPatternBias(pattern) {
+  return pattern && pattern.bias === "bearish" ? "看跌结构" : pattern && pattern.bias === "bullish" ? "看涨结构" : ""
+}
+
+const structureColors = {
+  "range-breakout": "#70bfd5",
+  "ma-pullback": "#d5cc93",
+  "double-bottom": "#f0b768",
+  "double-top": "#e9a0a6",
+  "ascending-triangle": "#81cdb0",
+  "descending-triangle": "#b5b4f1",
+}
+
+export function chartStructureColor(structure) {
+  return (structure && structureColors[structure.id]) || "#b6c4ca"
+}
+
+export function chartStructureVisible(structure, visibility) {
+  if (!structure || !structure.id) return false
+  if (visibility && Object.prototype.hasOwnProperty.call(visibility, structure.id)) return visibility[structure.id] === true
+  return structure.state !== "invalidated"
+}
+
+export function preferredChartStructureID(structures, currentID = "") {
+  const items = Array.isArray(structures) ? structures : []
+  const selected = items.find(item => item.id === currentID)
+    || items.find(item => item.pattern && item.state === "confirmed")
+    || items.find(item => item.pattern && item.state !== "invalidated")
+    || items.find(item => item.state !== "invalidated")
+    || items[0]
+  return selected ? selected.id : ""
+}
+
+// Clip dated structure geometry in trading-session coordinates, including
+// lines whose original anchors are outside the current viewport.
+export function chartStructureLines(structure, bars, startIndex, endIndex) {
+  if (!structure || !Array.isArray(structure.lines) || !Array.isArray(bars) || startIndex < 0 || endIndex <= startIndex || endIndex > bars.length) return []
+  const indices = new Map(bars.map((bar, index) => [bar.date, index]))
+  return structure.lines.map(line => {
+    if (!line.from || !line.to) return null
+    const from = indices.get(line.from.date), to = indices.get(line.to.date)
+    const fromPrice = Number(line.from.price), toPrice = Number(line.to.price)
+    if (from == null || to == null || to <= from || !Number.isFinite(fromPrice) || !Number.isFinite(toPrice) || fromPrice <= 0 || toPrice <= 0) return null
+    const first = Math.max(from, startIndex), last = Math.min(to, endIndex - 1)
+    if (last <= first) return null
+    const priceAt = index => fromPrice + (toPrice - fromPrice) * (index - from) / (to - from)
+    return { ...line, fromIndex: first - startIndex, toIndex: last - startIndex, fromPrice: priceAt(first), toPrice: priceAt(last) }
+  }).filter(Boolean)
+}

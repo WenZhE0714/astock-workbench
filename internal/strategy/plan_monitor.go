@@ -74,6 +74,11 @@ func ConfigurePlanMonitor(plan domain.TradePlan, current domain.PlanMonitor, ena
 			return current, fmt.Errorf("暂不支持该计划的机器条件，请保存新版本计划")
 		}
 		levels := rule.Levels
+		if rule.PatternReadyOn != "" {
+			if _, err := time.Parse(time.DateOnly, rule.PatternReadyOn); err != nil || rule.PatternReadyOn > plan.Analysis.DataDate || rule.Kind != "breakout" {
+				return current, fmt.Errorf("经典形态监控起点无效")
+			}
+		}
 		rule.Description += fmt.Sprintf("；确认后从后续交易日起观察 %.2f - %.2f，触及 %.2f 失效", levels.EntryLow, levels.EntryHigh, levels.Invalidation)
 		if !positiveMonitorPrice(levels.EntryLow) || !positiveMonitorPrice(levels.EntryHigh) || !positiveMonitorPrice(levels.Invalidation) || levels.EntryLow > levels.EntryHigh || levels.Invalidation >= levels.EntryLow {
 			return current, fmt.Errorf("计划价位不满足监控条件")
@@ -221,7 +226,11 @@ func AdvancePlanMonitor(current domain.PlanMonitor, observation PlanMonitorObser
 	fingerprint := hex.EncodeToString(digest[:])
 	if latest.Date > state.LastBarDate || (latest.Date == state.LastBarDate && fingerprint != state.LastBarFingerprint) {
 		state.LastBarDate, state.LastBarFingerprint = latest.Date, fingerprint
-		if state.ConfirmedOn == "" && latest.Date >= state.AnalysisDate && monitorDailyConfirmation(state.Rule, bars) {
+		if state.Rule.PatternReadyOn != "" {
+			if !advanceClassicMonitorDaily(&state, bars, now) {
+				return state
+			}
+		} else if state.ConfirmedOn == "" && latest.Date >= state.AnalysisDate && monitorDailyConfirmation(state.Rule, bars) {
 			state.Phase, state.ConfirmedOn = "confirmed", latest.Date
 			monitorEvent(&state, "confirmed", "复核完整日K后确认计划条件；后续交易日才观察入场区间", now, time.Time{}, latest.Date, chartNumber(latest.Close), true)
 		} else if state.ConfirmedOn != "" && latest.Date > state.ConfirmedOn && latest.Low <= state.Rule.Levels.Invalidation {
@@ -233,6 +242,10 @@ func AdvancePlanMonitor(current domain.PlanMonitor, observation PlanMonitorObser
 		return state
 	}
 	state.LastQuoteAt = quoteAt
+	if state.Rule.PatternReadyOn != "" && price <= state.Rule.Levels.Invalidation {
+		invalidateMonitor(&state, now, quoteAt, observation.TradingDate, price, "盘中新报价触及经典形态冻结失效位")
+		return state
+	}
 	if state.ConfirmedOn == "" || observation.TradingDate <= state.ConfirmedOn {
 		return state
 	}
@@ -254,6 +267,45 @@ func AdvancePlanMonitor(current domain.PlanMonitor, observation PlanMonitorObser
 	return state
 }
 
+func advanceClassicMonitorDaily(state *domain.PlanMonitor, bars []domain.DailyBar, now time.Time) bool {
+	startDate := state.Rule.PatternReadyOn
+	if state.ConfirmedOn != "" {
+		startDate = state.ConfirmedOn
+	}
+	start := -1
+	for index, bar := range bars {
+		if bar.Date == startDate {
+			start = index
+			break
+		}
+	}
+	if start < 0 || (state.ConfirmedOn == "" && start < state.Rule.VolumeDays) {
+		monitorHealth(state, "stale_history", "完整日K未覆盖形态起点和量比预热区间，暂停条件判断", now)
+		// Re-evaluate the same latest date if a fuller history arrives later.
+		state.LastBarFingerprint = ""
+		return false
+	}
+	confirmed := state.ConfirmedOn
+	if confirmed != "" {
+		start++
+	}
+	for index := start; index < len(bars); index++ {
+		bar := bars[index]
+		if bar.Low <= state.Rule.Levels.Invalidation {
+			invalidateMonitor(state, now, time.Time{}, bar.Date, bar.Low, "形态可识别后的完整日K触及冻结失效位；停止确认该计划")
+			return false
+		}
+		if confirmed == "" && monitorDailyConfirmation(state.Rule, bars[:index+1]) {
+			confirmed = bar.Date
+		}
+	}
+	if state.ConfirmedOn == "" && confirmed != "" {
+		state.Phase, state.ConfirmedOn = "confirmed", confirmed
+		monitorEvent(state, "confirmed", "复核形态起点后的完整日K，确认冻结突破条件；不补记历史成交", now, time.Time{}, confirmed, chartNumber(state.Rule.BreakoutPrice), true)
+	}
+	return true
+}
+
 func monitorCompletedBars(symbol string, input []domain.DailyBar, through string) []domain.DailyBar {
 	bars := make([]domain.DailyBar, 0, len(input))
 	for _, bar := range input {
@@ -271,11 +323,17 @@ func monitorDailyConfirmation(rule domain.PlanMonitorRule, bars []domain.DailyBa
 	latest := bars[len(bars)-1]
 	switch monitorRuleKind(rule) {
 	case "breakout":
+		if rule.PatternReadyOn != "" && latest.Date < rule.PatternReadyOn {
+			return false
+		}
 		if latest.Close <= rule.BreakoutPrice || len(bars) <= rule.VolumeDays {
 			return false
 		}
 		volume := 0.0
 		for _, bar := range bars[len(bars)-rule.VolumeDays-1 : len(bars)-1] {
+			if rule.PatternReadyOn != "" && !positiveMonitorPrice(bar.Volume) {
+				return false
+			}
 			volume += bar.Volume
 		}
 		return volume > 0 && latest.Volume/(volume/float64(rule.VolumeDays)) >= rule.MinimumVolume

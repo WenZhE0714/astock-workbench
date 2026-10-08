@@ -13,6 +13,9 @@ type PlanMonitorRule struct {
 	MinimumVolume float64         `json:"minimum_volume_ratio"`
 	RequireTrend  bool            `json:"require_trend,omitempty"`
 	CooldownSecs  int             `json:"cooldown_seconds"`
+	// PatternReadyOn gates classic-pattern confirmation and risk checks from
+	// the date all of the frozen pivots were observable using completed bars.
+	PatternReadyOn string `json:"pattern_ready_on,omitempty"`
 }
 
 type PlanMonitorEvent struct {

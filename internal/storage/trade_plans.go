@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
@@ -37,6 +38,11 @@ func validateStoredTradePlan(plan domain.TradePlan) error {
 	if err != nil || len(id) != 32 || plan.ID != strings.ToLower(plan.ID) || plan.Version != 1 || !tradePlanSymbol.MatchString(plan.Symbol) || plan.Analysis.Symbol != plan.Symbol || plan.Analysis.Fingerprint == "" || plan.Structure.Plan == nil || plan.CreatedAt.IsZero() {
 		return fmt.Errorf("交易计划快照格式无效")
 	}
+	if pattern := plan.Structure.Pattern; pattern != nil {
+		if pattern.Version != "classic-v1" || pattern.Bias != "bullish" || pattern.ReadyOn == "" || plan.MonitorRule == nil || plan.MonitorRule.PatternReadyOn != pattern.ReadyOn {
+			return fmt.Errorf("经典形态计划缺少冻结的机器条件")
+		}
+	}
 	if plan.MonitorRule != nil {
 		rule := plan.MonitorRule
 		if rule.Version != "plan-monitor-v1" || rule.StructureID != plan.Structure.ID || rule.Levels != *plan.Structure.Plan ||
@@ -45,6 +51,12 @@ func validateStoredTradePlan(plan domain.TradePlan) error {
 			rule.CooldownSecs < 60 || rule.CooldownSecs > 3600 || math.IsNaN(rule.BreakoutPrice) || math.IsInf(rule.BreakoutPrice, 0) ||
 			(rule.Kind == "breakout" && rule.BreakoutPrice <= 0) {
 			return fmt.Errorf("交易计划自定义监控规则无效")
+		}
+		if rule.PatternReadyOn != "" {
+			pattern := plan.Structure.Pattern
+			if _, err := time.Parse(time.DateOnly, rule.PatternReadyOn); err != nil || rule.PatternReadyOn > plan.Analysis.DataDate || rule.Kind != "breakout" || pattern == nil || pattern.Version != "classic-v1" || pattern.Bias != "bullish" || rule.PatternReadyOn != pattern.ReadyOn || rule.BreakoutPrice != pattern.TriggerPrice || rule.Levels.Invalidation != pattern.InvalidationPrice {
+				return fmt.Errorf("经典形态计划与冻结规则不一致")
+			}
 		}
 	}
 	return nil

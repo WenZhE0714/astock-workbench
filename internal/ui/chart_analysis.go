@@ -27,7 +27,15 @@ func chartAnalysisLines(analysis domain.ChartAnalysis, width int, color bool) []
 	}
 	states := map[string]string{"watching": "观察中", "forming": "待确认", "confirmed": "日线已确认", "invalidated": "结构失效"}
 	for _, item := range analysis.Structures {
-		levels = append(levels, item.Name+" "+states[item.State])
+		value := item.Name + " " + states[item.State]
+		if item.Pattern != nil {
+			bias := "看涨"
+			if item.Pattern.Bias == "bearish" {
+				bias = "看跌"
+			}
+			value += fmt.Sprintf(" (%s 边界 %.2f / 失效 %.2f)", bias, item.Pattern.TriggerPrice, item.Pattern.InvalidationPrice)
+		}
+		levels = append(levels, value)
 	}
 	lines := labeledTechnicalLines("结构观察", strings.Join(levels, "  ·  "), width, color)
 	weekly := map[string]string{"bullish": "偏多", "bearish": "偏空", "sideways": "整理", "insufficient": "样本不足"}

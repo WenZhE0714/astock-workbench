@@ -93,6 +93,7 @@ func AnalyzeChart(symbol string, input []domain.DailyBar, asOf time.Time, throug
 	}
 	analysis.Warnings = append(analysis.Warnings, "未复权价格；除权除息可能形成非交易性缺口，需核验公司行动")
 	analysis.Structures = chartStructures(bars, complete, high, low, ma20, ma60, atr14, ratio)
+	analysis.Structures = append(analysis.Structures, classicChartStructures(bars, complete)...)
 	encoded, err := json.Marshal(analysis)
 	if err != nil {
 		return domain.ChartAnalysis{}, err
@@ -307,10 +308,22 @@ func BuildTradePlan(analysis domain.ChartAnalysis, structureID, expiresOn string
 			return domain.TradePlan{}, fmt.Errorf("当前结构已失效或没有有效风险区间")
 		}
 		digest := sha256.Sum256([]byte(analysis.Fingerprint + ":" + structure.ID + ":" + expiresOn))
-		return domain.TradePlan{
+		plan := domain.TradePlan{
 			ID: hex.EncodeToString(digest[:]), Version: 1, Symbol: analysis.Symbol,
 			CreatedAt: createdAt, ExpiresOn: expiresOn, Analysis: analysis, Structure: structure,
-		}, nil
+		}
+		if structure.Pattern != nil {
+			if structure.Pattern.Version != "classic-v1" || structure.Pattern.Bias != "bullish" {
+				return domain.TradePlan{}, fmt.Errorf("该形态仅用于风险观察，不能生成做多计划")
+			}
+			plan.MonitorRule = &domain.PlanMonitorRule{
+				Version: "plan-monitor-v1", StructureID: structure.ID, Kind: "breakout",
+				Description: structure.Plan.Confirmation, Levels: *structure.Plan,
+				BreakoutPrice: structure.Pattern.TriggerPrice, VolumeDays: 20, MinimumVolume: 1.2,
+				CooldownSecs: 300, PatternReadyOn: structure.Pattern.ReadyOn,
+			}
+		}
+		return plan, nil
 	}
 	return domain.TradePlan{}, fmt.Errorf("结构不存在，请刷新分析")
 }

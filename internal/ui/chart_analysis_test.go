@@ -21,3 +21,13 @@ func TestChartAnalysisCLIRendersSameLevelsAndExplicitStates(t *testing.T) {
 		}
 	}
 }
+
+func TestChartAnalysisCLIRendersClassicPatternRiskBoundaries(t *testing.T) {
+	analysis := domain.ChartAnalysis{Structures: []domain.ChartStructure{{Name: "双顶", State: "confirmed", Pattern: &domain.ChartPattern{Bias: "bearish", TriggerPrice: 99.5, InvalidationPrice: 120.8}}}}
+	text := strings.Join(chartAnalysisLines(analysis, 120, false), "\n")
+	for _, expected := range []string{"双顶", "看跌", "99.50", "120.80"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("missing %q in %s", expected, text)
+		}
+	}
+}

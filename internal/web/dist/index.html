@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.5d569990.js"></script>
-  <link rel="stylesheet" href="/assets/index.8631f5f9.css">
+  <script type="module" crossorigin src="/assets/index.2b8c69a0.js"></script>
+  <link rel="stylesheet" href="/assets/index.ada01597.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -429,6 +429,20 @@
                 <div class="legend" v-if="chartMode === 'intraday'"><span class="price-line" v-text="intradayWhiteLabel()"></span><span class="average-line" v-text="intradayYellowLabel()"></span><span class="previous-line">昨收</span><span class="volume-line">成交量</span></div>
                 <div class="legend" v-else><span class="kline">K线</span><span class="ma5">MA5</span><span class="ma20">MA20</span><span class="ma60">MA60</span><span class="pressure-line">前高</span><span class="support-line">前低</span></div>
               </div>
+              <div class="chart-structure-layers" v-if="chartMode === 'daily' && chartStructures.length" role="group" aria-label="形态图层">
+                <div class="chart-layer-toolbar">
+                  <label class="chart-layer-toggle"><input type="checkbox" v-model="showChartStructure" @change="scheduleChartDraw()"><span>结构标注</span></label>
+                  <span class="chart-layer-count" v-text="showChartStructure ? chartVisibleStructures.length + ' / ' + chartStructures.length : '已隐藏'"></span>
+                  <label class="chart-layer-toggle chart-layer-all"><input type="checkbox" aria-label="全部形态" :checked="chartAllStructuresVisible" :indeterminate.prop="chartVisibleStructures.length > 0 && !chartAllStructuresVisible" :disabled="!showChartStructure" @change="setAllChartStructuresVisible($event.target.checked)"><span>全部</span></label>
+                </div>
+                <div class="chart-layer-list">
+                  <label v-for="item in chartStructures" :key="item.id" class="chart-layer-item" :class="{muted: !showChartStructure || !chartStructureVisible(item, chartStructureVisibility)}" :data-structure-id="item.id" :data-structure-state="item.state" :title="item.name + ' · ' + chartStructureState(item.state)">
+                    <input type="checkbox" :aria-label="'显示' + item.name + '形态'" :checked="chartStructureVisible(item, chartStructureVisibility)" :disabled="!showChartStructure" @change="setChartStructureVisible(item.id, $event.target.checked)">
+                    <span class="chart-layer-swatch" :style="{backgroundColor: chartStructureColor(item)}" aria-hidden="true"></span>
+                    <span class="chart-layer-caption"><span v-text="item.name"></span><small v-if="item.state === 'invalidated'">已失效</small></span>
+                  </label>
+                </div>
+              </div>
               <div class="chart-wrap"><canvas ref="chart" :class="{pannable: chartMode === 'daily', dragging: dailyDragging}" :title="chartMode === 'daily' ? '滚轮或双指缩放，拖动查看历史，双击恢复6个月' : '移动光标查看分时明细'" :aria-label="chartMode === 'intraday' ? '分时图' : '日K线图'" @pointerdown="handleChartPointerDown" @pointermove="handleChartPointerMove" @pointerup="handleChartPointerUp" @pointercancel="handleChartPointerUp" @pointerleave="handleChartPointerLeave" @wheel="handleChartWheel" @dblclick="chartMode === 'daily' && resetDailyViewport()"></canvas></div>
               <section class="chart-analysis-band" v-if="chartMode === 'daily'" aria-label="图表结构分析" :aria-busy="chartAnalysisLoading">
                 <div class="chart-analysis-head">
@@ -440,12 +454,12 @@
                 <template v-else>
                   <p class="chart-history-warning" v-if="chartDataWarning" role="status" v-text="chartDataWarning"></p>
                   <div class="chart-structure-controls">
-                    <label class="chart-structure-select"><span>形态</span><select v-model="chartStructureID" @change="tradePlanNotice = ''; scheduleChartDraw()" aria-label="观察形态"><option v-for="item in chartAnalysis.structures" :key="item.id" :value="item.id" v-text="item.name"></option></select></label>
+                    <label class="chart-structure-select"><span>形态详情</span><span class="chart-layer-swatch" :style="{backgroundColor: chartStructureColor(chartStructure)}" aria-hidden="true"></span><select v-model="chartStructureID" @change="tradePlanNotice = ''; scheduleChartDraw()" aria-label="观察形态"><option v-for="item in chartAnalysis.structures" :key="item.id" :value="item.id" v-text="item.name"></option></select></label>
                     <span class="chart-structure-state" :class="chartStructure.state" v-text="chartStructureState(chartStructure.state)"></span>
-                    <label class="chart-layer-toggle"><input type="checkbox" v-model="showChartStructure" @change="scheduleChartDraw()"><span>结构标注</span></label>
                     <label class="chart-layer-toggle"><input type="checkbox" v-model="showChartPlan" @change="scheduleChartDraw()" :disabled="!chartPlan"><span>计划价位</span></label>
                   </div>
                   <div class="chart-structure-evidence" v-if="chartStructure"><p v-for="evidence in chartStructure.evidence" :key="evidence" v-text="evidence"></p><div class="chart-anchor-dates"><span v-for="anchor in chartStructure.anchors" :key="anchor.date + anchor.label" v-text="anchor.label + ' ' + anchor.date + ' · ' + number(anchor.price)"></span></div></div>
+                  <div class="chart-pattern-facts" v-if="chartStructure?.pattern"><strong :class="chartStructure.pattern.bias" v-text="chartPatternBias(chartStructure.pattern)"></strong><span v-text="'可识别日 ' + chartStructure.pattern.ready_on"></span><span v-text="'突破边界 ' + number(chartStructure.pattern.trigger_price)"></span><span v-text="'结构失效 ' + number(chartStructure.pattern.invalidation_price)"></span><span v-if="chartStructure.pattern.confirmed_on" v-text="'确认日 ' + chartStructure.pattern.confirmed_on"></span></div>
                   <div class="chart-weekly-context"><span>完整周线</span><strong :class="chartAnalysis.weekly.state" v-text="chartWeeklyState(chartAnalysis.weekly.state)"></strong><span v-if="chartAnalysis.weekly.data_date" v-text="'截至 ' + chartAnalysis.weekly.data_date"></span><span v-if="chartAnalysis.weekly.ma5 != null" v-text="'MA5 / MA10 ' + number(chartAnalysis.weekly.ma5) + ' / ' + number(chartAnalysis.weekly.ma10)"></span></div>
                   <template v-if="chartPlan">
                     <div class="chart-plan-values">

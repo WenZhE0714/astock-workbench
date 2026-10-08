@@ -17,6 +17,26 @@ type ChartAnchor struct {
 	Label string  `json:"label"`
 }
 
+// ChartStructureLine carries dated geometry so every view draws the same
+// structure even when an endpoint is outside the visible chart window.
+type ChartStructureLine struct {
+	Key   string      `json:"key"`
+	Label string      `json:"label"`
+	Role  string      `json:"role"`
+	From  ChartAnchor `json:"from"`
+	To    ChartAnchor `json:"to"`
+}
+
+type ChartPattern struct {
+	Version           string  `json:"version"`
+	Bias              string  `json:"bias"`
+	ReadyOn           string  `json:"ready_on"`
+	ConfirmedOn       string  `json:"confirmed_on,omitempty"`
+	InvalidatedOn     string  `json:"invalidated_on,omitempty"`
+	TriggerPrice      float64 `json:"trigger_price"`
+	InvalidationPrice float64 `json:"invalidation_price"`
+}
+
 // ChartPlanLevels describes an observation, never an executable order.
 type ChartPlanLevels struct {
 	EntryLow     float64 `json:"entry_low"`
@@ -31,12 +51,14 @@ type ChartPlanLevels struct {
 }
 
 type ChartStructure struct {
-	ID       string           `json:"id"`
-	Name     string           `json:"name"`
-	State    string           `json:"state"`
-	Anchors  []ChartAnchor    `json:"anchors"`
-	Evidence []string         `json:"evidence"`
-	Plan     *ChartPlanLevels `json:"plan,omitempty"`
+	ID       string               `json:"id"`
+	Name     string               `json:"name"`
+	State    string               `json:"state"`
+	Anchors  []ChartAnchor        `json:"anchors"`
+	Evidence []string             `json:"evidence"`
+	Plan     *ChartPlanLevels     `json:"plan,omitempty"`
+	Pattern  *ChartPattern        `json:"pattern,omitempty"`
+	Lines    []ChartStructureLine `json:"lines,omitempty"`
 }
 
 type ChartWeeklyTrend struct {
@@ -77,8 +99,8 @@ type TradePlan struct {
 	ExpiresOn string         `json:"expires_on"`
 	Analysis  ChartAnalysis  `json:"analysis"`
 	Structure ChartStructure `json:"structure"`
-	// MonitorRule is present only for a user-confirmed assistant rule. Legacy
-	// chart plans derive the same frozen rule from Structure.ID.
+	// Classic patterns and user-confirmed assistant rules freeze their machine
+	// conditions here. Legacy chart plans derive the rule from Structure.ID.
 	MonitorRule *PlanMonitorRule `json:"monitor_rule,omitempty"`
 }
 

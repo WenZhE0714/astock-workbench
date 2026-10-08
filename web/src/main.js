@@ -3,7 +3,7 @@
 import { createApp } from "vue/dist/vue.esm-bundler.js"
 import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle } from "lucide-vue-next"
 import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "./dashboard.mjs"
-import { matchingChartAnalysis, chartLevelRows, chartStructureState, chartWeeklyState, savedPlanState, chartDataLagNotice } from "./chart-analysis.mjs"
+import { matchingChartAnalysis, chartLevelRows, chartStructureState, chartWeeklyState, savedPlanState, chartDataLagNotice, chartPatternBias, chartStructureLines, chartStructureColor, chartStructureVisible, preferredChartStructureID } from "./chart-analysis.mjs"
 import { PlanMonitorDetails, planMonitorPhase, planMonitorHealth, monitorCanToggle } from "./plan-monitor.mjs"
 import { PlanExperimentView } from "./plan-experiment-view.js"
 import "./style.css"
@@ -209,7 +209,8 @@ createApp({
       chartAnalysisRequestID: 0,
       chartAnalysisTimer: null,
       chartAnalysisController: null,
-      chartStructureID: "range-breakout",
+      chartStructureID: "",
+      chartStructureVisibility: {},
       showChartStructure: true,
       showChartPlan: false,
       tradePlans: [],
@@ -799,9 +800,16 @@ createApp({
       const date = this.visibleLastBar.date
       return matchingChartAnalysis(this.data.chart_analysis, symbol, date) || matchingChartAnalysis(this.chartHistoricalAnalysis, symbol, date)
     },
+    chartStructures() { return this.chartAnalysis?.structures || [] },
+    chartVisibleStructures() {
+      return this.chartStructures.filter(item => chartStructureVisible(item, this.chartStructureVisibility))
+    },
+    chartAllStructuresVisible() {
+      return this.chartStructures.length > 0 && this.chartVisibleStructures.length === this.chartStructures.length
+    },
     chartStructure() {
-      const structures = this.chartAnalysis?.structures || []
-      return structures.find(item => item.id === this.chartStructureID) || structures[0] || null
+      const id = preferredChartStructureID(this.chartStructures, this.chartStructureID)
+      return this.chartStructures.find(item => item.id === id) || null
     },
     chartDataWarning() {
       return chartDataLagNotice(this.chartAnalysis, this.quote.quote_time, this.dailyViewEnd === this.bars.length)
@@ -1085,8 +1093,22 @@ createApp({
       return `${number > 0 ? "+" : ""}${number.toFixed(2)}R`
     },
     chartStructureState,
+    chartPatternBias,
+    chartStructureColor,
+    chartStructureVisible,
     chartWeeklyState,
     savedPlanState,
+    setChartStructureVisible(id, visible) {
+      if (!this.chartStructures.some(item => item.id === id)) return
+      this.chartStructureVisibility = { ...this.chartStructureVisibility, [id]: visible }
+      this.scheduleChartDraw()
+    },
+    setAllChartStructuresVisible(visible) {
+      const visibility = { ...this.chartStructureVisibility }
+      this.chartStructures.forEach(item => { visibility[item.id] = visible })
+      this.chartStructureVisibility = visibility
+      this.scheduleChartDraw()
+    },
     scheduleChartAnalysis(force = false) {
       window.clearTimeout(this.chartAnalysisTimer)
       if (this.chartAnalysisController) this.chartAnalysisController.abort()
@@ -1094,6 +1116,7 @@ createApp({
       const symbol = this.data.symbol
       const date = this.visibleLastBar.date
       this.chartAnalysisError = ""
+      if (this.chartAnalysis) this.chartStructureID = preferredChartStructureID(this.chartStructures, this.chartStructureID)
       if (this.chartMode !== "daily" || !symbol || !date || (!force && this.chartAnalysis)) {
         this.chartAnalysisLoading = false
         return
@@ -1109,6 +1132,7 @@ createApp({
           if (requestID !== this.chartAnalysisRequestID || this.data.symbol !== symbol || this.visibleLastBar.date !== date) return
           if (!matchingChartAnalysis(payload, symbol, date)) throw new Error("分析日期与图表不一致，请刷新行情")
           this.chartHistoricalAnalysis = payload
+          this.chartStructureID = preferredChartStructureID(payload.structures, this.chartStructureID)
           if (this.data.chart_analysis?.data_date === date) this.data.chart_analysis = payload
           this.scheduleChartDraw()
         } catch (error) {
@@ -3228,7 +3252,8 @@ createApp({
           this.planReviewError = ""
           this.planReviewNotice = ""
           this.tradePlansOpen = this.playbookPlanTarget?.symbol === payload.symbol
-          this.chartStructureID = "range-breakout"
+          this.chartStructureID = ""
+          this.chartStructureVisibility = {}
           this.dailyVisibleCount = 120
           this.dailyEndIndex = null
           this.dailyRangePreset = "6m"
@@ -4181,6 +4206,76 @@ createApp({
         context.fillText(`${level.label} ${level.price.toFixed(2)}`, labelLeft + 4, level.labelY + 4)
       })
     },
+    drawChartStructures(context, structures, bars, viewport, geometry) {
+      const { left, right, top, bottom, step, y } = geometry
+      const x = index => left + (index + .5) * step
+      const layers = structures.map(structure => ({
+        structure,
+        color: chartStructureColor(structure),
+        lines: chartStructureLines(structure, bars, viewport.startIndex, viewport.endIndex),
+        anchors: (structure.anchors || []).map(anchor => {
+          const index = viewport.bars.findIndex(bar => bar.date === anchor.date)
+          const anchorY = y(anchor.price)
+          return index >= 0 && Number.isFinite(anchorY) && anchorY >= top && anchorY <= bottom ? { ...anchor, x: x(index), y: anchorY } : null
+        }).filter(Boolean),
+      }))
+      context.save()
+      context.beginPath()
+      context.rect(left, top, right - left, bottom - top)
+      context.clip()
+      // Draw all geometry before labels, so later layers cannot cross label text.
+      layers.forEach(layer => {
+        context.strokeStyle = layer.color
+        layer.lines.forEach(line => {
+          context.globalAlpha = layer.structure.state === "invalidated" ? .55 : line.role === "invalidation" ? .7 : 1
+          context.lineWidth = line.role === "trigger" || line.role === "trend" ? 2 : 1.4
+          context.setLineDash(line.role === "invalidation" ? [2, 5] : line.role === "trigger" ? [6, 4] : layer.structure.state === "invalidated" ? [3, 3] : [])
+          context.beginPath()
+          context.moveTo(x(line.fromIndex), y(line.fromPrice))
+          context.lineTo(x(line.toIndex), y(line.toPrice))
+          context.stroke()
+        })
+        context.globalAlpha = 1
+        context.setLineDash([])
+        context.fillStyle = "#171d21"
+        context.lineWidth = 2
+        layer.anchors.forEach(anchor => {
+          context.beginPath()
+          context.arc(anchor.x, anchor.y, 3.5, 0, Math.PI * 2)
+          context.fill()
+          context.stroke()
+        })
+      })
+      const labels = []
+      const annotate = (text, anchorX, anchorY, tint) => {
+        if (anchorY < top || anchorY > bottom) return
+        context.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+        const width = context.measureText(text).width + 8
+        if (width > right - left - 4) return
+        const labelX = Math.max(left + 2, Math.min(right - width - 2, anchorX - width / 2))
+        const nearTop = anchorY < (top + bottom) / 2
+        const preferred = nearTop ? [-22, 8, -40, 26, -58, 44] : [8, -22, 26, -40, 44, -58]
+        const labelY = preferred.map(offset => anchorY + offset).find(value => value >= top + 1 && value + 15 <= bottom && !labels.some(label => labelX < label.x + label.width + 3 && labelX + width + 3 > label.x && value < label.y + 18 && value + 18 > label.y))
+        if (labelY == null) return
+        labels.push({ x: labelX, y: labelY, width })
+        context.fillStyle = "rgba(23,29,33,.94)"
+        context.fillRect(labelX, labelY, width, 15)
+        context.fillStyle = tint
+        context.textAlign = "left"
+        context.fillText(text, labelX + 4, labelY + 11)
+      }
+      const labelLayers = [...layers].sort((a, b) => Number(b.structure.id === this.chartStructureID) - Number(a.structure.id === this.chartStructureID))
+      labelLayers.forEach(layer => {
+        layer.lines.filter(line => line.role === "trigger" || line.role === "invalidation").forEach(line => {
+          const label = layers.length > 1 ? `${layer.structure.name}·${line.role === "invalidation" ? "失效" : line.label}` : line.label
+          annotate(label, right, y(line.toPrice), layer.color)
+        })
+      })
+      labelLayers.forEach(layer => {
+        layer.anchors.forEach(anchor => annotate(anchor.label, anchor.x, anchor.y, layer.color))
+      })
+      context.restore()
+    },
     drawDailyChart(context, width, height) {
       if (!this.bars.length) {
         context.fillStyle = "#91a0a7"
@@ -4238,11 +4333,15 @@ createApp({
         context.fillText((high - (high - low) * index / 4).toFixed(2), left - 8, lineY + 4)
       }
       context.textAlign = "center"
-      const labelEvery = Math.max(1, Math.ceil(bars.length / 7))
+      const labelCount = Math.max(2, Math.min(7, Math.floor((width - left - right) / 62)))
+      const labelEvery = Math.max(1, Math.ceil(bars.length / labelCount))
       const maxVolume = Math.max(...bars.map(bar => Number(bar.volume) || 0))
       bars.forEach((bar, index) => {
         const x = left + (index + 0.5) * xStep
-        if (index % labelEvery === 0) context.fillText(String(bar.date).slice(5), x, height - 26)
+        if (index % labelEvery === 0) {
+          context.fillStyle = "#91a0a7"
+          context.fillText(String(bar.date).slice(5), x, height - 26)
+        }
         const open = y(Number(bar.open))
         const close = y(Number(bar.close))
         const rising = Number(bar.close) >= Number(bar.open)
@@ -4309,26 +4408,8 @@ createApp({
         context.stroke()
         context.setLineDash([])
       })
-      if (this.showChartStructure && this.chartStructure) {
-        this.chartStructure.anchors.forEach(anchor => {
-          const index = bars.findIndex(bar => bar.date === anchor.date)
-          if (index < 0 || anchor.price < low || anchor.price > high) return
-          const x = left + (index + .5) * xStep
-          const pointY = y(anchor.price)
-          context.strokeStyle = "#f0b768"
-          context.fillStyle = "#171d21"
-          context.lineWidth = 2
-          context.beginPath()
-          context.arc(x, pointY, 4, 0, Math.PI * 2)
-          context.fill()
-          context.stroke()
-          context.fillStyle = "#f0b768"
-          context.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-          context.textAlign = "center"
-          const labelY = pointY < (top + plotBottom) / 2 ? Math.max(top + 12, pointY - 10) : Math.min(plotBottom - 4, pointY + 18)
-          const halfWidth = context.measureText(anchor.label).width / 2
-          context.fillText(anchor.label, Math.max(left + halfWidth, Math.min(width - right - halfWidth, x)), labelY)
-        })
+      if (this.showChartStructure && this.chartVisibleStructures.length) {
+        this.drawChartStructures(context, this.chartVisibleStructures, allBars, viewport, { left, right: width - right, top, bottom: plotBottom, step: xStep, y })
       }
       context.strokeStyle = "#2b363c"
       context.beginPath()

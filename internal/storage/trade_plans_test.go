@@ -100,3 +100,23 @@ func TestTradePlanStoreAllListsAcrossSymbols(t *testing.T) {
 		t.Fatalf("cross-symbol plans were not listed: %v %+v", err, items)
 	}
 }
+
+func TestClassicPlanStoreRejectsMismatchedFrozenBoundary(t *testing.T) {
+	plan := tradePlanFixture()
+	plan.Structure.ID = "double-bottom"
+	plan.Structure.Pattern = &domain.ChartPattern{Version: "classic-v1", Bias: "bullish", ReadyOn: "2026-09-17", TriggerPrice: 100, InvalidationPrice: 98}
+	plan.MonitorRule = &domain.PlanMonitorRule{Version: "plan-monitor-v1", StructureID: "double-bottom", Kind: "breakout", Description: "确认颈线", Levels: *plan.Structure.Plan, BreakoutPrice: 100, VolumeDays: 20, MinimumVolume: 1.2, CooldownSecs: 300, PatternReadyOn: "2026-09-17"}
+	store := NewTradePlanStore(t.TempDir())
+	plan.MonitorRule.BreakoutPrice = 101
+	if _, _, err := store.Save(plan); err == nil {
+		t.Fatal("mismatched classic neckline accepted")
+	}
+	plan.MonitorRule.BreakoutPrice = 100
+	if _, _, err := store.Save(plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Structure.Pattern.Bias = "bearish"
+	if _, _, err := store.Save(plan); err == nil {
+		t.Fatal("bearish classic plan accepted")
+	}
+}
