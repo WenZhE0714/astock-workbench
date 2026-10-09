@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
@@ -31,10 +32,18 @@ func (client FallbackQuoteClient) Fetch(ctx context.Context, symbols []string) (
 	}
 	errors := make([]string, 0, len(client.clients))
 	for sourceIndex, source := range client.clients {
-		quotes, err := source.Fetch(ctx, symbols)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		requestCtx, cancel := fallbackContext(ctx, len(client.clients)-sourceIndex, 5*time.Second)
+		quotes, err := source.Fetch(requestCtx, symbols)
+		cancel()
 		if err == nil && quotesCoverSymbols(quotes, symbols) {
 			if len(client.clients) > 1 && sourceIndex == 0 {
-				if metadata, metadataErr := client.clients[1].Fetch(ctx, symbols); metadataErr == nil {
+				metadataCtx, cancelMetadata := context.WithTimeout(ctx, time.Second)
+				metadata, metadataErr := client.clients[1].Fetch(metadataCtx, symbols)
+				cancelMetadata()
+				if metadataErr == nil {
 					quotes = enrichPreferredQuotes(quotes, metadata)
 				}
 			}

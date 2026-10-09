@@ -94,18 +94,7 @@ func decodeTHSAuto(raw string) string {
 // layer too. Try the public mainland pages without the process-wide proxy, then
 // retain the configured proxy as a fallback for environments that require it.
 func fetchTHSDecoded(ctx context.Context, address string, decoder encoding.Encoding, headers map[string]string) (string, error) {
-	result, directErr := fetchDecodedDirectWithHeaders(ctx, address, decoder, headers)
-	if directErr == nil {
-		return result, nil
-	}
-	if ctx.Err() != nil {
-		return "", directErr
-	}
-	result, proxyErr := fetchDecodedWithHeaders(ctx, address, decoder, headers)
-	if proxyErr == nil {
-		return result, nil
-	}
-	return "", directErr
+	return fetchDecodedDirectFirst(ctx, address, decoder, headers)
 }
 
 func parseTHSFloat(value string) float64 {

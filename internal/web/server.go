@@ -213,6 +213,7 @@ type Server struct {
 	rankings                  market.MarketRankingClient
 	sentimentExtrasMu         sync.Mutex
 	sentimentExtrasCache      sentimentExtrasCacheEntry
+	sentimentExtrasInflight   chan struct{}
 	limitStatsMu              sync.Mutex
 	limitStatsCache           limitStatsCacheEntry
 	sentimentMu               sync.Mutex
@@ -389,10 +390,11 @@ type globalMarketCacheEntry struct {
 }
 
 type sentimentExtrasCacheEntry struct {
-	hot       domain.HotStockSnapshot
-	hotErr    error
-	tradeDate string
-	fetchedAt time.Time
+	hot         domain.HotStockSnapshot
+	hotErr      error
+	tradeDate   string
+	fetchedAt   time.Time
+	succeededAt time.Time
 }
 
 type limitStatsCacheEntry struct {
@@ -2475,6 +2477,13 @@ func (s *Server) handleStock(writer http.ResponseWriter, request *http.Request) 
 		response.HistoryError = historyResult.err.Error()
 	} else {
 		response.Bars = newChartBars(limitBars(historyResult.bars, request.URL.Query().Get("limit")))
+		for _, bar := range historyResult.bars {
+			if strings.Contains(bar.Source, "缓存") {
+				latest := historyResult.bars[len(historyResult.bars)-1].Date
+				response.HistoryError = fmt.Sprintf("在线日K刷新失败，正在显示截至 %s 的缓存；末根可能是盘中快照，需待在线数据恢复后核验", latest)
+				break
+			}
+		}
 		if technical, technicalErr := strategy.AnalyzeTechnical(symbol, historyResult.bars); technicalErr == nil {
 			response.Technical = &technical
 		}

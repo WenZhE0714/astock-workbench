@@ -4,20 +4,45 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 type limitStatsStub struct{}
 
 func (limitStatsStub) FetchLimitStats(context.Context, string) (domain.LimitStatsSnapshot, error) {
 	return domain.LimitStatsSnapshot{TradeDate: "2026-09-03", LimitUpCount: 42, LimitDownCount: 8, BrokenCount: 6, BrokenRate: 12.5, HighestStreak: 7, StreakLadder: []domain.LimitStreakGroup{{Streak: 7, Count: 1}, {Streak: 3, Count: 4}}, Available: true, Source: "mock"}, nil
+}
+
+type cachedIndustryStub struct{}
+
+func (cachedIndustryStub) FetchIndustryFlows(ctx context.Context) (map[string]domain.BoardFlow, error) {
+	flows, _ := (boardRankingStub{}).FetchIndustryFlows(ctx)
+	return flows, &market.IndustryFlowCacheError{FetchedAt: time.Now().Add(-time.Minute), Cause: fmt.Errorf("offline")}
+}
+
+func TestSentimentCachedIndustryListsDoNotEnterCurrentScore(t *testing.T) {
+	server := NewServer(nil, marketQuoteStub{}, nil, nil, "", WithIndustryFlows(cachedIndustryStub{}))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/sentiment", nil))
+	var response map[string]any
+	if recorder.Code != 200 || json.Unmarshal(recorder.Body.Bytes(), &response) != nil {
+		t.Fatalf("unexpected response: %s", recorder.Body.String())
+	}
+	snapshot := response["snapshot"].(map[string]any)
+	if snapshot["industry_breadth"] != nil || snapshot["industry_flow_signal"] != nil || snapshot["positive_industry_rate"] != nil ||
+		len(snapshot["strong_industries"].([]any)) == 0 || !bytes.Contains(recorder.Body.Bytes(), []byte("缓存不参与本轮情绪评分")) {
+		t.Fatalf("stale industry data was scored or lost: %s", recorder.Body.String())
+	}
 }
 
 func TestCalculateMarketSentimentUsesCoverageAwareSignals(t *testing.T) {
@@ -76,15 +101,69 @@ func TestSentimentEndpointIncludesLimitStructure(t *testing.T) {
 
 type hotStockSignalStub struct {
 	dates []string
+	err   error
 }
 
 func (stub *hotStockSignalStub) FetchHotStocks(_ context.Context, date string) (domain.HotStockSnapshot, error) {
 	stub.dates = append(stub.dates, date)
+	if stub.err != nil {
+		return domain.HotStockSnapshot{}, stub.err
+	}
 	return domain.HotStockSnapshot{
 		Available: true, TradeDate: date,
 		Stocks: []domain.HotStockSignal{{Symbol: "sh600519", Name: "贵州茅台", Percent: 5}},
 		Themes: []domain.HotTheme{{Name: "消费", Count: 1, Leader: "贵州茅台", AverageRise: 5}},
 	}, nil
+}
+
+func TestHotThemeFailureKeepsOnlyRecentSameDaySnapshot(t *testing.T) {
+	provider := &hotStockSignalStub{}
+	server := NewServer(nil, nil, nil, nil, "", WithSentimentSignals(provider))
+	now := time.Date(2026, 10, 9, 13, 0, 0, 0, realtimeWebLocation)
+	server.now = func() time.Time { return now }
+	if _, err := server.fetchSentimentExtras(context.Background(), "2026-10-09"); err != nil {
+		t.Fatal(err)
+	}
+	provider.err = fmt.Errorf("upstream timeout")
+	now = now.Add(31 * time.Second)
+	for index := 0; index < 2; index++ {
+		hot, err := server.fetchSentimentExtras(context.Background(), "2026-10-09")
+		if err == nil || !hot.Available || !strings.Contains(err.Error(), "13:00:00") || len(provider.dates) != 2 {
+			t.Fatalf("missing dated cache fallback: %+v %v calls=%d", hot, err, len(provider.dates))
+		}
+	}
+	now = now.Add(5 * time.Minute)
+	if hot, err := server.fetchSentimentExtras(context.Background(), "2026-10-09"); err == nil || hot.Available {
+		t.Fatalf("expired hotspot data was reused: %+v %v", hot, err)
+	}
+	if hot, err := server.fetchSentimentExtras(context.Background(), "2026-10-10"); err == nil || hot.Available {
+		t.Fatalf("previous-day hotspot data was reused: %+v %v", hot, err)
+	}
+}
+
+func TestSentimentEndpointLabelsCachedHotThemesWithoutChangingScore(t *testing.T) {
+	provider := &hotStockSignalStub{}
+	server := NewServer(nil, marketQuoteStub{}, nil, nil, "", WithSentimentSignals(provider))
+	now := time.Now()
+	server.now = func() time.Time { return now }
+	request := func() marketSentimentResponse {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/sentiment", nil))
+		var response marketSentimentResponse
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &response) != nil {
+			t.Fatalf("invalid response: %s", recorder.Body.String())
+		}
+		return response
+	}
+	fresh := request()
+	now = now.Add(time.Minute)
+	provider.err = fmt.Errorf("offline")
+	cached := request()
+	if !cached.Snapshot.HotSignalAvailable || len(cached.Snapshot.HotThemes) == 0 ||
+		!strings.Contains(strings.Join(cached.Snapshot.Warnings, ";"), "缓存") || cached.Snapshot.Score != fresh.Snapshot.Score {
+		t.Fatalf("cached themes were hidden, unlabelled, or changed the score: %+v", cached.Snapshot)
+	}
 }
 
 func TestSentimentEndpointKeepsThemesWithoutRetiredScoreOverlay(t *testing.T) {

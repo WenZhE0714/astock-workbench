@@ -27,11 +27,66 @@ func fetchDecoded(ctx context.Context, address string, decoder encoding.Encoding
 }
 
 func fetchDecodedWithHeaders(ctx context.Context, address string, decoder encoding.Encoding, headers map[string]string) (string, error) {
-	return fetchDecodedWithClient(ctx, httpClient, address, decoder, headers)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return "", err
+	}
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	proxied := false
+	if configured, ok := transport.(*http.Transport); ok && configured.Proxy != nil {
+		proxy, proxyErr := configured.Proxy(request)
+		proxied = proxyErr == nil && proxy != nil
+	}
+	if !proxied {
+		return fetchDecodedWithClient(ctx, httpClient, address, decoder, headers)
+	}
+	proxyCtx, cancel := fallbackContext(ctx, 2, 3*time.Second)
+	result, proxyErr := fetchDecodedWithClient(proxyCtx, httpClient, address, decoder, headers)
+	cancel()
+	if proxyErr == nil || ctx.Err() != nil {
+		return result, proxyErr
+	}
+	var statusError *httpStatusError
+	var networkError *net.OpError
+	if !transientHTTPReadError(proxyErr) && !errors.Is(proxyErr, context.DeadlineExceeded) &&
+		!errors.As(proxyErr, &networkError) &&
+		!(errors.As(proxyErr, &statusError) && statusError.code >= 500) {
+		return "", proxyErr
+	}
+	result, directErr := fetchDecodedDirectWithHeaders(ctx, address, decoder, headers)
+	if directErr == nil {
+		return result, nil
+	}
+	return "", fmt.Errorf("代理请求: %v；直连回退: %w", proxyErr, directErr)
 }
+
+type httpStatusError struct {
+	code   int
+	status string
+}
+
+func (err *httpStatusError) Error() string { return "HTTP " + err.status }
 
 func fetchDecodedDirectWithHeaders(ctx context.Context, address string, decoder encoding.Encoding, headers map[string]string) (string, error) {
 	return fetchDecodedWithClient(ctx, directHTTPClient, address, decoder, headers)
+}
+
+func fetchDecodedDirectFirst(ctx context.Context, address string, decoder encoding.Encoding, headers map[string]string) (string, error) {
+	directCtx, cancel := fallbackContext(ctx, 2, 3*time.Second)
+	result, directErr := fetchDecodedDirectWithHeaders(directCtx, address, decoder, headers)
+	cancel()
+	if directErr == nil || ctx.Err() != nil {
+		return result, directErr
+	}
+	// Call the configured route once; do not re-enter its direct fallback.
+	result, proxyErr := fetchDecodedWithClient(ctx, httpClient, address, decoder, headers)
+	if proxyErr == nil {
+		return result, nil
+	}
+	return "", fmt.Errorf("直连请求: %v；代理回退: %w", directErr, proxyErr)
 }
 
 func fetchDecodedWithClient(ctx context.Context, client *http.Client, address string, decoder encoding.Encoding, headers map[string]string) (string, error) {
@@ -71,7 +126,7 @@ func fetchDecodedOnce(ctx context.Context, client *http.Client, address string, 
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("HTTP %s", response.Status)
+		return "", &httpStatusError{code: response.StatusCode, status: response.Status}
 	}
 	var reader io.Reader = response.Body
 	if decoder != nil {

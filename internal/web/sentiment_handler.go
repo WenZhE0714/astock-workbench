@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -40,8 +41,10 @@ func (s *Server) handleSentiment(writer http.ResponseWriter, request *http.Reque
 	previousErr := error(nil)
 	var stats domain.LimitStatsSnapshot
 	var statsErr error
+	var hot domain.HotStockSnapshot
+	var hotErr error
 	var waitGroup sync.WaitGroup
-	providerRoot := context.Background()
+	providerRoot := ctx
 	if s.industryFlows != nil {
 		waitGroup.Add(1)
 		go func() {
@@ -69,6 +72,22 @@ func (s *Server) handleSentiment(writer http.ResponseWriter, request *http.Reque
 			stats, statsErr = s.fetchLimitStats(statsCtx, "")
 		}()
 	}
+	if s.sentimentSignals != nil {
+		tradeDate := ""
+		for _, quote := range indexQuotes {
+			if len(quote.QuoteTime) >= 10 {
+				tradeDate = quote.QuoteTime[:10]
+				break
+			}
+		}
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			extrasCtx, extrasCancel := context.WithTimeout(providerRoot, 8*time.Second)
+			defer extrasCancel()
+			hot, hotErr = s.fetchSentimentExtras(extrasCtx, tradeDate)
+		}()
+	}
 	waitGroup.Wait()
 	// Use the quote-derived trade date for the limit pool. The first fetch is
 	// intentionally parallel; when it lacks a date, retry the cached/provider
@@ -78,7 +97,15 @@ func (s *Server) handleSentiment(writer http.ResponseWriter, request *http.Reque
 		stats, statsErr = s.fetchLimitStats(statsCtx, "")
 		statsCancel()
 	}
-	snapshot := calculateMarketSentiment(time.Now(), indexQuotes, flows, previous)
+	scoringFlows := flows
+	if flowErr != nil {
+		scoringFlows = nil
+	}
+	snapshot := calculateMarketSentiment(time.Now(), indexQuotes, scoringFlows, previous)
+	if flowErr != nil && len(flows) > 0 {
+		cached := calculateMarketSentiment(time.Now(), nil, flows, domain.MarketAmountSnapshot{})
+		snapshot.StrongIndustries, snapshot.WeakIndustries = cached.StrongIndustries, cached.WeakIndustries
+	}
 	// calculateMarketSentiment is also used independently by callers that need
 	// a coverage warning; the HTTP response has a more precise source status.
 	snapshot.Warnings = removeSentimentWarning(snapshot.Warnings, "涨停/跌停、炸板率和连板梯队尚未接入")
@@ -119,22 +146,28 @@ func (s *Server) handleSentiment(writer http.ResponseWriter, request *http.Reque
 		snapshot.Warnings = append(snapshot.Warnings, "指数/成交额行情请求失败: "+quoteErr.Error())
 	}
 	if flowErr != nil {
-		snapshot.Warnings = append(snapshot.Warnings, "行业扩散数据请求失败: "+flowErr.Error())
+		if len(flows) > 0 {
+			snapshot.Warnings = append(snapshot.Warnings, flowErr.Error()+"；缓存不参与本轮情绪评分")
+		} else {
+			snapshot.Warnings = append(snapshot.Warnings, "行业扩散数据请求失败: "+flowErr.Error())
+		}
 	}
 	if previousErr != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "上一交易日成交额不可用: "+previousErr.Error())
 	}
 	if s.sentimentSignals != nil {
-		extrasCtx, extrasCancel := context.WithTimeout(providerRoot, 8*time.Second)
-		hot, hotErr := s.fetchSentimentExtras(extrasCtx, snapshot.TradeDate)
-		extrasCancel()
-		if hotErr == nil && hot.Available {
+		if hot.Available {
 			snapshot.HotStockCount = len(hot.Stocks)
 			snapshot.HotThemeCount = len(hot.Themes)
 			snapshot.HotThemes = hot.Themes
 			snapshot.HotSignalAvailable = true
-		} else if hotErr != nil {
-			snapshot.Warnings = append(snapshot.Warnings, "同花顺热点暂不可用: "+hotErr.Error())
+		}
+		if hotErr != nil {
+			if hot.Available {
+				snapshot.Warnings = append(snapshot.Warnings, hotErr.Error())
+			} else {
+				snapshot.Warnings = append(snapshot.Warnings, "同花顺热点暂不可用: "+hotErr.Error())
+			}
 		}
 	}
 	snapshot.Warnings = uniqueSentimentWarnings(snapshot.Warnings)
@@ -176,22 +209,67 @@ func removeSentimentWarning(values []string, unwanted string) []string {
 }
 
 func (s *Server) fetchSentimentExtras(ctx context.Context, tradeDate string) (domain.HotStockSnapshot, error) {
-	now := time.Now()
+	now := s.now()
 	if tradeDate == "" {
 		tradeDate = now.In(realtimeWebLocation).Format("2006-01-02")
 	}
-	s.sentimentExtrasMu.Lock()
-	cached := s.sentimentExtrasCache
-	if cached.tradeDate == tradeDate && !cached.fetchedAt.IsZero() && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < sentimentExtrasCacheTTL {
+	for {
+		if err := ctx.Err(); err != nil {
+			return domain.HotStockSnapshot{}, err
+		}
+		now = s.now()
+		s.sentimentExtrasMu.Lock()
+		cached := s.sentimentExtrasCache
+		if cached.tradeDate == tradeDate && !cached.fetchedAt.IsZero() && now.Sub(cached.fetchedAt) >= 0 && now.Sub(cached.fetchedAt) < sentimentExtrasCacheTTL {
+			s.sentimentExtrasMu.Unlock()
+			return cachedHotResult(cached, now)
+		}
+		if inflight := s.sentimentExtrasInflight; inflight != nil {
+			s.sentimentExtrasMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return domain.HotStockSnapshot{}, ctx.Err()
+			case <-inflight:
+				continue
+			}
+		}
+		s.sentimentExtrasInflight = make(chan struct{})
 		s.sentimentExtrasMu.Unlock()
-		return cached.hot, cached.hotErr
+
+		hot, hotErr := s.sentimentSignals.FetchHotStocks(ctx, tradeDate)
+		now = s.now()
+		if hotErr == nil && (!hot.Available || hot.TradeDate != tradeDate) {
+			hotErr = fmt.Errorf("未返回 %s 的有效热点数据", tradeDate)
+		}
+		entry := sentimentExtrasCacheEntry{hot: hot, hotErr: hotErr, tradeDate: tradeDate, fetchedAt: now}
+		if hotErr == nil {
+			entry.succeededAt = now
+		} else {
+			entry.hot = domain.HotStockSnapshot{}
+			if cached.tradeDate == tradeDate && cached.hot.Available && now.Sub(cached.succeededAt) >= 0 && now.Sub(cached.succeededAt) < 5*time.Minute {
+				entry.hot, entry.succeededAt = cached.hot, cached.succeededAt
+				entry.hotErr = fmt.Errorf("同花顺热点刷新失败，暂用 %s 的缓存", cached.succeededAt.In(realtimeWebLocation).Format("15:04:05"))
+			}
+		}
+		s.sentimentExtrasMu.Lock()
+		if ctx.Err() == nil {
+			s.sentimentExtrasCache = entry
+		}
+		close(s.sentimentExtrasInflight)
+		s.sentimentExtrasInflight = nil
+		s.sentimentExtrasMu.Unlock()
+		return cachedHotResult(entry, now)
 	}
-	s.sentimentExtrasMu.Unlock()
-	hot, hotErr := s.sentimentSignals.FetchHotStocks(ctx, tradeDate)
-	s.sentimentExtrasMu.Lock()
-	s.sentimentExtrasCache = sentimentExtrasCacheEntry{hot: hot, hotErr: hotErr, tradeDate: tradeDate, fetchedAt: now}
-	s.sentimentExtrasMu.Unlock()
-	return hot, hotErr
+}
+
+func cachedHotResult(entry sentimentExtrasCacheEntry, now time.Time) (domain.HotStockSnapshot, error) {
+	if entry.hot.Available && (entry.succeededAt.IsZero() || now.Sub(entry.succeededAt) < 0 || now.Sub(entry.succeededAt) >= 5*time.Minute) {
+		return domain.HotStockSnapshot{}, fmt.Errorf("同花顺热点缓存已过期，等待在线数据恢复")
+	}
+	hot := entry.hot
+	hot.Stocks = append([]domain.HotStockSignal(nil), hot.Stocks...)
+	hot.Themes = append([]domain.HotTheme(nil), hot.Themes...)
+	return hot, entry.hotErr
 }
 
 func uniqueSentimentWarnings(values []string) []string {

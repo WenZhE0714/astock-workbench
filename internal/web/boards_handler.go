@@ -2,10 +2,13 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 type boardRankingResponse struct {
@@ -27,7 +30,7 @@ func (s *Server) handleBoards(writer http.ResponseWriter, request *http.Request)
 	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
 	defer cancel()
 	flows, err := s.industryFlows.FetchIndustryFlows(ctx)
-	if err != nil {
+	if err != nil && len(flows) == 0 {
 		writeJSON(writer, http.StatusBadGateway, boardRankingResponse{Items: []*boardResponse{}, FetchedAt: time.Now().Format(time.RFC3339), Warning: err.Error()})
 		return
 	}
@@ -50,7 +53,15 @@ func (s *Server) handleBoards(writer http.ResponseWriter, request *http.Request)
 			return boardResponseNumber(lv.Percent) > boardResponseNumber(rv.Percent)
 		}
 	})
-	writeJSON(writer, http.StatusOK, boardRankingResponse{Items: items, FetchedAt: time.Now().Format(time.RFC3339), Sort: sortKey})
+	response := boardRankingResponse{Items: items, FetchedAt: time.Now().Format(time.RFC3339), Sort: sortKey}
+	if err != nil {
+		response.Warning = err.Error()
+		var cached *market.IndustryFlowCacheError
+		if errors.As(err, &cached) {
+			response.FetchedAt = cached.FetchedAt.Format(time.RFC3339)
+		}
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func boardResponseNumber(value *float64) float64 {

@@ -2818,6 +2818,7 @@ createApp({
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
         if (!response.ok) throw new Error(payload.warning || payload.error || "板块行情暂不可用")
+        this.boardsError = payload.warning || ""
         this.boardItems = Array.isArray(payload.items) ? payload.items : []
         this.boardsFetchedAt = now
         if (this.boardSort === "flow") { this.boardSortField = "flow"; this.boardSortDirection = "desc" }
@@ -2826,7 +2827,7 @@ createApp({
         if (!this.boardSelectedCode && this.boardItems.length) this.boardSelectedCode = this.boardItems[0].code
         const selected = this.boardItems.find(item => item.code === this.boardSelectedCode)
         if (selected && this.workspaceMode === "boards") {
-          if (this.boardSamplingActive()) {
+          if (!payload.warning && this.boardSamplingActive()) {
             const today = localDate(new Date())
             this.boardHistory = [...this.boardHistory.filter(point => localDate(new Date(point.at)) === today), { at: Date.now(), code: selected.code, percent: Number(selected.percent), mainNet: Number(selected.main_net_yuan), breadth: this.boardBreadth(selected) }].slice(-240)
           }

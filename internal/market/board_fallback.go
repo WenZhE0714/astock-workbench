@@ -27,13 +27,10 @@ func NewFallbackBoardFlowClient(clients ...BoardFlowClient) FallbackBoardFlowCli
 
 func (client FallbackBoardFlowClient) FetchBoards(ctx context.Context, symbol string) ([]domain.BoardFlow, error) {
 	for index, source := range client.clients {
-		requestContext := ctx
-		cancel := func() {}
-		// A slow preferred source must not consume the caller's entire deadline
-		// before an independent fallback gets a chance to run.
-		if index < len(client.clients)-1 {
-			requestContext, cancel = context.WithTimeout(ctx, 5*time.Second)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
+		requestContext, cancel := fallbackContext(ctx, len(client.clients)-index, 5*time.Second)
 		items, err := source.FetchBoards(requestContext, symbol)
 		cancel()
 		if err == nil && len(items) > 0 {

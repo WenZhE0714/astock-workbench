@@ -136,6 +136,15 @@ func (client *CachedDailyHistoryClient) load(symbol string) ([]domain.DailyBar, 
 		return nil, fmt.Errorf("日K缓存已过期")
 	}
 	bars := decodeCachedBars(payload.Bars)
+	// A snapshot captured before the close cannot become a completed daily bar
+	// just because the caller reads it after the close or on a later date.
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	fetched := payload.FetchedAt.In(location)
+	now := client.now().In(location)
+	closeTime := time.Date(fetched.Year(), fetched.Month(), fetched.Day(), 15, 0, 0, 0, location)
+	if len(bars) > 0 && fetched.Before(closeTime) && !now.Before(closeTime) && bars[len(bars)-1].Date == fetched.Format("2006-01-02") {
+		bars = bars[:len(bars)-1]
+	}
 	if len(bars) < 60 {
 		return nil, fmt.Errorf("日K缓存仅有%d根", len(bars))
 	}

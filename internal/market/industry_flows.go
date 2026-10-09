@@ -52,7 +52,7 @@ func parseIndustryFlowPage(raw string) (int, map[string]domain.BoardFlow) {
 			continue
 		}
 		result[name] = domain.BoardFlow{
-			Code: item.Code, Name: name, Kind: domain.BoardKindIndustry,
+			Code: item.Code, Name: name, Kind: domain.BoardKindIndustry, Source: "东方财富",
 			Percent: rawNumber(item.Percent), MainNet: rawNumber(item.MainNet), MainRatio: rawNumber(item.MainRatio),
 			RiseCount: item.RiseCount, FallCount: item.FallCount, FlatCount: item.FlatCount,
 			LeaderName: strings.TrimSpace(item.LeaderName), LeaderCode: strings.TrimSpace(item.LeaderCode),
@@ -72,15 +72,16 @@ func industryFlowPageAddress(base string, page int) string {
 	}
 	values := url.Values{
 		"fields": {"f3,f12,f14,f62,f100,f104,f105,f106,f128,f136,f140,f184"},
-		"fid":    {"f3"},
-		"fltt":   {"2"},
-		"fs":     {"m:90+t:2+f:!50"},
-		"invt":   {"2"},
-		"np":     {"1"},
-		"pn":     {fmt.Sprintf("%d", page)},
-		"po":     {"1"},
-		"pz":     {"100"},
-		"ut":     {"bd1d9ddb04089700cf9c27f6f7426281"},
+		// Stable ordering prevents moving prices from shifting page boundaries.
+		"fid":  {"f12"},
+		"fltt": {"2"},
+		"fs":   {"m:90+t:2+f:!50"},
+		"invt": {"2"},
+		"np":   {"1"},
+		"pn":   {fmt.Sprintf("%d", page)},
+		"po":   {"1"},
+		"pz":   {"100"},
+		"ut":   {"bd1d9ddb04089700cf9c27f6f7426281"},
 	}
 	separator := "?"
 	if strings.Contains(base, "?") {
@@ -93,43 +94,99 @@ func industryFlowBases() []string {
 	if configured := os.Getenv("ASTOCK_INDUSTRY_FLOW_API_URL"); configured != "" {
 		return []string{configured}
 	}
-	return []string{boardRankAPIURL, boardRankDelayURL, boardRankFallbackURL}
+	return []string{marketRankingAPIURL, boardRankDelayURL, boardRankAPIURL, boardRankFallbackURL}
 }
 
 func (EastmoneyClient) FetchIndustryFlows(ctx context.Context) (map[string]domain.BoardFlow, error) {
+	return fetchIndustryFlows(ctx, industryFlowBases())
+}
+
+func fetchIndustryFlows(ctx context.Context, bases []string) (map[string]domain.BoardFlow, error) {
 	var lastError error
-	for _, base := range industryFlowBases() {
-		flows := make(map[string]domain.BoardFlow)
-		complete := true
-		for page := 1; page <= 10; page++ {
-			requestContext, cancel := context.WithTimeout(ctx, 4*time.Second)
-			raw, fetchError := fetchDecoded(requestContext, industryFlowPageAddress(base, page), nil)
-			cancel()
-			if fetchError != nil {
-				lastError = fetchError
-				complete = false
-				break
-			}
-			total, pageFlows := parseIndustryFlowPage(raw)
-			if len(pageFlows) == 0 {
-				lastError = fmt.Errorf("未解析到行业资金流第 %d 页", page)
-				complete = false
-				break
-			}
-			for name, flow := range pageFlows {
-				flows[name] = flow
-			}
-			pages := (total + 99) / 100
-			if total <= 0 || page >= pages {
-				break
-			}
+	for index, base := range bases {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-		if complete && len(flows) > 0 {
+		// Keep half the remaining budget for all later nodes, rather than
+		// dividing a multi-page download into ever smaller equal shares.
+		nodeCtx, cancelNode := fallbackContext(ctx, min(2, len(bases)-index), 4*time.Second)
+		flows, err := fetchIndustryFlowNode(nodeCtx, base)
+		cancelNode()
+		if err == nil {
 			return flows, nil
 		}
+		lastError = err
 	}
 	if lastError == nil {
 		lastError = fmt.Errorf("行业资金流暂不可用")
 	}
 	return nil, lastError
+}
+
+func fetchIndustryFlowNode(ctx context.Context, base string) (map[string]domain.BoardFlow, error) {
+	ctx, cancelNode := context.WithCancel(ctx)
+	defer cancelNode()
+	type pageResult struct {
+		total int
+		flows map[string]domain.BoardFlow
+		err   error
+	}
+	fetchPage := func(page int) pageResult {
+		requestCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+		raw, err := fetchDecodedDirectFirst(requestCtx, industryFlowPageAddress(base, page), nil, nil)
+		if err != nil {
+			return pageResult{err: err}
+		}
+		total, flows := parseIndustryFlowPage(raw)
+		if len(flows) == 0 {
+			return pageResult{err: fmt.Errorf("未解析到行业资金流第 %d 页", page)}
+		}
+		return pageResult{total: total, flows: flows}
+	}
+	first := fetchPage(1)
+	if first.err != nil {
+		return nil, first.err
+	}
+	pages := (first.total + 99) / 100
+	if pages > 10 {
+		return nil, fmt.Errorf("行业资金流超过分页上限，未取得完整数据")
+	}
+	// Fetch at most two pages concurrently; stable code ordering keeps each
+	// page independent without increasing the number of upstream requests.
+	for page := 2; page <= pages; page += 2 {
+		count := min(2, pages-page+1)
+		results := make(chan pageResult, count)
+		for offset := 0; offset < count; offset++ {
+			go func(number int) { results <- fetchPage(number) }(page + offset)
+		}
+		var batchError error
+		for offset := 0; offset < count; offset++ {
+			result := <-results
+			if result.err != nil {
+				if batchError == nil {
+					batchError = result.err
+					cancelNode()
+				}
+				continue
+			}
+			if result.total != first.total {
+				if batchError == nil {
+					batchError = fmt.Errorf("行业资金流分页总数发生变化，等待完整快照")
+					cancelNode()
+				}
+				continue
+			}
+			for name, flow := range result.flows {
+				first.flows[name] = flow
+			}
+		}
+		if batchError != nil {
+			return nil, batchError
+		}
+	}
+	if first.total > 0 && len(first.flows) != first.total {
+		return nil, fmt.Errorf("行业资金流仅返回 %d/%d 个行业", len(first.flows), first.total)
+	}
+	return first.flows, nil
 }

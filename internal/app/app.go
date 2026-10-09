@@ -68,8 +68,8 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	primaryHistory := market.NewFallbackDailyHistoryClient(market.EastmoneyClient{}, market.TencentClient{})
-	primaryScanHistory := market.TencentClient{}
+	primaryHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{})
+	primaryScanHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{})
 	quoteClient := market.TencentClient{}
 	boardClient := market.NewFallbackBoardFlowClient(market.EastmoneyClient{}, market.THSStockBoardClient{})
 	historyClient := market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history-execution"))
@@ -82,7 +82,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		quotes:          quoteClient,
 		httpQuotes:      quoteClient,
 		flows:           market.EastmoneyClient{},
-		industryFlows:   market.EastmoneyClient{},
+		industryFlows:   market.NewCachedIndustryFlowClient(market.EastmoneyClient{}),
 		boards:          boardClient,
 		dragonTiger:     market.EastmoneyClient{},
 		amounts:         market.SinaAmountClient{},

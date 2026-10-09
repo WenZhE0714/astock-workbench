@@ -42,11 +42,17 @@ func (client MarketMinuteClient) FetchMinutePoints(ctx context.Context, symbol s
 	if IsBroadMarketSymbol(symbol) {
 		var best []domain.MinutePoint
 		var lastError error
-		for _, source := range []MinuteClient{client.fallback, client.primary} {
+		for index, source := range []MinuteClient{client.fallback, client.primary} {
 			if source == nil {
 				continue
 			}
-			points, err := source.FetchMinutePoints(ctx, symbol)
+			if ctx.Err() != nil {
+				lastError = ctx.Err()
+				break
+			}
+			requestCtx, cancel := fallbackContext(ctx, 2-index, 5*time.Second)
+			points, err := source.FetchMinutePoints(requestCtx, symbol)
+			cancel()
 			if err != nil {
 				lastError = err
 				continue
@@ -93,8 +99,13 @@ func NewFallbackMinuteClient(clients ...MinuteClient) FallbackMinuteClient {
 
 func (client FallbackMinuteClient) FetchMinutePoints(ctx context.Context, symbol string) ([]domain.MinutePoint, error) {
 	var lastError error
-	for _, source := range client.clients {
-		points, err := source.FetchMinutePoints(ctx, symbol)
+	for index, source := range client.clients {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		requestCtx, cancel := fallbackContext(ctx, len(client.clients)-index, 5*time.Second)
+		points, err := source.FetchMinutePoints(requestCtx, symbol)
+		cancel()
 		if err == nil && len(points) > 0 {
 			return points, nil
 		}

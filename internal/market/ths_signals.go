@@ -25,34 +25,27 @@ func NewTHSSignalClientFromEnv() THSSignalClient {
 	return THSSignalClient{HotStocksURL: os.Getenv("ASTOCK_THS_HOT_STOCKS_URL")}
 }
 
-func (client THSSignalClient) httpClient() *http.Client {
-	if client.HTTPClient != nil {
-		return client.HTTPClient
-	}
-	return &http.Client{Timeout: 4 * time.Second}
-}
-
 func (client THSSignalClient) FetchHotStocks(ctx context.Context, tradeDate string) (domain.HotStockSnapshot, error) {
 	if strings.TrimSpace(tradeDate) == "" {
 		tradeDate = time.Now().Format("2006-01-02")
 	}
 	address := client.HotStocksURL
 	if strings.TrimSpace(address) == "" {
-		address = "http://zx.10jqka.com.cn/event/api/getharden/date/%s/orderby/date/orderway/desc/charset/GBK/"
+		address = "https://zx.10jqka.com.cn/event/api/getharden/date/%s/orderby/date/orderway/desc/charset/GBK/"
 	}
 	address = strings.ReplaceAll(address, "%s", tradeDate)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	requestCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	headers := map[string]string{"User-Agent": "Mozilla/5.0", "Referer": "https://zx.10jqka.com.cn/"}
+	var raw string
+	var err error
+	if client.HTTPClient != nil {
+		raw, err = fetchDecodedWithClient(requestCtx, client.HTTPClient, address, nil, headers)
+	} else {
+		raw, err = fetchDecodedDirectFirst(requestCtx, address, nil, headers)
+	}
 	if err != nil {
 		return domain.HotStockSnapshot{}, err
-	}
-	request.Header.Set("User-Agent", "Mozilla/5.0")
-	response, err := client.httpClient().Do(request)
-	if err != nil {
-		return domain.HotStockSnapshot{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return domain.HotStockSnapshot{}, fmt.Errorf("同花顺热点 HTTP %s", response.Status)
 	}
 	var payload struct {
 		ErrorCode any `json:"errocode"`
@@ -66,8 +59,11 @@ func (client THSSignalClient) FetchHotStocks(ctx context.Context, tradeDate stri
 			Reason    string          `json:"reason"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal([]byte(decodeTHSAuto(raw)), &payload); err != nil {
 		return domain.HotStockSnapshot{}, err
+	}
+	if payload.ErrorCode != nil && fmt.Sprint(payload.ErrorCode) != "0" {
+		return domain.HotStockSnapshot{}, fmt.Errorf("同花顺热点接口错误码 %v", payload.ErrorCode)
 	}
 	stocks := make([]domain.HotStockSignal, 0, len(payload.Data))
 	type themeAggregate struct {

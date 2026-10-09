@@ -44,8 +44,13 @@ func (client *FallbackDailyHistoryClient) FetchDailyBars(ctx context.Context, sy
 		return nil, fmt.Errorf("日K回退源未初始化")
 	}
 	errors := make([]string, 0, len(client.clients))
-	for _, source := range client.clients {
-		bars, err := source.FetchDailyBars(ctx, symbol)
+	for index, source := range client.clients {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		requestCtx, cancel := fallbackContext(ctx, len(client.clients)-index, 5*time.Second)
+		bars, err := source.FetchDailyBars(requestCtx, symbol)
+		cancel()
 		if err == nil && len(bars) >= 60 {
 			return bars, nil
 		}
@@ -84,8 +89,13 @@ func (client *FallbackDailyHistoryClient) FetchDailyBarsRange(
 		return nil, fmt.Errorf("日K区间回退源未初始化")
 	}
 	failures := make([]string, 0, len(rangeClients))
-	for _, source := range rangeClients {
-		bars, err := source.FetchDailyBarsRange(ctx, symbol, start, end, adjustment)
+	for index, source := range rangeClients {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		requestCtx, cancel := fallbackContext(ctx, len(rangeClients)-index, 20*time.Second)
+		bars, err := source.FetchDailyBarsRange(requestCtx, symbol, start, end, adjustment)
+		cancel()
 		if err == nil {
 			if covered, ok := dailyBarsCoverRange(bars, start, end); ok {
 				return covered, nil

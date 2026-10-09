@@ -240,6 +240,30 @@ func (historyStub) FetchDailyBars(_ context.Context, symbol string) ([]domain.Da
 	return []domain.DailyBar{{Symbol: symbol, Source: "测试", Date: "2026-08-15", Open: 12, Close: 12.3, High: 12.5, Low: 11.8, Volume: 100}}, nil
 }
 
+type cachedHistoryStub struct{}
+
+func (cachedHistoryStub) FetchDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
+	bars, err := (historyStub{}).FetchDailyBars(ctx, symbol)
+	for index := range bars {
+		bars[index].Source = "腾讯缓存"
+	}
+	return bars, err
+}
+
+func TestStockEndpointShowsCachedHistoryWithDateAndWarning(t *testing.T) {
+	server := NewServer(resolverStub{}, quoteStub{}, cachedHistoryStub{}, minuteStub{}, "600519")
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/stock", nil))
+	var response stockResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || len(response.Bars) != 1 || response.Quote == nil ||
+		!strings.Contains(response.HistoryError, "2026-08-15") || !strings.Contains(response.HistoryError, "缓存") {
+		t.Fatalf("cached history was hidden or unlabelled: %s", recorder.Body.String())
+	}
+}
+
 type minuteStub struct{}
 
 func (minuteStub) FetchMinutePoints(_ context.Context, symbol string) ([]domain.MinutePoint, error) {
