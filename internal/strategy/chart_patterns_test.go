@@ -27,6 +27,12 @@ func classicPatternBars(kind string) []domain.DailyBar {
 			price float64
 		}{{0, 120}, {20, 120}, {26, 122}, {34, 102}, {42, 112}, {50, 92}, {58, 112.4}, {66, 102.5}, {73, 108}, {79, 116}}
 	}
+	if kind == "bull-flag" || kind == "bear-flag" {
+		knots = []struct {
+			index int
+			price float64
+		}{{0, 100}, {24, 100}, {30, 95}, {42, 120}, {48, 116}, {54, 118.8}, {60, 114.8}, {66, 117.6}, {72, 113.6}, {79, 120.2}}
+	}
 	segment := 0
 	for index := range bars {
 		for segment < len(knots)-2 && index > knots[segment+1].index {
@@ -34,11 +40,18 @@ func classicPatternBars(kind string) []domain.DailyBar {
 		}
 		left, right := knots[segment], knots[segment+1]
 		price := left.price + (right.price-left.price)*float64(index-left.index)/float64(right.index-left.index)
-		if kind == "double-top" || kind == "descending-triangle" || kind == "head-shoulders-top" {
+		if kind == "double-top" || kind == "descending-triangle" || kind == "head-shoulders-top" || kind == "bear-flag" {
 			price = 220 - price
 		}
 		bars[index].Open, bars[index].Close = price-.1, price
 		bars[index].High, bars[index].Low = price+.5, price-.5
+		if kind == "bull-flag" || kind == "bear-flag" {
+			if index > 30 && index <= 42 {
+				bars[index].Volume = 3000
+			} else if index > 42 {
+				bars[index].Volume = 700
+			}
+		}
 	}
 	bars[len(bars)-1].Volume = 2000
 	return bars
@@ -56,7 +69,7 @@ func classicStructure(t *testing.T, analysis domain.ChartAnalysis, id string) do
 }
 
 func TestClassicPatternsUseDatedGeometryAndCompletedConfirmation(t *testing.T) {
-	for _, kind := range []string{"double-bottom", "double-top", "ascending-triangle", "descending-triangle", "head-shoulders-bottom", "head-shoulders-top"} {
+	for _, kind := range []string{"double-bottom", "double-top", "ascending-triangle", "descending-triangle", "head-shoulders-bottom", "head-shoulders-top", "bull-flag", "bear-flag"} {
 		t.Run(kind, func(t *testing.T) {
 			bars := classicPatternBars(kind)
 			now := chartTestTime(bars[79].Date, 16)
@@ -76,7 +89,7 @@ func TestClassicPatternsUseDatedGeometryAndCompletedConfirmation(t *testing.T) {
 					t.Fatalf("invalid geometry: %+v", line)
 				}
 			}
-			if kind == "double-top" || kind == "descending-triangle" || kind == "head-shoulders-top" {
+			if kind == "double-top" || kind == "descending-triangle" || kind == "head-shoulders-top" || kind == "bear-flag" {
 				if item.Pattern.Bias != "bearish" || item.Plan != nil || item.Pattern.InvalidationPrice <= item.Pattern.TriggerPrice {
 					t.Fatalf("bearish structure generated a long plan: %+v", item)
 				}

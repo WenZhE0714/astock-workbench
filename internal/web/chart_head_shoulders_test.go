@@ -11,15 +11,17 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
 
-func TestHeadShouldersPlanPersistsFrozenBoundaries(t *testing.T) {
+func TestPatternPlansPersistFrozenBoundaries(t *testing.T) {
 	root := t.TempDir()
 	s := chartPatternServerFixture(root)
 	for _, sample := range []struct {
-		symbol, kind string
-		status       int
+		symbol, kind  string
+		status, lines int
 	}{
-		{"sh600004", "head-shoulders-bottom", http.StatusCreated},
-		{"sh600005", "head-shoulders-top", http.StatusBadRequest},
+		{"sh600004", "head-shoulders-bottom", http.StatusCreated, 7},
+		{"sh600005", "head-shoulders-top", http.StatusBadRequest, 7},
+		{"sh600006", "bull-flag", http.StatusCreated, 5},
+		{"sh600007", "bear-flag", http.StatusBadRequest, 5},
 	} {
 		t.Run(sample.kind, func(t *testing.T) {
 			analysis, err := s.chartAnalysis(context.Background(), sample.symbol, "")
@@ -44,8 +46,8 @@ func TestHeadShouldersPlanPersistsFrozenBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			plan := response.Plan
-			if plan.Structure.ID != sample.kind || len(plan.Structure.Lines) != 7 || plan.MonitorRule == nil {
-				t.Fatalf("head-shoulders geometry missing: %+v", plan.Structure)
+			if plan.Structure.ID != sample.kind || len(plan.Structure.Lines) != sample.lines || plan.MonitorRule == nil {
+				t.Fatalf("pattern geometry missing: %+v", plan.Structure)
 			}
 			if enabled := setMonitor(t, s, plan, true); enabled.Code != http.StatusOK {
 				t.Fatalf("monitor enable failed: %s", enabled.Body.String())
@@ -67,7 +69,7 @@ func TestHeadShouldersPlanPersistsFrozenBoundaries(t *testing.T) {
 			s.Handler().ServeHTTP(recorder, request)
 			var stock stockResponse
 			if recorder.Code != 200 || json.Unmarshal(recorder.Body.Bytes(), &stock) != nil || stock.ChartAnalysis == nil || !reflect.DeepEqual(stock.ChartAnalysis.Structures, analysis.Structures) {
-				t.Fatal("stock response changed head-shoulders geometry")
+				t.Fatal("stock response changed pattern geometry")
 			}
 		})
 	}

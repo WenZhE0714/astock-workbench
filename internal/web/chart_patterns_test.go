@@ -97,6 +97,34 @@ func headShouldersWebBars(symbol string, bearish bool) []domain.DailyBar {
 	return bars
 }
 
+func flagWebBars(symbol string, bearish bool) []domain.DailyBar {
+	bars := patternWebBars(symbol, false, false)
+	knots := []struct {
+		index int
+		price float64
+	}{{0, 100}, {24, 100}, {30, 95}, {42, 120}, {48, 116}, {54, 118.8}, {60, 114.8}, {66, 117.6}, {72, 113.6}, {79, 120.2}}
+	segment := 0
+	for index := range bars {
+		for segment < len(knots)-2 && index > knots[segment+1].index {
+			segment++
+		}
+		left, right := knots[segment], knots[segment+1]
+		price := left.price + (right.price-left.price)*float64(index-left.index)/float64(right.index-left.index)
+		if bearish {
+			price = 220 - price
+		}
+		bars[index].Open, bars[index].Close = price-.1, price
+		bars[index].High, bars[index].Low = price+.5, price-.5
+		if index > 30 && index <= 42 {
+			bars[index].Volume = 3000
+		} else if index > 42 {
+			bars[index].Volume = 700
+		}
+	}
+	bars[79].Volume = 2000
+	return bars
+}
+
 func chartPatternServerFixture(root string) *Server {
 	server := chartServerFixture(filepath.Join(root, "plans"))
 	server.planMonitors = storage.NewPlanMonitorStore(filepath.Join(root, "monitors"))
@@ -109,8 +137,10 @@ func chartPatternServerFixture(root string) *Server {
 		"sh600003": overlappingPatternWebBars("sh600003"),
 		"sh600004": headShouldersWebBars("sh600004", false),
 		"sh600005": headShouldersWebBars("sh600005", true),
+		"sh600006": flagWebBars("sh600006", false),
+		"sh600007": flagWebBars("sh600007", true),
 	}
-	names := map[string]string{"sh600519": "双底测试", "sh600000": "双顶测试", "sh600001": "上升三角测试", "sh600002": "下降三角测试", "sh600003": "多形态测试", "sh600004": "头肩底测试", "sh600005": "头肩顶测试"}
+	names := map[string]string{"sh600519": "双底测试", "sh600000": "双顶测试", "sh600001": "上升三角测试", "sh600002": "下降三角测试", "sh600003": "多形态测试", "sh600004": "头肩底测试", "sh600005": "头肩顶测试", "sh600006": "看涨旗形测试", "sh600007": "看跌旗形测试"}
 	server.history = history
 	server.quotes = quoteClientFunc(func(_ context.Context, symbols []string) ([]domain.Quote, error) {
 		quotes := make([]domain.Quote, 0)

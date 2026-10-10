@@ -43,6 +43,8 @@ const structureColors = {
   "descending-triangle": "#b5b4f1",
   "head-shoulders-bottom": "#c9d96f",
   "head-shoulders-top": "#ed91ce",
+  "bull-flag": "#86b9ef",
+  "bear-flag": "#f18073",
 }
 
 export function chartStructureColor(structure) {

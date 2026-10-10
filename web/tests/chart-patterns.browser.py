@@ -124,7 +124,7 @@ def main():
             page = browser.new_page(viewport={"width": width, "height": 1100 if width > 600 else 844}, is_mobile=width < 600, has_touch=width < 600)
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(args.url + "/?view=market&chart=daily", wait_until="networkidle")
-            for symbol, pattern, bias in [("sh600519", "double-bottom", "看涨结构"), ("sh600000", "double-top", "看跌结构"), ("sh600001", "ascending-triangle", "看涨结构"), ("sh600002", "descending-triangle", "看跌结构"), ("sh600004", "head-shoulders-bottom", "看涨结构"), ("sh600005", "head-shoulders-top", "看跌结构")]:
+            for symbol, pattern, bias in [("sh600519", "double-bottom", "看涨结构"), ("sh600000", "double-top", "看跌结构"), ("sh600001", "ascending-triangle", "看涨结构"), ("sh600002", "descending-triangle", "看跌结构"), ("sh600004", "head-shoulders-bottom", "看涨结构"), ("sh600005", "head-shoulders-top", "看跌结构"), ("sh600006", "bull-flag", "看涨结构"), ("sh600007", "bear-flag", "看跌结构")]:
                 if symbol != "sh600519":
                     open_symbol(page, symbol)
                 select = page.get_by_role("combobox", name="观察形态", exact=True)
@@ -141,6 +141,11 @@ def main():
                 if pattern.startswith("head-shoulders"):
                     expect(page.locator(".chart-structure-evidence")).to_contain_text("近水平颈线")
                     for label in ["左肩", "头部", "右肩", "左颈点", "右颈点"]:
+                        expect(page.locator(".chart-anchor-dates")).to_contain_text(label)
+                if pattern.endswith("flag"):
+                    expect(page.locator(".chart-structure-evidence")).to_contain_text("逆向近乎平行")
+                    expect(page.locator(".chart-structure-evidence")).to_contain_text("不随之后的通道投影移动")
+                    for label in ["旗杆起点", "旗杆终点", "旗低3" if pattern == "bull-flag" else "旗高3"]:
                         expect(page.locator(".chart-anchor-dates")).to_contain_text(label)
                 verify_overlay(page)
                 check_layout(page)
@@ -167,7 +172,7 @@ def main():
                     assert next(item for item in loaded if item["id"] == plan["id"])["structure"] == plan["structure"]
             verify_concurrent_layers(page, width, output)
             if width == 1440:
-                for symbol, pattern in [("sh600519", "double-bottom"), ("sh600004", "head-shoulders-bottom"), ("sh600005", "head-shoulders-top")]:
+                for symbol, pattern in [("sh600519", "double-bottom"), ("sh600004", "head-shoulders-bottom"), ("sh600005", "head-shoulders-top"), ("sh600006", "bull-flag"), ("sh600007", "bear-flag")]:
                     open_symbol(page, symbol)
                     page.get_by_role("combobox", name="观察形态", exact=True).select_option(pattern)
                     page.get_by_role("tab", name="1月", exact=True).click()
@@ -179,8 +184,10 @@ def main():
                     page.mouse.move(box["x"] + box["width"] * .95, box["y"] + box["height"] * .45, steps=10)
                     page.mouse.up()
                     expect(page.locator(".chart-analysis-date")).not_to_contain_text("2026-09-18")
-                    expect(page.get_by_role("combobox", name="观察形态", exact=True)).to_have_value("range-breakout")
-                    expect(page.locator(".chart-pattern-facts")).to_have_count(0)
+                    expect(page.get_by_role("combobox", name="观察形态", exact=True)).not_to_have_value(pattern)
+                    if not pattern.endswith("flag"):
+                        expect(page.get_by_role("combobox", name="观察形态", exact=True)).to_have_value("range-breakout")
+                        expect(page.locator(".chart-pattern-facts")).to_have_count(0)
                     expect(layer_checkbox(page, pattern)).to_have_count(0)
                     check_layout(page)
                     canvas.dblclick()
@@ -190,7 +197,7 @@ def main():
             page.close()
         assert not errors, errors
         browser.close()
-    print("PASS: six classic patterns, concurrent pattern pixels, independent layer/plan selections, select-all, live refresh, stock reset, historical cutoff, frozen plans and 1440/390/320 layouts")
+    print("PASS: eight classic patterns, concurrent pattern pixels, independent layer/plan selections, select-all, live refresh, stock reset, historical cutoff, frozen plans and 1440/390/320 layouts")
 
 
 if __name__ == "__main__":
