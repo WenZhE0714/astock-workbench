@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.11a19cb8.js"></script>
-  <link rel="stylesheet" href="/assets/index.3774436c.css">
+  <script type="module" crossorigin src="/assets/index.07e94565.js"></script>
+  <link rel="stylesheet" href="/assets/index.897521e2.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -384,6 +384,7 @@
               </aside>
             </form>
           </section>
+          <div class="pv-chart-return" v-if="workspaceMode === 'market' && patternValidationReturn"><button type="button" class="text-action" @click="returnToPatternValidation">返回形态验证</button><span>当前数据源重算 · 冻结依据保留在验证归档</span><span class="chart-plan-error" v-if="patternValidationChartError" v-text="patternValidationChartError"></span></div>
           <header v-if="workspaceMode === 'market'">
             <div class="title-row"><button type="button" class="mobile-drawer-button" title="打开自选" aria-label="打开自选" @click="watchlistOpen = true">☰</button><div><div class="eyebrow">ASTOCK / MARKET VIEW</div><h1 v-text="title"></h1></div></div>
             <form class="toolbar" @submit.prevent="search">
@@ -710,10 +711,12 @@
 
           <section class="strategy-view" v-if="workspaceMode === 'strategy'">
             <div class="strategy-header">
-              <div><div class="eyebrow">QUANT / RESEARCH</div><h1>量化策略研究</h1><p>复用 CLI 的 A 股日线回测引擎，结果自动归档并保留完整交易证据。</p></div>
-              <div class="strategy-stage"><span>当前阶段</span><strong v-text="strategyLifecycleHeadline"></strong><small>审批只影响下一轮研究基线，不修改实时评分或下单</small></div>
+              <div><div class="eyebrow">QUANT / RESEARCH</div><h1>量化策略研究</h1><p v-if="strategySection === 'backtests'">复用 CLI 的 A 股日线回测引擎，结果自动归档并保留完整交易证据。</p></div>
+              <div class="strategy-stage" v-if="strategySection === 'backtests'"><span>当前阶段</span><strong v-text="strategyLifecycleHeadline"></strong><small>审批只影响下一轮研究基线，不修改实时评分或下单</small></div>
             </div>
-
+            <div class="strategy-tabs dashboard-segment" role="tablist" aria-label="量化研究视图"><button type="button" role="tab" :aria-selected="strategySection === 'backtests'" :class="{active:strategySection === 'backtests'}" @click="switchStrategySection('backtests')">策略回测</button><button type="button" role="tab" :aria-selected="strategySection === 'patterns'" :class="{active:strategySection === 'patterns'}" @click="switchStrategySection('patterns')">形态验证</button></div>
+            <pattern-validation-view v-if="strategySection === 'patterns'" :selection="patternValidationSelection" :default-symbol="requestedSymbol" @selection="patternValidationSelection = $event" @open-sample="openPatternValidationSample"></pattern-validation-view>
+            <template v-else>
             <section class="candidate-lifecycle">
               <div class="research-section-head candidate-lifecycle-head">
                 <div><span class="section-kicker">CHAMPION / CHALLENGER CONTROL</span><h2>候选生命周期与人工批准</h2></div>
@@ -878,11 +881,13 @@
                 </template>
               </main>
             </div>
+            </template>
           </section>
           <footer v-if="workspaceMode === 'market'">Vue 行情页 · 自选与 CLI 共用 · 页面每 10 秒刷新 · 不影响 CLI 看盘</footer>
           <footer v-else-if="workspaceMode === 'realtime'">实时策略是辅助观察信号 · 不代表未来收益 · 触发价和失效价需结合涨跌停、流动性和个人仓位复核</footer>
           <footer v-else-if="workspaceMode === 'settings'">AI 配置只影响本机研究请求 · Token 不会返回浏览器 · 仍然不会触发自动交易</footer>
           <footer v-else-if="workspaceMode === 'dashboard' || workspaceMode === 'monitor'">ASTOCK · 行情与信号快照</footer>
+          <footer v-else-if="workspaceMode === 'strategy' && strategySection === 'patterns'">形态验证 · 历史重建 · 价格表现不等于成交收益</footer>
           <footer v-else>量化研究与 CLI 共用 Go 回测引擎和本地归档 · 历史模拟不代表未来收益 · 不触发自动交易</footer>
         </div>
       </div>

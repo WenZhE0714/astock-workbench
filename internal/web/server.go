@@ -223,6 +223,8 @@ type Server struct {
 	globalCharts              GlobalChartClient
 	strategyEngine            backtest.Engine
 	strategyArchive           backtestArchive
+	patternValidations        patternValidationArchive
+	patternValidationMu       sync.Mutex
 	candidateEngine           backtest.Engine
 	candidateArchive          continuousOptimizationArchive
 	realtimeScanner           realtimeScanner
@@ -1049,6 +1051,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/stock", s.handleStock)
 	mux.HandleFunc("/api/chart-analysis", s.handleChartAnalysis)
 	mux.HandleFunc("/api/chart-timeframes", s.handleChartTimeframes)
+	mux.HandleFunc("/api/pattern-validation", s.handlePatternValidation)
 	mux.HandleFunc("/api/trade-plans", s.handleTradePlans)
 	mux.HandleFunc("/api/position-preview", s.handlePositionPreview)
 	mux.HandleFunc("/api/trade-plan-reviews", s.handleTradePlanReviews)

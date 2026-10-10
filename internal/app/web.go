@@ -92,6 +92,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAIChatService(webAIChatService{app: app}),
 		web.WithAIConfigService(webAIConfigService{app: app}),
 		web.WithTradePlans(storage.NewTradePlanStore(app.paths.TradePlansDir)),
+		web.WithPatternValidation(storage.NewPatternValidationStore(app.paths.PatternValidationsDir)),
 		web.WithTradePlanReviews(storage.NewTradePlanReviewStore(app.paths.PlanReviewsDir)),
 		web.WithPlanMonitors(storage.NewPlanMonitorStore(app.paths.PlanMonitorsDir)),
 		web.WithPlanExperiment(storage.NewPlanExperimentStore(app.paths.PlanExperimentFile)),

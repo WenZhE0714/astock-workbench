@@ -10,6 +10,8 @@ import { PlanDecision } from "./plan-decision.mjs"
 import { LocalAlertCenter } from "./local-alert-center.js"
 import { ReviewCalendarView } from "./review-calendar-view.js"
 import { ChartTimeframesView } from "./chart-timeframes-view.js"
+import { PatternValidationView } from "./pattern-validation-view.js"
+import "./pattern-validation.css"
 import "./chart-timeframes.css"
 import "./review-calendar.css"
 import "./plan-decision.css"
@@ -98,13 +100,18 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView },
   data() {
     return {
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
       workspaceMode: workspaceNavigation.some(item => item.id === initialView.get("view")) ? initialView.get("view") : "dashboard",
+      strategySection: initialView.get("strategy") === "patterns" ? "patterns" : "backtests",
+      patternValidationSelection: null,
+      patternValidationTarget: null,
+      patternValidationReturn: false,
+      patternValidationChartError: "",
       monitorView: ["plans", "experiment", "playbook", "notifications", "calendar"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
       reviewCalendarMonth: initialView.get("month") || "",
       reviewCalendarRefresh: 0,
@@ -1069,6 +1076,40 @@ createApp({
       this.switchWorkspace("market")
       this.tradePlansOpen = true
     },
+    openPatternValidationSample(item) {
+      this.patternValidationTarget = item
+      this.patternValidationReturn = true
+      this.patternValidationChartError = ""
+      this.chartMode = "daily"
+      this.requestedSymbol = item.symbol
+      this.switchWorkspace("market")
+    },
+    applyPatternValidationTarget() {
+      const target = this.patternValidationTarget
+      if (!target || this.data.symbol !== target.symbol) return
+      const index = this.bars.findIndex(bar => bar.date === target.date)
+      if (index < 19) this.patternValidationChartError = "当前行情日K未覆盖验证日期 " + target.date + "，请在验证归档中查看冻结依据"
+      else {
+        this.chartStructureID = target.patternID
+        this.updateDailyViewport(Math.min(80,index+1),index+1)
+        this.scheduleChartAnalysis(true)
+      }
+      this.patternValidationTarget = null
+    },
+    returnToPatternValidation() {
+      this.patternValidationTarget = null
+      this.patternValidationReturn = false
+      this.strategySection = "patterns"
+      this.switchWorkspace("strategy")
+    },
+    switchStrategySection(section) {
+      this.strategySection = section
+      if (section === "backtests") {
+        if (!this.strategyHistoryLoaded) this.loadStrategyHistory()
+        if (!this.strategyCandidatesLoaded) this.loadStrategyCandidates(true)
+        this.$nextTick(() => this.drawStrategyChart())
+      }
+    },
     openCalendarShadow(item) {
       const profile = item.profile || "balanced"
       this.shadowRequestID++
@@ -1931,9 +1972,7 @@ createApp({
         this.loadAIConfig()
         window.scrollTo({ top: 0, behavior: "auto" })
       } else if (mode === "strategy") {
-        if (!this.strategyHistoryLoaded) this.loadStrategyHistory()
-		if (!this.strategyCandidatesLoaded) this.loadStrategyCandidates(true)
-        this.$nextTick(() => this.drawStrategyChart())
+        this.switchStrategySection(this.strategySection)
       } else if (mode === "realtime") {
         this.loadRealtimeSnapshot()
         this.loadRealtimeHistory()
@@ -3259,6 +3298,7 @@ createApp({
     },
     async load(symbol) {
       if (this.playbookPlanTarget && this.requestedSymbol !== this.playbookPlanTarget.symbol) this.playbookPlanTarget = null
+      if (this.patternValidationTarget && this.requestedSymbol !== this.patternValidationTarget.symbol) this.patternValidationTarget = null
       if (this.loading) return
       this.loading = true
       this.error = ""
@@ -3269,6 +3309,7 @@ createApp({
         const payload = JSON.parse(body)
         if (!response.ok) throw new Error(payload.error || payload.board_error || "行情请求失败")
         if (this.playbookPlanTarget && this.playbookPlanTarget.symbol !== payload.symbol) return
+        if (this.patternValidationTarget && this.patternValidationTarget.symbol !== payload.symbol) return
         const symbolChanged = this.data.symbol && payload.symbol && this.data.symbol !== payload.symbol
         this.data = payload
         this.chartHistoricalAnalysis = null
@@ -3304,6 +3345,7 @@ createApp({
           this.loadAssistantAlerts()
           if (this.assistantOpen) this.loadAssistantContext(payload.symbol)
         }
+        this.applyPatternValidationTarget()
         this.scheduleChartAnalysis()
         if (this.chartMode === "daily") this.loadTradePlans()
         await this.$nextTick()
@@ -3315,6 +3357,7 @@ createApp({
         if (this.workspaceMode === "market" && this.playbookPlanTarget && this.playbookPlanTarget.symbol !== symbol) {
           this.load(this.playbookPlanTarget.symbol)
         }
+        if (this.workspaceMode === "market" && this.patternValidationTarget && this.patternValidationTarget.symbol !== symbol) this.load(this.patternValidationTarget.symbol)
       }
     },
     prepareStrategyCanvas() {

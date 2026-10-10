@@ -22,6 +22,7 @@ type Paths struct {
 	PlanReviewsDir              string
 	PlanExperimentFile          string
 	BacktestsDir                string
+	PatternValidationsDir       string
 	OptimizationsDir            string
 	ContinuousOptimizationsDir  string
 	RealtimeSignalsDir          string
@@ -78,6 +79,7 @@ func ResolvePaths() (Paths, error) {
 		PlanReviewsDir:              filepath.Join(dataDir, "trade-plan-reviews"),
 		PlanExperimentFile:          filepath.Join(dataDir, "paper", "plan-experiment.json"),
 		BacktestsDir:                filepath.Join(dataDir, "backtests"),
+		PatternValidationsDir:       filepath.Join(dataDir, "pattern-validations"),
 		OptimizationsDir:            filepath.Join(dataDir, "backtests", "optimizations"),
 		ContinuousOptimizationsDir:  filepath.Join(dataDir, "backtests", "continuous"),
 		RealtimeSignalsDir:          filepath.Join(dataDir, "realtime-signals"),
