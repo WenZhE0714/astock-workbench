@@ -147,6 +147,13 @@ func playbookItem(plan domain.TradePlan, review domain.TradePlanReview, reviewed
 		item.ExecutionStatus, item.Discipline = review.Current.ExecutionStatus, review.Current.Discipline
 		item.Tags = append([]string(nil), review.Current.Tags...)
 		item.ExitReason, item.RealizedR = review.Current.ExitReason, review.Current.RealizedR
+		item.EntryAt, item.ExitAt = review.Current.EntryAt, review.Current.ExitAt
+		if playbookPriceValid(review.Current.ActualEntry) {
+			item.ActualEntry = review.Current.ActualEntry
+		}
+		if playbookPriceValid(review.Current.ActualExit) {
+			item.ActualExit = review.Current.ActualExit
+		}
 	}
 	return item
 }

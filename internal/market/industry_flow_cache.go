@@ -56,9 +56,9 @@ func (client *CachedIndustryFlowClient) FetchIndustryFlows(ctx context.Context) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		now := client.now()
 		location := time.FixedZone("Asia/Shanghai", 8*60*60)
 		client.mu.Lock()
+		now := client.now()
 		age := now.Sub(client.fetchedAt)
 		if len(client.flows) > 0 && age >= 0 && age < industryFlowCacheTTL &&
 			now.In(location).Format("2006-01-02") == client.fetchedAt.In(location).Format("2006-01-02") {

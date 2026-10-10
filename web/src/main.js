@@ -1,11 +1,17 @@
 // The page template is delivered by Go so the browser bundle needs Vue's
 // runtime compiler, not the runtime-only default entry.
 import { createApp } from "vue/dist/vue.esm-bundler.js"
-import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle } from "lucide-vue-next"
+import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell } from "lucide-vue-next"
 import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "./dashboard.mjs"
 import { matchingChartAnalysis, chartLevelRows, chartStructureState, chartWeeklyState, savedPlanState, chartDataLagNotice, chartPatternBias, chartStructureLines, chartStructureColor, chartStructureVisible, preferredChartStructureID } from "./chart-analysis.mjs"
 import { PlanMonitorDetails, planMonitorPhase, planMonitorHealth, monitorCanToggle } from "./plan-monitor.mjs"
 import { PlanExperimentView } from "./plan-experiment-view.js"
+import { PlanDecision } from "./plan-decision.mjs"
+import { LocalAlertCenter } from "./local-alert-center.js"
+import { ReviewCalendarView } from "./review-calendar-view.js"
+import "./review-calendar.css"
+import "./plan-decision.css"
+import "./local-alerts.css"
 import "./style.css"
 import "./dashboard.css"
 import "./chart-analysis.css"
@@ -90,14 +96,20 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, PlanMonitorDetails, PlanExperimentView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView },
   data() {
     return {
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
       workspaceMode: workspaceNavigation.some(item => item.id === initialView.get("view")) ? initialView.get("view") : "dashboard",
-      monitorView: ["plans", "experiment", "playbook"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
+      monitorView: ["plans", "experiment", "playbook", "notifications", "calendar"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
+      reviewCalendarMonth: initialView.get("month") || "",
+      reviewCalendarRefresh: 0,
+      reviewCalendarSelection: null,
+      localAlertsEnabled: false,
+      localAlertsUnread: 0,
+      planMonitorsLoaded: false,
       planExperiment: null,
       planExperimentReview: null,
       planExperimentRuntime: {},
@@ -961,9 +973,10 @@ createApp({
       this.switchWorkspace("monitor")
     },
     refreshMonitorWorkspace() {
-      if (this.monitorView === "experiment") this.loadPlanExperiment(true)
+      if (this.monitorView === "calendar") this.reviewCalendarRefresh++
+      else if (this.monitorView === "experiment") this.loadPlanExperiment(true)
       else if (this.monitorView === "playbook") this.loadTradePlaybook(true)
-      else if (this.monitorView === "plans") this.loadPlanMonitors(true)
+      else if (this.monitorView === "plans" || this.monitorView === "notifications") this.loadPlanMonitors(true)
       else this.loadRealtimeSnapshot()
     },
     planMonitorPhase,
@@ -991,6 +1004,7 @@ createApp({
         if (!response.ok) throw new Error(payload.error || "读取计划监控失败")
         if (requestID !== this.planMonitorRequestID) return
         this.planMonitors = payload.items || []
+        this.planMonitorsLoaded = true
         this.planMonitorRuntime = payload.runtime || {}
         this.planMonitorError = ""
       } catch (error) {
@@ -1039,6 +1053,7 @@ createApp({
       this.switchWorkspace("monitor")
     },
     openMonitoredStock(state) {
+      this.focusedPlanID = state.plan_id || ""
       this.chartMode = "daily"
       this.requestedSymbol = state.symbol
       this.switchWorkspace("market")
@@ -1051,6 +1066,16 @@ createApp({
       this.requestedSymbol = item.symbol
       this.switchWorkspace("market")
       this.tradePlansOpen = true
+    },
+    openCalendarShadow(item) {
+      const profile = item.profile || "balanced"
+      this.shadowRequestID++
+      this.shadowProfileID = profile
+      this.shadowReport = null
+      this.shadowOrderSymbol = ""
+      this.workspaceMode = "realtime"
+      this.realtimeSection = "shadow"
+      this.loadShadowReport(profile).then(() => { if (this.shadowProfileID === profile) this.shadowOrderSymbol = item.symbol })
     },
     playbookStockName(symbol) {
       for (const group of this.watchlist.groups || []) {
@@ -1165,7 +1190,7 @@ createApp({
         if (requestID === this.tradePlansRequestID) this.tradePlansLoading = false
       }
     },
-    async saveChartPlan() {
+    async saveChartPlan(enableMonitor = false) {
       if (!this.canSaveChartPlan) return
       const analysis = this.chartAnalysis
       const symbol = analysis.symbol
@@ -1184,6 +1209,11 @@ createApp({
         }
         if (this.data.symbol !== symbol) return
         this.tradePlanNotice = payload.created ? "观察计划已保存" : "相同快照已保存，未重复创建"
+        if (enableMonitor === true) {
+          await this.setPlanMonitoring(payload.plan, { target: { checked: true } })
+          if (this.data.symbol !== symbol) return
+          this.tradePlanNotice = this.monitorForPlan(payload.plan.id)?.enabled ? "观察计划已保存，后台监控已启用" : "计划已保存，监控启用失败，请在已保存计划中重试"
+        }
         this.tradePlansOpen = true
         await this.loadTradePlans(symbol)
       } catch (error) {
@@ -4449,7 +4479,7 @@ createApp({
     this.loadAIConfig()
     this.timer = window.setInterval(() => {
       if (this.workspaceMode === "market") this.load(this.requestedSymbol)
-      if (this.workspaceMode === "monitor" || (this.workspaceMode === "market" && this.chartMode === "daily")) this.loadPlanMonitors()
+      if (this.localAlertsEnabled || this.planMonitors.some(item => item.enabled) || this.workspaceMode === "monitor" || (this.workspaceMode === "market" && this.chartMode === "daily")) this.loadPlanMonitors()
       if (this.workspaceMode === "monitor" && this.monitorView === "experiment") this.loadPlanExperiment()
       if (this.planMonitors.some(item => item.enabled)) this.loadAssistantAlerts()
       this.loadIndices()

@@ -196,8 +196,15 @@
             <details class="dashboard-data-status" v-if="dashboardWarnings.length"><summary v-text="'数据状态 · ' + dashboardWarnings.length + ' 项提示'"></summary><p v-for="warning in dashboardWarnings" :key="warning" v-text="warning"></p></details>
           </section>
           <section class="monitor-view" v-if="workspaceMode === 'monitor'">
-            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1></div><div class="dashboard-head-status"><span v-text="monitorView === 'signals' ? realtimeStateLabel(realtimeMarketState) : monitorView === 'playbook' ? tradePlaybookRuntimeLabel : planMonitorRuntimeLabel"></span><button type="button" class="dashboard-icon" title="刷新监控状态" aria-label="刷新监控状态" :disabled="planMonitorLoading || realtimeSnapshotLoading || planExperimentLoading || tradePlaybookLoading" @click="refreshMonitorWorkspace"><refresh-cw :size="16"></refresh-cw></button></div></header>
-            <div class="monitor-view-tabs dashboard-segment" role="tablist" aria-label="监控类型"><button type="button" role="tab" :aria-selected="monitorView === 'signals'" :aria-pressed="monitorView === 'signals'" @click="monitorView = 'signals'">策略信号</button><button type="button" role="tab" :aria-selected="monitorView === 'plans'" :aria-pressed="monitorView === 'plans'" @click="monitorView = 'plans'; loadPlanMonitors()">计划监控 <b v-text="planMonitors.filter(item => item.enabled).length"></b></button><button type="button" role="tab" :aria-selected="monitorView === 'experiment'" :aria-pressed="monitorView === 'experiment'" @click="monitorView = 'experiment'; loadPlanExperiment()">影子实验</button><button type="button" role="tab" :aria-selected="monitorView === 'playbook'" :aria-pressed="monitorView === 'playbook'" @click="monitorView = 'playbook'; loadTradePlaybook()">交易剧本</button></div>
+            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1></div><div class="dashboard-head-status"><span v-text="monitorView === 'calendar' ? '只读归档' : monitorView === 'signals' ? realtimeStateLabel(realtimeMarketState) : monitorView === 'playbook' ? tradePlaybookRuntimeLabel : planMonitorRuntimeLabel"></span><button type="button" class="dashboard-icon" title="刷新监控状态" aria-label="刷新监控状态" :disabled="planMonitorLoading || realtimeSnapshotLoading || planExperimentLoading || tradePlaybookLoading" @click="refreshMonitorWorkspace"><refresh-cw :size="16"></refresh-cw></button></div></header>
+            <div class="monitor-view-tabs dashboard-segment" role="tablist" aria-label="监控类型">
+              <button type="button" role="tab" :aria-selected="monitorView === 'signals'" :aria-pressed="monitorView === 'signals'" @click="monitorView = 'signals'">策略信号</button>
+              <button type="button" role="tab" :aria-selected="monitorView === 'plans'" :aria-pressed="monitorView === 'plans'" @click="monitorView = 'plans'; loadPlanMonitors()">计划监控 <b v-text="planMonitors.filter(item => item.enabled).length"></b></button>
+              <button type="button" role="tab" aria-label="提醒记录" :aria-selected="monitorView === 'notifications'" :aria-pressed="monitorView === 'notifications'" @click="monitorView = 'notifications'; loadPlanMonitors()"><bell :size="13"></bell>提醒记录 <b v-text="localAlertsUnread"></b></button>
+              <button type="button" role="tab" :aria-selected="monitorView === 'experiment'" :aria-pressed="monitorView === 'experiment'" @click="monitorView = 'experiment'; loadPlanExperiment()">影子实验</button>
+              <button type="button" role="tab" :aria-selected="monitorView === 'playbook'" :aria-pressed="monitorView === 'playbook'" @click="monitorView = 'playbook'; loadTradePlaybook()">交易剧本</button>
+              <button type="button" role="tab" :aria-selected="monitorView === 'calendar'" :aria-pressed="monitorView === 'calendar'" @click="monitorView = 'calendar'">复盘日历</button>
+            </div>
             <template v-if="monitorView === 'signals'">
             <div class="monitor-toolbar"><div class="dashboard-segment" aria-label="信号状态"><button type="button" v-for="item in monitorStates" :key="item.key" :aria-pressed="monitorFilter === item.key" @click="monitorFilter = item.key"><span v-text="item.label"></span><b v-text="item.count"></b></button></div><input aria-label="筛选监控股票" v-model.trim="monitorQuery" placeholder="股票名称、代码或行业"></div>
             <div class="monitor-snapshot"><span v-text="'快照 ' + formatDateTime(realtimeResult?.generated_at)"></span><span v-text="realtimeSnapshotScopeLabel"></span><span v-if="realtimeFrozen">交易时段外 · 保留最近信号</span><span v-text="monitorSignals.length + ' 条结果'"></span></div>
@@ -230,7 +237,8 @@
               <div class="chart-analysis-empty" v-if="!filteredPlanMonitors.length" v-text="planMonitorLoading ? '读取中' : '暂无符合条件的计划监控'"></div>
             </section>
             <plan-experiment-view v-else-if="monitorView === 'experiment'" :state="planExperiment" :review="planExperimentReview" :runtime="planExperimentRuntime" :config="planExperimentConfig" :monitors="planMonitors" :busy="planExperimentBusy" :error="planExperimentError" @configure="configurePlanExperiment" @open-stock="openMonitoredStock" @open-plan="openPlaybookItem"></plan-experiment-view>
-            <section class="trade-playbook" v-else aria-label="交易剧本复盘统计">
+            <review-calendar-view v-else-if="monitorView === 'calendar'" :initial-month="reviewCalendarMonth" :selection="reviewCalendarSelection" :refresh-key="reviewCalendarRefresh" @selection="reviewCalendarSelection = $event" @open-plan="openPlaybookItem" @open-shadow="openCalendarShadow"></review-calendar-view>
+            <section class="trade-playbook" v-else-if="monitorView === 'playbook'" aria-label="交易剧本复盘统计">
               <div class="playbook-head"><div><h2>交易剧本</h2><p>手工执行复盘 · 费用前 R</p></div><span v-if="tradePlaybook?.generated_at" v-text="'更新 ' + formatMonitorTime(tradePlaybook.generated_at)"></span></div>
               <p class="chart-plan-error" v-if="tradePlaybookError" role="alert" v-text="tradePlaybookError"></p>
               <template v-if="tradePlaybook">
@@ -275,6 +283,7 @@
               <div class="strategy-empty-state" v-else><h2>暂无交易剧本数据</h2></div>
             </section>
           </section>
+          <local-alert-center :monitors="planMonitors" :ready="planMonitorsLoaded" :visible="workspaceMode === 'monitor' && monitorView === 'notifications'" @enabled="localAlertsEnabled = $event" @unread="localAlertsUnread = $event" @open="openMonitoredStock"></local-alert-center>
           <section class="global-view" v-if="workspaceMode === 'global'">
             <header class="global-view-head">
               <div class="title-row"><button type="button" class="mobile-drawer-button" title="打开自选" aria-label="打开自选" @click="watchlistOpen = true">☰</button><div><div class="eyebrow">GLOBAL / MARKET VIEW</div><h1>外盘行情</h1><p class="global-view-note">关键海外指数的实时快照、交易时段和历史走势。报价按交易所本地时间展示。<span v-if="globalChartData.approximate">恒生科技历史使用 ETF 代理并按指数现值归一化。</span></p></div></div>
@@ -459,6 +468,7 @@
                   <div class="chart-structure-evidence" v-if="chartStructure"><p v-for="evidence in chartStructure.evidence" :key="evidence" v-text="evidence"></p><div class="chart-anchor-dates"><span v-for="anchor in chartStructure.anchors" :key="anchor.date + anchor.label" v-text="anchor.label + ' ' + anchor.date + ' · ' + number(anchor.price)"></span></div></div>
                   <div class="chart-pattern-facts" v-if="chartStructure?.pattern"><strong :class="chartStructure.pattern.bias" v-text="chartPatternBias(chartStructure.pattern)"></strong><span v-text="'可识别日 ' + chartStructure.pattern.ready_on"></span><span v-text="'突破边界 ' + number(chartStructure.pattern.trigger_price)"></span><span v-text="'结构失效 ' + number(chartStructure.pattern.invalidation_price)"></span><span v-if="chartStructure.pattern.confirmed_on" v-text="'确认日 ' + chartStructure.pattern.confirmed_on"></span></div>
                   <div class="chart-weekly-context"><span>完整周线</span><strong :class="chartAnalysis.weekly.state" v-text="chartWeeklyState(chartAnalysis.weekly.state)"></strong><span v-if="chartAnalysis.weekly.data_date" v-text="'截至 ' + chartAnalysis.weekly.data_date"></span><span v-if="chartAnalysis.weekly.ma5 != null" v-text="'MA5 / MA10 ' + number(chartAnalysis.weekly.ma5) + ' / ' + number(chartAnalysis.weekly.ma10)"></span></div>
+                  <plan-decision v-if="chartStructure && data.plans_enabled" :analysis="chartAnalysis" :structure="chartStructure" :quote="quote" :historical="dailyViewEnd !== bars.length" :history-error="data.history_error" :quote-error="data.quote_error" :session="planMonitorRuntime.session" :today="monitorToday" :can-save="!!canSaveChartPlan" :can-monitor="planMonitorRuntime.supported" :saving="tradePlanSaving" :expires-on="tradePlanExpiresOn" @expiry="tradePlanExpiresOn = $event" @save="saveChartPlan"></plan-decision>
                   <template v-if="chartPlan">
                     <div class="chart-plan-values">
                       <div><span>入场观察区间</span><strong v-text="number(chartPlan.entry_low) + ' - ' + number(chartPlan.entry_high)"></strong></div>
@@ -467,11 +477,6 @@
                       <div><span>每股参考风险</span><strong v-text="number(chartPlan.risk_per_share) + ' 元'"></strong></div>
                     </div>
                     <p class="chart-plan-condition" v-text="chartPlan.confirmation"></p>
-                    <div class="chart-plan-save" v-if="data.plans_enabled">
-                      <label><span>有效至</span><input type="date" v-model="tradePlanExpiresOn" :min="tradePlansToday" aria-label="计划有效期"></label>
-                      <button type="button" :disabled="!canSaveChartPlan" @click="saveChartPlan"><bookmark-plus :size="16"></bookmark-plus><span v-text="tradePlanSaving ? '保存中' : '保存观察计划'"></span></button>
-                      <span class="chart-plan-state">仅研究 · 不下单</span>
-                    </div>
                     <p class="chart-plan-risk" v-text="chartPlan.risk_basis"></p>
                   </template>
                   <p class="chart-plan-risk" v-for="warning in chartAnalysis.warnings" :key="warning" v-text="warning"></p>

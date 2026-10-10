@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "node tests/dashboard.test.mjs && node tests/chart-analysis.test.mjs && node tests/plan-monitor.test.mjs && node tests/plan-experiment.test.mjs"
+    "test": "node tests/dashboard.test.mjs && node tests/chart-analysis.test.mjs && node tests/plan-monitor.test.mjs && node tests/plan-experiment.test.mjs && node tests/local-alerts.test.mjs && node tests/plan-decision.test.mjs && node tests/review-calendar.test.mjs"
   },
   "dependencies": {
     "lucide-vue-next": "0.468.0",

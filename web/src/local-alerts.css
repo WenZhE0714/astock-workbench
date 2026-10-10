@@ -1,0 +1,24 @@
+.local-alert-center { min-width:0; padding:16px 0; letter-spacing:0; }
+.monitor-view-tabs { flex-wrap:wrap; gap:4px; margin-bottom:12px; }
+.monitor-view-tabs button { display:flex; align-items:center; gap:5px; }
+.monitor-view-tabs button+button { border-left:1px solid var(--line); }
+.local-alert-heading { display:flex; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid var(--line); padding-bottom:12px; }
+.local-alert-heading>div { display:flex; align-items:center; gap:8px; }
+.local-alert-heading h2 { font-size:16px; margin:0; }
+.local-alert-heading span { font-size:11px; color:var(--muted); }
+.local-alert-heading>label { margin-left:auto; display:flex; align-items:center; gap:7px; }
+.local-alert-heading input { width:16px; height:16px; margin:0; accent-color:var(--accent); }
+.local-alert-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:12px 0; }
+.local-alert-toolbar>span { font-size:11px; color:var(--muted); margin-right:auto; }
+.local-alert-toolbar .icon-button { flex:0 0 30px; height:30px; }
+.local-alert-list { padding:0; margin:0; list-style:none; }
+.local-alert-list>li { display:flex; align-items:center; gap:12px; padding:14px 8px; border-top:1px solid var(--line); }
+.local-alert-list>li.unread { border-left:2px solid var(--accent); }
+.local-alert-copy { min-width:0; flex:1; }
+.local-alert-copy>button { display:flex; align-items:center; flex-wrap:wrap; gap:8px; height:auto; padding:0; background:none; color:var(--text); border:0; text-align:left; }
+.local-alert-copy>button span { font-size:11px; color:var(--warn); }
+.local-alert-copy p { margin:8px 0; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.local-alert-copy small { font-size:10px; color:var(--muted); overflow-wrap:anywhere; }
+.local-alert-list>li>.icon-button { flex:0 0 30px; height:30px; }
+.local-alert-center :is(input,button):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media(max-width:600px) { .local-alert-toolbar>span { flex-basis:100%; order:2; } }

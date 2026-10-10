@@ -71,6 +71,10 @@ type TradePlaybookItem struct {
 	Tags            []string  `json:"tags,omitempty"`
 	ExitReason      string    `json:"exit_reason,omitempty"`
 	RealizedR       *float64  `json:"realized_r,omitempty"`
+	EntryAt         time.Time `json:"entry_at,omitzero"`
+	ExitAt          time.Time `json:"exit_at,omitzero"`
+	ActualEntry     *float64  `json:"actual_entry,omitempty"`
+	ActualExit      *float64  `json:"actual_exit,omitempty"`
 	StatisticsNote  string    `json:"statistics_note,omitempty"`
 }
 
