@@ -92,7 +92,7 @@ func classicChartStructures(bars []domain.DailyBar, complete bool) []domain.Char
 		return nil
 	}
 	pivots := classicPivots(bars, end)
-	result := make([]domain.ChartStructure, 0, 4)
+	result := make([]domain.ChartStructure, 0, 6)
 	for _, bottom := range []bool{true, false} {
 		for i := len(pivots) - 3; i >= 0; i-- {
 			left, middle, right := pivots[i], pivots[i+1], pivots[i+2]
@@ -113,6 +113,7 @@ func classicChartStructures(bars []domain.DailyBar, complete bool) []domain.Char
 			}
 		}
 	}
+	result = append(result, classicHeadShoulderStructures(bars, complete, end)...)
 	return result
 }
 

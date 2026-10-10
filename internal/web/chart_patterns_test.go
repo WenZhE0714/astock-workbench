@@ -75,6 +75,28 @@ func overlappingPatternWebBars(symbol string) []domain.DailyBar {
 	return bars
 }
 
+func headShouldersWebBars(symbol string, bearish bool) []domain.DailyBar {
+	bars := patternWebBars(symbol, false, false)
+	knots := []struct {
+		index int
+		price float64
+	}{{0, 120}, {20, 120}, {26, 122}, {34, 102}, {42, 112}, {50, 92}, {58, 112.4}, {66, 102.5}, {73, 108}, {79, 116}}
+	segment := 0
+	for index := range bars {
+		for segment < len(knots)-2 && index > knots[segment+1].index {
+			segment++
+		}
+		left, right := knots[segment], knots[segment+1]
+		price := left.price + (right.price-left.price)*float64(index-left.index)/float64(right.index-left.index)
+		if bearish {
+			price = 220 - price
+		}
+		bars[index].Open, bars[index].Close = price-.1, price
+		bars[index].High, bars[index].Low = price+.5, price-.5
+	}
+	return bars
+}
+
 func chartPatternServerFixture(root string) *Server {
 	server := chartServerFixture(filepath.Join(root, "plans"))
 	server.planMonitors = storage.NewPlanMonitorStore(filepath.Join(root, "monitors"))
@@ -85,8 +107,10 @@ func chartPatternServerFixture(root string) *Server {
 		"sh600001": patternWebBars("sh600001", true, false),
 		"sh600002": patternWebBars("sh600002", true, true),
 		"sh600003": overlappingPatternWebBars("sh600003"),
+		"sh600004": headShouldersWebBars("sh600004", false),
+		"sh600005": headShouldersWebBars("sh600005", true),
 	}
-	names := map[string]string{"sh600519": "双底测试", "sh600000": "双顶测试", "sh600001": "上升三角测试", "sh600002": "下降三角测试", "sh600003": "多形态测试"}
+	names := map[string]string{"sh600519": "双底测试", "sh600000": "双顶测试", "sh600001": "上升三角测试", "sh600002": "下降三角测试", "sh600003": "多形态测试", "sh600004": "头肩底测试", "sh600005": "头肩顶测试"}
 	server.history = history
 	server.quotes = quoteClientFunc(func(_ context.Context, symbols []string) ([]domain.Quote, error) {
 		quotes := make([]domain.Quote, 0)

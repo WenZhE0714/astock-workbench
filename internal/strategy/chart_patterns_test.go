@@ -21,6 +21,12 @@ func classicPatternBars(kind string) []domain.DailyBar {
 			price float64
 		}{{0, 100}, {36, 100}, {42, 110}, {48, 98}, {54, 110.2}, {60, 101}, {66, 110.1}, {72, 104}, {79, 112}}
 	}
+	if kind == "head-shoulders-bottom" || kind == "head-shoulders-top" {
+		knots = []struct {
+			index int
+			price float64
+		}{{0, 120}, {20, 120}, {26, 122}, {34, 102}, {42, 112}, {50, 92}, {58, 112.4}, {66, 102.5}, {73, 108}, {79, 116}}
+	}
 	segment := 0
 	for index := range bars {
 		for segment < len(knots)-2 && index > knots[segment+1].index {
@@ -28,7 +34,7 @@ func classicPatternBars(kind string) []domain.DailyBar {
 		}
 		left, right := knots[segment], knots[segment+1]
 		price := left.price + (right.price-left.price)*float64(index-left.index)/float64(right.index-left.index)
-		if kind == "double-top" || kind == "descending-triangle" {
+		if kind == "double-top" || kind == "descending-triangle" || kind == "head-shoulders-top" {
 			price = 220 - price
 		}
 		bars[index].Open, bars[index].Close = price-.1, price
@@ -50,7 +56,7 @@ func classicStructure(t *testing.T, analysis domain.ChartAnalysis, id string) do
 }
 
 func TestClassicPatternsUseDatedGeometryAndCompletedConfirmation(t *testing.T) {
-	for _, kind := range []string{"double-bottom", "double-top", "ascending-triangle", "descending-triangle"} {
+	for _, kind := range []string{"double-bottom", "double-top", "ascending-triangle", "descending-triangle", "head-shoulders-bottom", "head-shoulders-top"} {
 		t.Run(kind, func(t *testing.T) {
 			bars := classicPatternBars(kind)
 			now := chartTestTime(bars[79].Date, 16)
@@ -70,7 +76,7 @@ func TestClassicPatternsUseDatedGeometryAndCompletedConfirmation(t *testing.T) {
 					t.Fatalf("invalid geometry: %+v", line)
 				}
 			}
-			if kind == "double-top" || kind == "descending-triangle" {
+			if kind == "double-top" || kind == "descending-triangle" || kind == "head-shoulders-top" {
 				if item.Pattern.Bias != "bearish" || item.Plan != nil || item.Pattern.InvalidationPrice <= item.Pattern.TriggerPrice {
 					t.Fatalf("bearish structure generated a long plan: %+v", item)
 				}

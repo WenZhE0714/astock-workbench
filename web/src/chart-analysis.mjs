@@ -41,6 +41,8 @@ const structureColors = {
   "double-top": "#e9a0a6",
   "ascending-triangle": "#81cdb0",
   "descending-triangle": "#b5b4f1",
+  "head-shoulders-bottom": "#c9d96f",
+  "head-shoulders-top": "#ed91ce",
 }
 
 export function chartStructureColor(structure) {
