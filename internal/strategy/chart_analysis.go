@@ -28,20 +28,7 @@ func AnalyzeChart(symbol string, input []domain.DailyBar, asOf time.Time, throug
 	if _, err := time.Parse(time.DateOnly, through); err != nil || through > today {
 		return domain.ChartAnalysis{}, fmt.Errorf("图表日期无效或晚于当前日期")
 	}
-	valid := make([]domain.DailyBar, 0, len(input))
-	discarded := 0
-	for _, bar := range input {
-		_, dateErr := time.Parse(time.DateOnly, bar.Date)
-		if dateErr == nil && bar.Date > through {
-			continue
-		}
-		if dateErr != nil || !validBar(bar) || bar.High < math.Max(bar.Open, bar.Close) || bar.Low > math.Min(bar.Open, bar.Close) || (bar.Symbol != "" && bar.Symbol != symbol) {
-			discarded++
-			continue
-		}
-		valid = append(valid, bar)
-	}
-	bars := normalizedBars(valid)
+	bars, discarded := chartBarsThrough(symbol, input, through)
 	if len(bars) < 21 {
 		return domain.ChartAnalysis{}, fmt.Errorf("结构分析需要至少21根有效日K，当前%d根", len(bars))
 	}
@@ -108,6 +95,23 @@ func chartNumber(value float64) *float64 {
 		return nil
 	}
 	return &value
+}
+
+func chartBarsThrough(symbol string, input []domain.DailyBar, through string) ([]domain.DailyBar, int) {
+	valid := make([]domain.DailyBar, 0, len(input))
+	discarded := 0
+	for _, bar := range input {
+		_, dateErr := time.Parse(time.DateOnly, bar.Date)
+		if dateErr == nil && bar.Date > through {
+			continue
+		}
+		if dateErr != nil || !validBar(bar) || bar.High < math.Max(bar.Open, bar.Close) || bar.Low > math.Min(bar.Open, bar.Close) || (bar.Symbol != "" && bar.Symbol != symbol) {
+			discarded++
+			continue
+		}
+		valid = append(valid, bar)
+	}
+	return normalizedBars(valid), discarded
 }
 
 func chartRangeAnchors(bars []domain.DailyBar) (high, low domain.ChartAnchor) {

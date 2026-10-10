@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.8fd6befd.js"></script>
-  <link rel="stylesheet" href="/assets/index.0083bb3b.css">
+  <script type="module" crossorigin src="/assets/index.97501654.js"></script>
+  <link rel="stylesheet" href="/assets/index.3774436c.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -469,7 +469,7 @@
                   </div>
                   <div class="chart-structure-evidence" v-if="chartStructure"><p v-for="evidence in chartStructure.evidence" :key="evidence" v-text="evidence"></p><div class="chart-anchor-dates"><span v-for="anchor in chartStructure.anchors" :key="anchor.date + anchor.label" v-text="anchor.label + ' ' + anchor.date + ' · ' + number(anchor.price)"></span></div></div>
                   <div class="chart-pattern-facts" v-if="chartStructure?.pattern"><strong :class="chartStructure.pattern.bias" v-text="chartPatternBias(chartStructure.pattern)"></strong><span v-text="'可识别日 ' + chartStructure.pattern.ready_on"></span><span v-text="'突破边界 ' + number(chartStructure.pattern.trigger_price)"></span><span v-text="'结构失效 ' + number(chartStructure.pattern.invalidation_price)"></span><span v-if="chartStructure.pattern.confirmed_on" v-text="'确认日 ' + chartStructure.pattern.confirmed_on"></span></div>
-                  <div class="chart-weekly-context"><span>完整周线</span><strong :class="chartAnalysis.weekly.state" v-text="chartWeeklyState(chartAnalysis.weekly.state)"></strong><span v-if="chartAnalysis.weekly.data_date" v-text="'截至 ' + chartAnalysis.weekly.data_date"></span><span v-if="chartAnalysis.weekly.ma5 != null" v-text="'MA5 / MA10 ' + number(chartAnalysis.weekly.ma5) + ' / ' + number(chartAnalysis.weekly.ma10)"></span></div>
+                  <chart-timeframes-view :analysis="chartAnalysis" :structure="chartStructure" :historical="dailyViewEnd !== bars.length" :limited="!!(chartDataWarning || data.history_error)" @refresh="scheduleChartAnalysis(true)"></chart-timeframes-view>
                   <plan-decision v-if="chartStructure && data.plans_enabled" :analysis="chartAnalysis" :structure="chartStructure" :quote="quote" :historical="dailyViewEnd !== bars.length" :history-error="data.history_error" :quote-error="data.quote_error" :session="planMonitorRuntime.session" :today="monitorToday" :can-save="!!canSaveChartPlan" :can-monitor="planMonitorRuntime.supported" :saving="tradePlanSaving" :expires-on="tradePlanExpiresOn" @expiry="tradePlanExpiresOn = $event" @save="saveChartPlan"></plan-decision>
                   <template v-if="chartPlan">
                     <div class="chart-plan-values">

@@ -1,0 +1,29 @@
+.chart-timeframes { margin:14px 0; padding:14px 0; border-block:1px solid var(--line); min-width:0; letter-spacing:0; }
+.timeframes-heading { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.timeframes-heading>svg { color:var(--accent); }
+.timeframes-heading h3 { font-size:13px; margin:0; }
+.timeframes-heading>strong { margin-left:auto; color:var(--muted); font-size:12px; }
+.timeframes-heading .aligned_bullish,.timeframe-row .bullish { color:var(--up); }
+.timeframes-heading .aligned_bearish,.timeframe-row .bearish { color:var(--down); }
+.timeframes-heading .conflict { color:var(--warn); }
+.timeframes-heading .icon-button { flex:0 0 26px; width:26px; height:26px; }
+.timeframes-basis { display:flex; align-items:center; flex-wrap:wrap; gap:6px 14px; margin-top:8px; color:var(--muted); font-size:10px; }
+.timeframes-summary { font-size:12px; line-height:1.65; margin:10px 0; overflow-wrap:anywhere; }
+.timeframe-row { display:grid; grid-template-columns:minmax(96px,1.1fr) minmax(70px,.8fr) minmax(140px,1.8fr) minmax(84px,1fr); gap:10px; border-top:1px solid var(--line); padding:12px 0; }
+.timeframe-row>div { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.timeframe-row strong { font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.timeframe-name>strong { font-size:13px; }
+.timeframe-row span,.timeframe-row small { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+.timeframe-price b { font-size:11px; font-weight:500; }
+.timeframes-checks { border-top:1px solid var(--line); padding-top:8px; }
+.timeframes-checks p { margin:5px 0; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.timeframes-checks span { display:inline-block; color:var(--muted); margin-right:10px; }
+.timeframes-checks .pending,.timeframes-checks .below { color:var(--warn); }
+.timeframes-checks .met { color:var(--accent); }
+.timeframes-method { margin-top:10px; font-size:10px; color:var(--muted); line-height:1.7; }
+.timeframes-method summary { cursor:pointer; }
+.timeframes-method p { margin:6px 0; overflow-wrap:anywhere; }
+.timeframes-empty { min-height:40px; font-size:11px; color:var(--muted); }
+.chart-timeframes :is(button,summary):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media(max-width:700px) { .timeframe-row { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 16px; } }
+@media(max-width:360px) { .timeframes-heading>strong { margin-left:0; } }

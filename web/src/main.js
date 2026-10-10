@@ -9,6 +9,8 @@ import { PlanExperimentView } from "./plan-experiment-view.js"
 import { PlanDecision } from "./plan-decision.mjs"
 import { LocalAlertCenter } from "./local-alert-center.js"
 import { ReviewCalendarView } from "./review-calendar-view.js"
+import { ChartTimeframesView } from "./chart-timeframes-view.js"
+import "./chart-timeframes.css"
 import "./review-calendar.css"
 import "./plan-decision.css"
 import "./local-alerts.css"
@@ -96,7 +98,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView },
   data() {
     return {
       query: defaultSymbol,

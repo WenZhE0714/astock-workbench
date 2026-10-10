@@ -1048,6 +1048,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
 	mux.HandleFunc("/api/stock", s.handleStock)
 	mux.HandleFunc("/api/chart-analysis", s.handleChartAnalysis)
+	mux.HandleFunc("/api/chart-timeframes", s.handleChartTimeframes)
 	mux.HandleFunc("/api/trade-plans", s.handleTradePlans)
 	mux.HandleFunc("/api/position-preview", s.handlePositionPreview)
 	mux.HandleFunc("/api/trade-plan-reviews", s.handleTradePlanReviews)
