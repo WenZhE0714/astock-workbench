@@ -3,10 +3,12 @@ package ui
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 type LiveData struct {
@@ -276,6 +278,12 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 	header := first + "\n" + marketOverview(data.Indices, options.Moyu, options.Color, width) +
 		"\n" + marketFlowOverview(data.Flows, options.Moyu, options.Color, width) +
 		"\n" + marketAmountOverview(data.Indices, data.PreviousAmounts, options.Moyu, options.Color, width)
+	if sources := fundFlowSourceOverview(data.Flows, options.Moyu); sources != "" {
+		header += "\n" + truncateWidth(sources, width)
+	}
+	if sources := fundSpeedSourceOverview(data.Flows, options.Moyu); sources != "" {
+		header += "\n" + truncateWidth(sources, width)
+	}
 	if data.GroupName != "" && data.RankingKind == "" && !data.FundMonitorActive {
 		label := fmt.Sprintf("自选分组  %s  ·  %d只", data.GroupName, data.GroupCount)
 		if options.Moyu {
@@ -284,6 +292,77 @@ func liveHeader(data LiveData, options ViewOptions, width int) string {
 		header += "\n" + truncateWidth(label, width)
 	}
 	return header
+}
+
+func fundFlowSourceOverview(flows map[string]domain.FundFlow, moyu bool) string {
+	seen := make(map[string]bool)
+	var oldest time.Time
+	indexTime := ""
+	for _, flow := range flows {
+		if flow.Source == "" || math.IsNaN(flow.MainNet) || math.IsInf(flow.MainNet, 0) {
+			continue
+		}
+		seen[flow.Source] = true
+		if market.IsBroadMarketSymbol(flow.Symbol) && flow.DataTime != "" && (indexTime == "" || flow.DataTime < indexTime) {
+			indexTime = flow.DataTime
+		}
+		if !flow.FetchedAt.IsZero() && (oldest.IsZero() || flow.FetchedAt.Before(oldest)) {
+			oldest = flow.FetchedAt
+		}
+	}
+	sources := make([]string, 0, len(seen))
+	for source := range seen {
+		if source == market.THSFundFlowSource {
+			source = "*" + source
+		}
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	if len(sources) == 0 {
+		return ""
+	}
+	label, timeLabel := "资金来源  ", "  获取 "
+	if moyu {
+		label, timeLabel = "FLOW SOURCE  ", "  FETCH "
+	}
+	result := label + strings.Join(sources, " / ")
+	if indexTime != "" {
+		if moyu {
+			result += "  INDEX " + indexTime
+		} else {
+			result += "  指数数据 " + indexTime
+		}
+	} else if !oldest.IsZero() {
+		result += timeLabel + oldest.Format("01-02 15:04:05")
+	}
+	return result
+}
+
+func fundSpeedSourceOverview(flows map[string]domain.FundFlow, moyu bool) string {
+	seen := make(map[string]bool)
+	oldest := ""
+	for _, flow := range flows {
+		if flow.SpeedSource == "" || math.IsNaN(flow.Speed) || math.IsInf(flow.Speed, 0) {
+			continue
+		}
+		seen[flow.SpeedSource] = true
+		if flow.SpeedTime != "" && (oldest == "" || flow.SpeedTime < oldest) {
+			oldest = flow.SpeedTime
+		}
+	}
+	if len(seen) == 0 {
+		return ""
+	}
+	sources := make([]string, 0, len(seen))
+	for source := range seen {
+		sources = append(sources, "*"+source)
+	}
+	sort.Strings(sources)
+	label := "涨速来源  "
+	if moyu {
+		label = "SPEED SOURCE  "
+	}
+	return strings.TrimSpace(label + strings.Join(sources, " / ") + "  " + oldest)
 }
 
 func visibleQuoteWindow(total, selected, limit int) (int, int) {
@@ -322,9 +401,9 @@ func liveError(data LiveData, options ViewOptions, width int) string {
 		message = "行情暂不可用，保留上一帧并重试：" + data.FetchError
 	} else if data.FlowError != "" {
 		if options.Moyu {
-			message = "FLOW N/A"
+			message = "FLOW N/A: " + data.FlowError
 		} else {
-			message = "资金流暂不可用，行情不受影响"
+			message = data.FlowError
 		}
 	}
 	return truncateWidth(message, width)
@@ -439,6 +518,31 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 	}
 
 	if data.RankingKind != "" && len(data.RankingItems) > 0 {
+		industrySources := make(map[string]bool)
+		for _, item := range data.RankingItems {
+			if item.IndustrySource != "" && item.Industry != "" && item.Industry != "--" {
+				industrySources[item.IndustrySource] = true
+			}
+		}
+		if len(industrySources) > 0 {
+			sources := make([]string, 0, len(industrySources))
+			for source := range industrySources {
+				sources = append(sources, source)
+			}
+			sort.Strings(sources)
+			label := "行业分类  "
+			if options.Moyu {
+				label = "INDUSTRY SOURCE  "
+			}
+			header += "\n" + truncateWidth(label+strings.Join(sources, " / "), terminalWidth)
+		}
+		if source := data.RankingItems[0].Source; source != "" {
+			label := "榜单来源  "
+			if options.Moyu {
+				label = "RANK SOURCE  "
+			}
+			header += "\n" + truncateWidth(label+source, terminalWidth)
+		}
 		statusRows := liveStatusRows(data)
 		footerRows := strings.Count(footer, "\n") + 1
 		errorMessage := liveError(data, options, terminalWidth)

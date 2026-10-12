@@ -200,7 +200,13 @@ func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, se
 		flowCode := ""
 		if hasFlow {
 			speed = signedPercent(flow.Speed)
+			if flow.SpeedSource != "" && !math.IsNaN(flow.Speed) && !math.IsInf(flow.Speed, 0) {
+				speed += "*"
+			}
 			flowText = directionalFundFlow(&flow)
+			if flow.Source == market.THSFundFlowSource {
+				flowText += "*"
+			}
 			if !math.IsNaN(flow.Speed) {
 				speedCode = trendCode(flow.Speed, false)
 			}
@@ -246,6 +252,10 @@ func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, se
 		changed := false
 		for column := len(widths) - 1; column >= 1 && totalWidth() > terminalWidth; column-- {
 			minimum := displayWidth(header[column])
+			if column == 4 {
+				// Keep the compact amount, unit and source marker together.
+				minimum = maxInt(minimum, min(widths[column], 10))
+			}
 			if widths[column] > minimum {
 				widths[column]--
 				changed = true

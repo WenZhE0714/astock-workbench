@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -57,6 +58,109 @@ func TestTHSQuantClientRejectsMissingToken(t *testing.T) {
 	if _, err := client.Fetch(context.Background(), []string{"sh600519"}); err == nil || !strings.Contains(err.Error(), "access token") {
 		t.Fatalf("expected missing token error, got %v", err)
 	}
+}
+
+func TestTHSQuantDailyHistoryUsesUnadjustedHistoryQuotation(t *testing.T) {
+	t.Setenv("ASTOCK_THS_HISTORY_INDICATORS", "")
+	for _, configured := range []string{"", "open,close,high,low,volume,amount"} {
+		t.Run(firstNonEmpty(configured, "default"), func(t *testing.T) {
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodPost || request.URL.Path != "/api/v1/cmd_history_quotation" {
+					t.Fatalf("unexpected history endpoint: %s %s", request.Method, request.URL.Path)
+				}
+				if request.Header.Get("access_token") != "test-token" {
+					t.Fatal("missing access token header")
+				}
+				var payload struct {
+					Codes        string            `json:"codes"`
+					Indicators   string            `json:"indicators"`
+					StartDate    string            `json:"startdate"`
+					EndDate      string            `json:"enddate"`
+					FunctionPara map[string]string `json:"functionpara"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				wantIndicators := firstNonEmpty(configured, "open,close,high,low,volume,amount,turnoverRatio")
+				if payload.Codes != "300364.SZ" || payload.Indicators != wantIndicators {
+					t.Fatalf("unexpected history selection: %+v", payload)
+				}
+				if len(payload.FunctionPara) != 3 || payload.FunctionPara["Interval"] != "D" || payload.FunctionPara["CPS"] != "1" || payload.FunctionPara["Fill"] != "Original" {
+					t.Fatalf("daily history must use original, unadjusted daily bars: %v", payload.FunctionPara)
+				}
+				start, startErr := time.Parse("2006-01-02", payload.StartDate)
+				end, endErr := time.Parse("2006-01-02", payload.EndDate)
+				if startErr != nil || endErr != nil || !start.AddDate(0, 0, 500).Equal(end) {
+					t.Fatalf("unexpected history date range: %q to %q", payload.StartDate, payload.EndDate)
+				}
+				return thsDailyHistoryResponse(t, 65), nil
+			})
+			client := NewTHSQuantClient(THSQuantOptions{
+				AccessToken: "test-token", BaseURL: "https://ths.test/api/v1",
+				HistoryIndicators: configured, HTTPClient: &http.Client{Transport: transport},
+			})
+			bars, err := client.FetchDailyBars(context.Background(), "sz300364")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bars) != 65 || bars[0].Date != "2026-01-01" || bars[64].Date != "2026-03-06" {
+				t.Fatalf("unexpected history dates/count: %+v", bars)
+			}
+			latest := bars[len(bars)-1]
+			if latest.Symbol != "sz300364" || latest.Source != "同花顺QuantAPI" || latest.Open != 24.91 || latest.Close != 25.41 || latest.High != 26.66 || latest.Low != 24.24 || latest.Volume != 175605875 || latest.Amount != 4491594376.49 || latest.Turnover != 26.56 {
+				t.Fatalf("unexpected history values: %+v", latest)
+			}
+		})
+	}
+}
+
+func TestTHSQuantDailyHistoryRejectsShortHistoryAndAPIErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		bars int
+		body string
+		want string
+	}{
+		{name: "short", bars: 59, want: "仅返回59根"},
+		{name: "empty", want: "仅返回0根"},
+		{name: "api-error", body: `{"errorcode":-4210,"errmsg":"invalid parameters"}`, want: "错误 -4210"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewTHSQuantClient(THSQuantOptions{
+				AccessToken: "test-token", BaseURL: "https://ths.test",
+				HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					if test.body != "" {
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(test.body))}, nil
+					}
+					return thsDailyHistoryResponse(t, test.bars), nil
+				})},
+			})
+			bars, err := client.FetchDailyBars(context.Background(), "sz300364")
+			if err == nil || !strings.Contains(err.Error(), test.want) || len(bars) != 0 {
+				t.Fatalf("expected unusable history to fail: bars=%d err=%v", len(bars), err)
+			}
+		})
+	}
+}
+
+func thsDailyHistoryResponse(t *testing.T, count int) *http.Response {
+	t.Helper()
+	dates := make([]string, 0, count)
+	table := make(map[string][]float64)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := count - 1; i >= 0; i-- {
+		dates = append(dates, start.AddDate(0, 0, i).Format("2006-01-02"))
+		for key, value := range map[string]float64{"open": 24.91, "close": 25.41, "high": 26.66, "low": 24.24, "volume": 175605875, "amount": 4491594376.49, "turnoverRatio": 26.56} {
+			table[key] = append(table[key], value)
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"errorcode": 0, "errmsg": "", "tables": []any{map[string]any{"thscode": "300364.SZ", "time": dates, "table": table}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body)))}
 }
 
 func TestTHSQuantClientRequestGapIsHonored(t *testing.T) {

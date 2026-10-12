@@ -72,6 +72,10 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	primaryScanHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{})
 	quoteClient := market.TencentClient{}
 	boardClient := market.NewFallbackBoardFlowClient(market.EastmoneyClient{}, market.THSStockBoardClient{})
+	rankingClient := market.NewIndustryEnrichedRankingClient(
+		market.NewFallbackMarketRankingClient(market.EastmoneyClient{}, market.THSMarketRankingClient{}),
+		market.THSStockIndustryClient{},
+	)
 	historyClient := market.NewCachedDailyHistoryClient(primaryHistory, filepath.Join(paths.CacheDir, "daily-history-execution"))
 	app := &App{
 		out:             output,
@@ -81,7 +85,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		resolver:        market.NewResolver(names),
 		quotes:          quoteClient,
 		httpQuotes:      quoteClient,
-		flows:           market.EastmoneyClient{},
+		flows:           market.NewFallbackFundFlowClient(market.EastmoneyClient{}, market.THSFundFlowClient{}),
 		industryFlows:   market.NewCachedIndustryFlowClient(market.EastmoneyClient{}),
 		boards:          boardClient,
 		dragonTiger:     market.EastmoneyClient{},
@@ -94,7 +98,7 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		// surfaces can expose the Shanghai leading yellow line when available.
 		minutes:         market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
 		httpMinutes:     market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
-		rankings:        market.EastmoneyClient{},
+		rankings:        rankingClient,
 		marketScan:      market.EastmoneyClient{},
 		industryLeaders: market.EastmoneyClient{},
 		news:            market.EastmoneyClient{},

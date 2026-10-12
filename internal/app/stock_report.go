@@ -249,11 +249,16 @@ func (app *App) collectStockReportFacts(ctx context.Context, symbol string, move
 		if !finite(facts.Fund.MainRatio) {
 			facts.Warnings = append(facts.Warnings, "个股当日主力净占比缺失")
 		}
+		if facts.Fund.Source == market.THSFundFlowSource {
+			facts.Warnings = append(facts.Warnings, "资金来源为同花顺公开大单净额，与东方财富主力口径不同；接口未提供交易时间，获取时间不代表成交时间")
+		}
 	}
 	if movement != nil && movement.Symbol == symbol {
 		copyMovement := *movement
 		movementAge := generatedAt.Sub(copyMovement.SampledAt)
-		if !copyMovement.SampledAt.IsZero() && (movementAge < 0 || movementAge > 2*time.Minute) {
+		if facts.Fund.Source != "" && copyMovement.Source != facts.Fund.Source {
+			facts.Warnings = append(facts.Warnings, "资金增量与当前快照来源不同，已排除跨来源增量")
+		} else if !copyMovement.SampledAt.IsZero() && (movementAge < 0 || movementAge > 2*time.Minute) {
 			facts.Warnings = append(facts.Warnings, fmt.Sprintf(
 				"1/3/5分钟资金增量样本采于%s，距报告%.0f分钟，已排除过期增量",
 				copyMovement.SampledAt.Format("2006-01-02 15:04:05"), math.Abs(movementAge.Minutes()),
@@ -641,6 +646,9 @@ func renderDeterministicStockReport(facts domain.StockReportFacts, aiError strin
 		facts.Technical.MA20, facts.Technical.MA60, facts.Technical.VolumeRatio)
 	fmt.Fprintf(&builder, "- 当前价%.2f，涨跌%+.2f%%；主力净额%s、净占比%+.2f%%。\n\n",
 		quote.Price, quote.Percent, humanReportAmount(facts.Fund.MainNet), facts.Fund.MainRatio)
+	if facts.Fund.Source != "" {
+		fmt.Fprintf(&builder, "- 资金来源：%s。\n\n", facts.Fund.Source)
+	}
 	if facts.PriceBoundary.Available {
 		fmt.Fprintf(&builder, "- %s 当日可交易价格边界：跌停 %.2f 元，涨停 %.2f 元。\n\n",
 			facts.PriceBoundary.TradeDate, facts.PriceBoundary.LimitDown, facts.PriceBoundary.LimitUp)

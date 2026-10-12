@@ -14,7 +14,7 @@ import (
 type dashboardRankingsStub struct{}
 
 func (dashboardRankingsStub) FetchMarketRanking(context.Context, domain.MarketRankingKind, int) ([]domain.MarketRankingItem, error) {
-	return []domain.MarketRankingItem{{Symbol: "sh600000", Name: "浦发银行", Price: 12, Percent: 0, Speed: math.NaN(), Amount: math.Inf(1), Turnover: 0}}, nil
+	return []domain.MarketRankingItem{{Symbol: "sh600000", Source: "同花顺公开榜单", Name: "浦发银行", Industry: "银行", IndustrySource: "同花顺F10申万行业", Price: 12, Percent: 0, Speed: math.NaN(), Amount: math.Inf(1), Turnover: 0}}, nil
 }
 
 func TestRankingsEndpointPreservesMissingFieldsAndZero(t *testing.T) {
@@ -29,6 +29,12 @@ func TestRankingsEndpointPreservesMissingFieldsAndZero(t *testing.T) {
 		t.Fatalf("unexpected ranking response: %d %+v", recorder.Code, response)
 	}
 	item := response.Items[0]
+	if item.Source != "同花顺公开榜单" {
+		t.Fatalf("ranking source lost: %+v", item)
+	}
+	if item.Industry != "银行" || item.IndustrySource != "同花顺F10申万行业" {
+		t.Fatalf("industry provenance lost: %+v", item)
+	}
 	if item.Speed != nil || item.Amount != nil || item.Percent == nil || *item.Percent != 0 || item.Turnover == nil || *item.Turnover != 0 {
 		t.Fatalf("missing values and real zero must remain distinct: %+v", item)
 	}

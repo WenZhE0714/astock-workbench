@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 func fundMonitorTitle(source string, count int, refreshedAt, industryRefreshedAt time.Time, moyu bool) string {
@@ -266,7 +267,11 @@ func buildFundMonitorTable(items []domain.FundMovement, selected, terminalWidth 
 				row = append(row, signedPercent(item.Percent))
 				codes = append(codes, fundMovementTrendCode(item.Percent))
 			case "main":
-				row = append(row, humanFundMovementAmount(item.MainNet))
+				value := humanFundMovementAmount(item.MainNet)
+				if item.Source == market.THSFundFlowSource {
+					value += "*"
+				}
+				row = append(row, value)
 				codes = append(codes, fundMovementTrendCode(item.MainNet))
 			case "ratio":
 				row = append(row, signedPercent(item.MainRatio))

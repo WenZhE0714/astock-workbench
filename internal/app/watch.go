@@ -492,7 +492,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			cancelFlow()
 			if err != nil {
 				flowError = err.Error()
-				flows = map[string]domain.FundFlow{}
 			}
 		}
 		if app.amounts != nil {
@@ -3011,12 +3010,14 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 		case result := <-flowResults:
 			flowRunning = false
+			if len(result.flows) > 0 {
+				flows = mergeBoardAssetFundFlows(result.flows, boardAssets)
+			}
 			if result.err != nil {
 				if !errors.Is(result.err, context.Canceled) {
 					flowMessage = result.err.Error()
 				}
 			} else {
-				flows = mergeBoardAssetFundFlows(result.flows, boardAssets)
 				flowMessage = ""
 			}
 			render(true)
@@ -3030,17 +3031,17 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if !fundMonitor.active || result.epoch != fundMonitorEpoch {
 				continue
 			}
-			if result.err == nil && !fundMonitor.hasValidSample(result.flows) {
+			if fundMonitor.hasValidSample(result.flows) {
+				fundMonitor.record(time.Now(), result.flows)
+				for symbol, flow := range result.flows {
+					flows[symbol] = flow
+				}
+			} else if result.err == nil {
 				result.err = fmt.Errorf("未返回当前股票的资金样本")
 			}
 			if result.err != nil {
 				if !errors.Is(result.err, context.Canceled) {
 					fundMonitor.failRefresh(result.err)
-				}
-			} else {
-				fundMonitor.record(time.Now(), result.flows)
-				for symbol, flow := range result.flows {
-					flows[symbol] = flow
 				}
 			}
 			if !industryFlowRunning && notice == "正在刷新资金雷达" {

@@ -774,7 +774,11 @@ func technicalBiasCode(bias string) string {
 func technicalContext(flow *domain.FundFlow, boards []domain.BoardFlow, dragonTiger *domain.DragonTigerSnapshot) string {
 	parts := make([]string, 0, 3)
 	if flow != nil && !math.IsNaN(flow.MainNet) {
-		parts = append(parts, "个股主力 "+directionalFundFlow(flow)+" "+fundFlowRatio(flow))
+		label := "个股主力 "
+		if flow.Source == market.THSFundFlowSource {
+			label = "个股大单 "
+		}
+		parts = append(parts, label+directionalFundFlow(flow)+" "+fundFlowRatio(flow))
 	}
 	if len(boards) > 0 {
 		parts = append(parts, "关联板块"+boardFlowSummary(boards, nil))
@@ -930,12 +934,19 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 		if color && !math.IsNaN(flow.MainNet) {
 			flowValue = style(flowValue, trendCode(flow.MainNet, false), true)
 		}
+		flowLabel, ratioLabel := "主力资金", "主力净占比"
+		if flow.Source == market.THSFundFlowSource {
+			flowLabel, ratioLabel = "大单净额", "大单净占比"
+		}
 		metrics = append(metrics,
-			metric{Label: "主力资金", Value: flowValue},
-			metric{Label: "主力净占比", Value: fundFlowRatio(flow)},
+			metric{Label: flowLabel, Value: flowValue},
+			metric{Label: ratioLabel, Value: fundFlowRatio(flow)},
 		)
 	}
 	lines = append(lines, packMetrics(metrics, innerWidth, color)...)
+	if flow != nil && flow.Source != "" {
+		lines = append(lines, wrapPlainText("资金来源  "+flow.Source, innerWidth)...)
+	}
 
 	if signalLines := technicalSignalLines(technical, flow, boards, dragonTiger, color, technicalBarIntraday(item, technical), innerWidth); len(signalLines) > 0 {
 		lines = append(lines, "\x00separator")

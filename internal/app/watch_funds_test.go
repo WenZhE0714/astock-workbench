@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 )
 
 func TestWatchFundMonitorCalculatesMinuteDeltasAndPreservesSelection(t *testing.T) {
@@ -40,6 +41,48 @@ func TestWatchFundMonitorCalculatesMinuteDeltasAndPreservesSelection(t *testing.
 	selectedAfter, _ := monitor.selectedItem()
 	if selected.Symbol != selectedAfter.Symbol {
 		t.Fatalf("selection changed across resort: before=%s after=%s", selected.Symbol, selectedAfter.Symbol)
+	}
+}
+
+func TestWatchFundMonitorResetsDeltasOnProviderChange(t *testing.T) {
+	monitor := watchFundMonitor{}
+	monitor.begin("默认", []string{"sz300364"})
+	start := time.Date(2026, 10, 12, 10, 0, 0, 0, shanghaiLocation)
+	record := func(at time.Time, source string, net float64) {
+		monitor.record(at, map[string]domain.FundFlow{
+			"sz300364": {Symbol: "sz300364", Source: source, MainNet: net, MainRatio: 1, Name: "中文在线", Price: 25},
+		})
+	}
+	record(start, "东方财富主力净额", -1e8)
+	record(start.Add(time.Minute), "东方财富主力净额", -2e8)
+	if monitor.rows[0].Delta1Minute != -1e8 {
+		t.Fatalf("same-provider delta lost: %+v", monitor.rows[0])
+	}
+	record(start.Add(70*time.Second), market.THSFundFlowSource, 4e8)
+	if len(monitor.samples["sz300364"]) != 1 || !math.IsNaN(monitor.rows[0].Delta1Minute) || monitor.rows[0].State != "采样中" || monitor.rows[0].Source != market.THSFundFlowSource {
+		t.Fatalf("provider change was interpreted as an inflow: %+v", monitor.rows[0])
+	}
+	record(start.Add(130*time.Second), market.THSFundFlowSource, 4.1e8)
+	if monitor.rows[0].Delta1Minute != 1e7 {
+		t.Fatalf("new-provider samples did not resume: %+v", monitor.rows[0])
+	}
+	record(start.Add(140*time.Second), "东方财富主力净额", -2.1e8)
+	if !math.IsNaN(monitor.rows[0].Delta1Minute) {
+		t.Fatalf("return to primary created a false outflow: %+v", monitor.rows[0])
+	}
+}
+
+func TestWatchFundMonitorResetsAtShanghaiDateBoundary(t *testing.T) {
+	monitor := watchFundMonitor{}
+	monitor.begin("默认", []string{"sz300364"})
+	start := time.Date(2026, 10, 12, 23, 59, 0, 0, shanghaiLocation)
+	for _, at := range []time.Time{start, start.Add(time.Minute)} {
+		monitor.record(at, map[string]domain.FundFlow{
+			"sz300364": {Symbol: "sz300364", Source: market.THSFundFlowSource, MainNet: 1e8},
+		})
+	}
+	if len(monitor.samples["sz300364"]) != 1 || !math.IsNaN(monitor.rows[0].Delta1Minute) {
+		t.Fatal("daily cumulative reset crossed the Shanghai date boundary")
 	}
 }
 

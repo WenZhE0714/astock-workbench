@@ -160,12 +160,19 @@ func (monitor *watchFundMonitor) record(at time.Time, flows map[string]domain.Fu
 	}
 	for _, symbol := range monitor.symbols {
 		flow, ok := flows[symbol]
-		if !ok || math.IsNaN(flow.MainNet) {
+		if !ok || math.IsNaN(flow.MainNet) || math.IsInf(flow.MainNet, 0) {
 			continue
 		}
 		history := monitor.samples[symbol]
 		if len(history) > 0 {
-			flow = fillFundFlowContext(flow, history[len(history)-1].flow)
+			previous := history[len(history)-1]
+			flow = fillFundFlowContext(flow, previous.flow)
+			// Cumulative amounts from different providers or trading days cannot
+			// form a meaningful minute delta.
+			location := time.FixedZone("Asia/Shanghai", 8*60*60)
+			if flow.Source != previous.flow.Source || at.In(location).Format("2006-01-02") != previous.at.In(location).Format("2006-01-02") {
+				history = nil
+			}
 		}
 		history = append(history, fundFlowSample{at: at, flow: flow})
 		first := 0
@@ -375,7 +382,8 @@ func (monitor *watchFundMonitor) rebuildRows() {
 		industry := monitor.industryFlow(current.Industry)
 		rows = append(rows, domain.FundMovement{
 			SampledAt: samples[len(samples)-1].at, Symbol: symbol, Name: current.Name, Industry: current.Industry,
-			Price: current.Price, Percent: current.Percent, MainNet: current.MainNet, MainRatio: current.MainRatio,
+			Source: current.Source,
+			Price:  current.Price, Percent: current.Percent, MainNet: current.MainNet, MainRatio: current.MainRatio,
 			Delta1Minute: delta1, Delta3Minutes: delta3, Delta5Minutes: delta5,
 			IndustryNet: industry.MainNet, IndustryPercent: industry.Percent,
 			State: classifyFundMovement(

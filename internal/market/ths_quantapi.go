@@ -175,10 +175,14 @@ func (client *THSQuantClient) FetchDailyBars(ctx context.Context, symbol string)
 	if code == "" {
 		return nil, fmt.Errorf("无效股票代码 %q", symbol)
 	}
-	end := time.Now().Format("2006-01-02")
-	start := time.Now().AddDate(0, 0, -500).Format("2006-01-02")
-	raw, err := client.do(ctx, "date_sequence", map[string]any{
+	now := time.Now()
+	end := now.Format("2006-01-02")
+	start := now.AddDate(0, 0, -500).Format("2006-01-02")
+	// OHLCV indicators belong to history quotation, not date_sequence.
+	// CPS=1 keeps prices unadjusted, matching the HTTP history sources.
+	raw, err := client.do(ctx, "cmd_history_quotation", map[string]any{
 		"codes": code, "indicators": client.historyIndicators, "startdate": start, "enddate": end,
+		"functionpara": map[string]string{"Interval": "D", "CPS": "1", "Fill": "Original"},
 	})
 	if err != nil {
 		return nil, err

@@ -18,14 +18,16 @@ type marketRankingResponse struct {
 }
 
 type marketRankingItemResponse struct {
-	Symbol   string   `json:"symbol"`
-	Name     string   `json:"name"`
-	Industry string   `json:"industry"`
-	Price    *float64 `json:"price"`
-	Percent  *float64 `json:"percent"`
-	Speed    *float64 `json:"speed"`
-	Amount   *float64 `json:"amount_yuan"`
-	Turnover *float64 `json:"turnover_percent"`
+	Symbol         string   `json:"symbol"`
+	Source         string   `json:"source,omitempty"`
+	Name           string   `json:"name"`
+	Industry       string   `json:"industry"`
+	IndustrySource string   `json:"industry_source,omitempty"`
+	Price          *float64 `json:"price"`
+	Percent        *float64 `json:"percent"`
+	Speed          *float64 `json:"speed"`
+	Amount         *float64 `json:"amount_yuan"`
+	Turnover       *float64 `json:"turnover_percent"`
 }
 
 func (s *Server) handleRankings(writer http.ResponseWriter, request *http.Request) {
@@ -64,8 +66,9 @@ func (s *Server) handleRankings(writer http.ResponseWriter, request *http.Reques
 	}
 	for _, item := range items {
 		response.Items = append(response.Items, marketRankingItemResponse{
-			Symbol: item.Symbol, Name: item.Name, Industry: item.Industry,
-			Price: finitePointer(item.Price), Percent: finitePointer(item.Percent), Speed: finitePointer(item.Speed),
+			Symbol: item.Symbol, Name: item.Name, Industry: item.Industry, Source: item.Source,
+			IndustrySource: item.IndustrySource,
+			Price:          finitePointer(item.Price), Percent: finitePointer(item.Percent), Speed: finitePointer(item.Speed),
 			Amount: finitePointer(item.Amount), Turnover: finitePointer(item.Turnover),
 		})
 	}

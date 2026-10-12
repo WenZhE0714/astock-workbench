@@ -63,14 +63,16 @@ func ParseMarketRankingPayload(raw string) []domain.MarketRankingItem {
 			industry = "--"
 		}
 		result = append(result, domain.MarketRankingItem{
-			Symbol:   symbol,
-			Name:     strings.TrimSpace(item.Name),
-			Price:    rawNumber(item.Price),
-			Percent:  rawNumber(item.Percent),
-			Speed:    rawNumber(item.Speed),
-			Amount:   rawNumber(item.Amount),
-			Turnover: rawNumber(item.Turnover),
-			Industry: industry,
+			Symbol:         symbol,
+			Source:         "东方财富公开榜单",
+			Name:           strings.TrimSpace(item.Name),
+			Price:          rawNumber(item.Price),
+			Percent:        rawNumber(item.Percent),
+			Speed:          rawNumber(item.Speed),
+			Amount:         rawNumber(item.Amount),
+			Turnover:       rawNumber(item.Turnover),
+			Industry:       industry,
+			IndustrySource: "东方财富行业分类",
 		})
 	}
 	return result
@@ -98,12 +100,7 @@ func marketRankingAddress(base string, kind domain.MarketRankingKind, limit int)
 	if err != nil {
 		return "", err
 	}
-	if limit < 1 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	limit = normalizedRankingLimit(limit)
 	if strings.Contains(base, "{metric}") || strings.Contains(base, "{order}") || strings.Contains(base, "{limit}") {
 		address := strings.ReplaceAll(base, "{metric}", url.QueryEscape(metric))
 		address = strings.ReplaceAll(address, "{order}", url.QueryEscape(order))

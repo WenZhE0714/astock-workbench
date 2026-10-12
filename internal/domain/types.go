@@ -29,16 +29,18 @@ const (
 	MarketRankingTurnover  MarketRankingKind = "turnover"
 )
 
-// MarketRankingItem is one Eastmoney Shanghai/Shenzhen A-share ranking row.
+// MarketRankingItem is one Shanghai/Shenzhen A-share ranking row.
 type MarketRankingItem struct {
-	Symbol   string  `json:"symbol"`
-	Name     string  `json:"name"`
-	Price    float64 `json:"price"`
-	Percent  float64 `json:"percent"`
-	Speed    float64 `json:"speed"`
-	Amount   float64 `json:"amount_yuan"`
-	Turnover float64 `json:"turnover_percent"`
-	Industry string  `json:"industry"`
+	Symbol         string  `json:"symbol"`
+	Source         string  `json:"source,omitempty"`
+	Name           string  `json:"name"`
+	Price          float64 `json:"price"`
+	Percent        float64 `json:"percent"`
+	Speed          float64 `json:"speed"`
+	Amount         float64 `json:"amount_yuan"`
+	Turnover       float64 `json:"turnover_percent"`
+	Industry       string  `json:"industry"`
+	IndustrySource string  `json:"industry_source,omitempty"`
 }
 
 type DepthLevel struct {
@@ -209,23 +211,30 @@ type TechnicalSignal struct {
 	Chart *ChartAnalysis `json:"chart_analysis,omitempty"`
 }
 
-// FundFlow is an Eastmoney main-fund-flow snapshot. MainNet is denominated in
-// yuan; a positive value is a net inflow and a negative value a net outflow.
+// FundFlow is a provider-defined main-fund snapshot. Source identifies the
+// provider and order-size basis; MainNet is in yuan. FetchedAt is the local
+// retrieval time, not an upstream trade timestamp.
 type FundFlow struct {
-	Symbol    string  `json:"symbol"`
-	Name      string  `json:"name,omitempty"`
-	Industry  string  `json:"industry,omitempty"`
-	Price     float64 `json:"price"`
-	Percent   float64 `json:"percent"`
-	Speed     float64 `json:"speed_percent"`
-	MainNet   float64 `json:"main_net_yuan"`
-	MainRatio float64 `json:"main_ratio_percent"`
+	Symbol      string    `json:"symbol"`
+	Source      string    `json:"source,omitempty"`
+	FetchedAt   time.Time `json:"fetched_at,omitempty"`
+	DataTime    string    `json:"data_time,omitempty"`
+	SpeedSource string    `json:"speed_source,omitempty"`
+	SpeedTime   string    `json:"speed_time,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	Industry    string    `json:"industry,omitempty"`
+	Price       float64   `json:"price"`
+	Percent     float64   `json:"percent"`
+	Speed       float64   `json:"speed_percent"`
+	MainNet     float64   `json:"main_net_yuan"`
+	MainRatio   float64   `json:"main_ratio_percent"`
 }
 
 // FundMovement is a short-line behavior observation derived from cumulative
 // main-fund snapshots. It is evidence for monitoring, not a trading order.
 type FundMovement struct {
 	SampledAt       time.Time `json:"sampled_at,omitempty"`
+	Source          string    `json:"source,omitempty"`
 	Symbol          string    `json:"symbol"`
 	Name            string    `json:"name"`
 	Industry        string    `json:"industry"`

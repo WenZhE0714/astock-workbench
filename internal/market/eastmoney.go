@@ -23,6 +23,7 @@ const (
 )
 
 type FundFlowClient interface {
+	// A partial result may accompany an error; callers should retain valid rows.
 	Fetch(context.Context, []string) (map[string]domain.FundFlow, error)
 }
 
@@ -85,7 +86,8 @@ func ParseFundFlowPayload(raw string) map[string]domain.FundFlow {
 		symbol := prefix + item.Code
 		result[symbol] = domain.FundFlow{
 			Symbol: symbol, Name: strings.TrimSpace(item.Name), Industry: strings.TrimSpace(item.Industry),
-			Price: rawNumber(item.Price), Percent: rawNumber(item.Percent), Speed: rawNumber(item.Speed),
+			Source: "东方财富主力净额",
+			Price:  rawNumber(item.Price), Percent: rawNumber(item.Percent), Speed: rawNumber(item.Speed),
 			MainNet: rawNumber(item.MainNet), MainRatio: rawNumber(item.MainRatio),
 		}
 	}
@@ -150,6 +152,11 @@ func (EastmoneyClient) Fetch(ctx context.Context, symbols []string) (map[string]
 		if flows == nil {
 			lastError = fmt.Errorf("未解析到资金流数据")
 			continue
+		}
+		fetchedAt := time.Now()
+		for symbol, flow := range flows {
+			flow.FetchedAt = fetchedAt
+			flows[symbol] = flow
 		}
 		return flows, nil
 	}
