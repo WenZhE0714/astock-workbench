@@ -123,17 +123,22 @@ func (client *CachedDailyHistoryClient) save(symbol string, bars []domain.DailyB
 }
 
 func (client *CachedDailyHistoryClient) load(symbol string) ([]domain.DailyBar, error) {
+	bars, _, err := client.loadWithTimestamp(symbol)
+	return bars, err
+}
+
+func (client *CachedDailyHistoryClient) loadWithTimestamp(symbol string) ([]domain.DailyBar, time.Time, error) {
 	data, err := os.ReadFile(client.cachePath(symbol))
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	var payload dailyHistoryCachePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	age := client.now().Sub(payload.FetchedAt)
 	if payload.FetchedAt.IsZero() || age < 0 || age > dailyHistoryCacheMaxAge {
-		return nil, fmt.Errorf("日K缓存已过期")
+		return nil, time.Time{}, fmt.Errorf("日K缓存已过期")
 	}
 	bars := decodeCachedBars(payload.Bars)
 	// A snapshot captured before the close cannot become a completed daily bar
@@ -146,9 +151,9 @@ func (client *CachedDailyHistoryClient) load(symbol string) ([]domain.DailyBar, 
 		bars = bars[:len(bars)-1]
 	}
 	if len(bars) < 60 {
-		return nil, fmt.Errorf("日K缓存仅有%d根", len(bars))
+		return nil, time.Time{}, fmt.Errorf("日K缓存仅有%d根", len(bars))
 	}
-	return bars, nil
+	return bars, payload.FetchedAt, nil
 }
 
 func (client *CachedDailyHistoryClient) FetchDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
@@ -214,17 +219,18 @@ func dailyBarsCoverRange(bars []domain.DailyBar, start, end time.Time) ([]domain
 	return filtered, true
 }
 
-// FetchDailyBarsRange lets historical research reuse the same disk cache as
-// the normal snapshot path. A complete, fresh cache is preferred so a
-// transient upstream 501 cannot invalidate an otherwise auditable run; when
-// it does not cover the requested interval, the configured range-capable
-// provider is tried next.
+// FetchDailyBarsRange persists completed intervals separately from the recent
+// quote snapshot, so refreshing a quote cannot evict research history.
 func (client *CachedDailyHistoryClient) FetchDailyBarsRange(
 	ctx context.Context,
 	symbol string,
 	start, end time.Time,
 	adjustment backtest.PriceAdjustment,
 ) ([]domain.DailyBar, error) {
+	return client.fetchPersistentRange(ctx, symbol, start, end, adjustment)
+}
+
+func (client *CachedDailyHistoryClient) fetchOnlineRange(ctx context.Context, symbol string, start, end time.Time, adjustment backtest.PriceAdjustment) ([]domain.DailyBar, error) {
 	if client == nil {
 		return nil, fmt.Errorf("日K数据源未初始化")
 	}
@@ -233,14 +239,6 @@ func (client *CachedDailyHistoryClient) FetchDailyBarsRange(
 	}
 	if start.IsZero() || end.IsZero() || start.After(end) {
 		return nil, fmt.Errorf("无效回测日期区间")
-	}
-
-	cached, cacheError := client.load(symbol)
-	if cacheError == nil {
-		if bars, ok := dailyBarsCoverRange(cached, start, end); ok {
-			return bars, nil
-		}
-		cacheError = fmt.Errorf("本地缓存未覆盖 %s 至 %s", start.Format("2006-01-02"), end.Format("2006-01-02"))
 	}
 
 	var primaryError error
@@ -272,5 +270,5 @@ func (client *CachedDailyHistoryClient) FetchDailyBarsRange(
 	} else {
 		primaryError = fmt.Errorf("在线日K数据源未初始化")
 	}
-	return nil, fmt.Errorf("在线区间日K: %v；本地缓存: %v", primaryError, cacheError)
+	return nil, fmt.Errorf("在线区间日K: %v", primaryError)
 }

@@ -202,6 +202,7 @@ type Server struct {
 	resolver                  SymbolResolver
 	quotes                    QuoteClient
 	history                   DailyHistoryClient
+	patternHistory            market.DailyBarRangeClient
 	minutes                   MinuteClient
 	boardDetails              BoardDetailClient
 	relatedBoards             market.BoardFlowClient

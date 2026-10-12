@@ -9,20 +9,36 @@ type PatternValidationRequest struct {
 }
 
 type PatternValidationInput struct {
-	Symbol string     `json:"symbol"`
-	Bars   []DailyBar `json:"bars"`
-	Error  string     `json:"error,omitempty"`
+	Symbol       string     `json:"symbol"`
+	Bars         []DailyBar `json:"bars"`
+	Error        string     `json:"error,omitempty"`
+	FetchStart   string     `json:"fetch_start,omitempty"`
+	FetchEnd     string     `json:"fetch_end,omitempty"`
+	FetchMode    string     `json:"fetch_mode,omitempty"`
+	FetchWarning string     `json:"fetch_warning,omitempty"`
 }
 
 type PatternValidationCoverage struct {
-	Symbol          string `json:"symbol"`
-	FirstDate       string `json:"first_date,omitempty"`
-	LastDate        string `json:"last_date,omitempty"`
-	Bars            int    `json:"bars"`
-	Source          string `json:"source,omitempty"`
-	Cached          bool   `json:"cached"`
-	LateDiscoveries int    `json:"late_discoveries"`
-	Error           string `json:"error,omitempty"`
+	Symbol          string   `json:"symbol"`
+	FirstDate       string   `json:"first_date,omitempty"`
+	LastDate        string   `json:"last_date,omitempty"`
+	Bars            int      `json:"bars"`
+	Source          string   `json:"source,omitempty"`
+	Cached          bool     `json:"cached"`
+	LateDiscoveries int      `json:"late_discoveries"`
+	Error           string   `json:"error,omitempty"`
+	FetchStart      string   `json:"fetch_start,omitempty"`
+	FetchEnd        string   `json:"fetch_end,omitempty"`
+	FetchMode       string   `json:"fetch_mode,omitempty"`
+	WarmupBars      int      `json:"warmup_bars"`
+	WarmupRequired  int      `json:"warmup_required,omitempty"`
+	ExpectedDays    *int     `json:"expected_days,omitempty"`
+	AvailableDays   int      `json:"available_days"`
+	MissingDates    []string `json:"missing_dates,omitempty"`
+	ReferenceStart  string   `json:"reference_start,omitempty"`
+	ReferenceEnd    string   `json:"reference_end,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
 }
 
 type PatternValidationOutcome struct {

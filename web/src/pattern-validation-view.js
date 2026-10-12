@@ -1,5 +1,5 @@
 import { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight } from 'lucide-vue-next'
-import { validationPatterns, validationPercent, validationState, validationOutcome, validationSymbols, validationTone } from './pattern-validation.mjs'
+import { validationPatterns, validationPercent, validationState, validationOutcome, validationSymbols, validationTone, validationCoverageStatus } from './pattern-validation.mjs'
 import { shanghaiToday } from './review-calendar.mjs'
 
 export const PatternValidationView = {
@@ -28,7 +28,7 @@ export const PatternValidationView = {
     requestKey() { if (!this.running && this.requestKey !== this.loadedKey) this.load() },
   },
   methods: {
-    percent:validationPercent, status:validationState, outcome:validationOutcome, tone:validationTone,
+    percent:validationPercent, status:validationState, outcome:validationOutcome, tone:validationTone, coverageStatus:validationCoverageStatus,
     biasLabel(value) { return value === 'bullish' ? '看涨' : '看跌' },
     time(value) { return new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) },
     number(value) { return value == null ? '--' : Number(value).toFixed(2) },
@@ -109,7 +109,13 @@ export const PatternValidationView = {
         <details class="pv-evidence"><summary>识别日冻结依据</summary><p v-for="evidence in sample.snapshot.evidence" :key="evidence">{{ evidence }}</p><p class="pv-hash">快照 {{ sample.snapshot_fingerprint }}</p></details>
       </details>
       <div class="pv-pagination" v-if="view.total > 30"><button class="icon-button" type="button" title="上一页" aria-label="上一页样本" :disabled="busy || offset === 0" @click="offset = Math.max(0,offset-30)"><chevron-left :size="16"/></button><span>{{ Math.floor(offset/30)+1 }} / {{ Math.ceil(view.total/30) }}</span><button class="icon-button" type="button" title="下一页" aria-label="下一页样本" :disabled="busy || offset+30 >= view.total" @click="offset += 30"><chevron-right :size="16"/></button></div>
-      <details class="pv-coverage" open><summary>数据覆盖</summary><div v-for="item in report.coverage" :key="item.symbol"><strong>{{ item.symbol === 'sh000300' ? '沪深300基准' : item.symbol }}</strong><span>{{ item.first_date || '--' }} 至 {{ item.last_date || '--' }} · {{ item.bars }} 根</span><small>{{ item.error || item.source }}{{ item.cached ? ' · 缓存参考' : '' }}{{ item.late_discoveries ? ' · 非首次识别日排除 ' + item.late_discoveries : '' }}{{ item.first_date && item.first_date > report.request.start ? ' · 起始覆盖不足' : '' }}</small></div></details>
+      <details class="pv-coverage" open><summary>数据覆盖</summary><div v-for="item in report.coverage" :key="item.symbol" :data-coverage-symbol="item.symbol">
+        <strong>{{ item.symbol === 'sh000300' ? '沪深300基准' : item.symbol }}<small>{{ coverageStatus(item) }}</small></strong>
+        <span>{{ item.first_date || '--' }} 至 {{ item.last_date || '--' }} · {{ item.bars }} 根<small v-if="item.warmup_required">起始预热 {{ item.warmup_bars }} / {{ item.warmup_required }} 根 · 基准对齐 {{ item.expected_days == null ? '--' : item.available_days + ' / ' + item.expected_days }} 日</small></span>
+        <small>{{ item.error || item.source }}{{ item.cached ? ' · 缓存参考' : '' }}{{ item.late_discoveries ? ' · 非首次识别日排除 ' + item.late_discoveries : '' }}</small>
+        <div class="pv-coverage-detail" v-if="item.fetch_start || item.notes?.length"><p v-if="item.fetch_start">{{ item.fetch_mode === 'range' ? '区间取数' : '近期快照' }} · {{ item.fetch_start }} 至 {{ item.fetch_end }}</p><p v-if="item.reference_start">基准参照 {{ item.reference_start }} 至 {{ item.reference_end }}</p><p v-for="note in item.notes" :key="note">{{ note }}</p></div>
+        <details v-if="item.missing_dates?.length" class="pv-gaps"><summary>缺失日期 {{ item.missing_dates.length }} 日 · 原因未确认</summary><p>{{ item.missing_dates.join('、') }}</p></details>
+      </div></details>
       <details class="pv-method"><summary>统计口径与限制</summary><p v-for="warning in report.warnings" :key="warning">{{ warning }}</p><p class="pv-hash">输入指纹 {{ report.input_hash }}</p></details>
     </template>
     <p v-else-if="!busy && !error" class="pv-empty">暂无验证结果</p>

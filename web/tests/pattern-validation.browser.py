@@ -32,6 +32,12 @@ with sync_playwright() as p:
         run_id = result['report']['run_id']
         assert result['totals']['mature'] >= 2
         expect(page.locator('.pv-group-table tbody tr').first).to_be_visible()
+        coverage = page.locator('[data-coverage-symbol="sh600007"]')
+        expect(coverage).to_contain_text('区间取数')
+        expect(coverage).to_contain_text('覆盖有缺口')
+        expect(coverage).to_contain_text('原因未确认')
+        coverage.locator('.pv-gaps > summary').click()
+        expect(coverage.locator('.pv-gaps p')).to_be_visible()
         page.get_by_label('筛选验证形态', exact=True).select_option('head-shoulders-bottom')
         page.get_by_role('button', name='20日', exact=True).click()
         expect(page.locator('.pv-sample')).to_have_count(1)
@@ -48,6 +54,7 @@ with sync_playwright() as p:
         expect(page.get_by_role('button', name='20日', exact=True)).to_have_attribute('aria-pressed','true')
         expect(page.locator('.pv-sample')).to_have_count(1)
         page.locator('.pv-sample > summary').click()
+        page.locator('[data-coverage-symbol="sh600007"] .pv-gaps > summary').click()
         for width in [1440,390,320]:
             page.set_viewport_size({'width':width,'height':1100 if width>600 else 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
@@ -59,6 +66,8 @@ with sync_playwright() as p:
             page.get_by_role('link', name='导出完整验证归档', exact=True).click()
         exported = json.loads(Path(download.value.path()).read_text())
         assert len(exported['inputs']) == 3 and exported['input_hash'] == result['report']['input_hash']
+        assert exported['inputs'][0]['fetch_mode'] == 'range'
+        assert exported['inputs'][0]['fetch_end'] == '2026-09-25'
         page.get_by_label('筛选验证方向', exact=True).select_option('bearish')
         expect(page.locator('.pv-sample')).to_have_count(0)
         expect(page.locator('.pv-totals')).to_contain_text('--')

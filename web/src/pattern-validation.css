@@ -24,6 +24,10 @@
 .pv-outcome { display:grid; grid-template-columns:minmax(115px,1fr) 2fr 2fr; gap:6px 12px; border-top:1px solid var(--line); padding:10px 0; }.pv-outcome small { color:var(--muted); grid-column:1/-1; }.pv-outcome strong { font-weight:500; }
 .pv-evidence,.pv-method { font-size:11px; color:var(--muted); line-height:1.7; margin-top:12px; }.pv-evidence summary,.pv-method summary,.pv-coverage>summary { cursor:pointer; }.pv-hash { overflow-wrap:anywhere; font-size:10px; }
 .pv-coverage { margin:22px 0 12px; padding-top:12px; border-top:1px solid var(--line); font-size:11px; }.pv-coverage>div { display:grid; grid-template-columns:minmax(110px,1fr) 2fr 2fr; gap:8px; padding:10px 0; border-bottom:1px solid var(--line); }.pv-coverage small { color:var(--muted); font-size:10px; }
+.pv-coverage :is(strong,span)>small { display:block; margin-top:6px; font-weight:400; }
+.pv-coverage-detail,.pv-gaps { grid-column:1/-1; color:var(--muted); min-width:0; line-height:1.6; }
+.pv-coverage-detail p,.pv-gaps p { margin:3px 0; overflow-wrap:anywhere; }
+.pv-gaps summary { cursor:pointer; }
 .pv-pagination { display:flex; align-items:center; justify-content:flex-end; gap:10px; padding-top:12px; font-size:11px; }.pv-empty { padding:28px 0; color:var(--muted); font-size:12px; }
 .pattern-validation :is(input,select,button,a,summary):focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .pv-chart-return { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0; font-size:11px; color:var(--muted); }

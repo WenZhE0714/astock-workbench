@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/storage"
 	"github.com/wenzhe/astock-workbench/internal/strategy"
@@ -51,6 +54,67 @@ func patternValidationServerFixture(root string) *Server {
 	history["sh000300"] = benchmark
 	s.now = func() time.Time { return time.Date(2026, 10, 9, 16, 0, 0, 0, realtimeWebLocation) }
 	return s
+}
+
+type validationRangeFixture struct {
+	patternHistoryFixture
+	starts, ends []time.Time
+	adjustments  []backtest.PriceAdjustment
+	err          error
+}
+
+func (fixture *validationRangeFixture) FetchDailyBarsRange(_ context.Context, symbol string, start, end time.Time, adjustment backtest.PriceAdjustment) ([]domain.DailyBar, error) {
+	fixture.starts = append(fixture.starts, start)
+	fixture.ends = append(fixture.ends, end)
+	fixture.adjustments = append(fixture.adjustments, adjustment)
+	return fixture.patternHistoryFixture[symbol], fixture.err
+}
+
+func TestPatternValidationUsesRangeWithWarmupAndArchivesFetchEvidence(t *testing.T) {
+	s := patternValidationServerFixture(t.TempDir())
+	fixture := &validationRangeFixture{patternHistoryFixture: s.history.(patternHistoryFixture)}
+	s.patternHistory = fixture
+	s.history = nil
+	r := validationHTTPRequest(s, http.MethodPost, "/api/pattern-validation", `{"symbols":["600004"],"start":"2026-06-01","end":"2026-09-25"}`)
+	var result strategy.PatternValidationView
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &result) != nil {
+		t.Fatalf("%d %s", r.Code, r.Body.String())
+	}
+	start, _ := time.Parse(time.DateOnly, "2026-06-01")
+	if len(fixture.starts) != 2 || !fixture.starts[0].Equal(start.AddDate(0, 0, -240)) || fixture.ends[0].Format(time.DateOnly) != "2026-09-25" || fixture.adjustments[0] != backtest.AdjustmentNone {
+		t.Fatalf("incorrect acquisition bounds: %+v", fixture)
+	}
+	report, err := s.patternValidations.Load(result.Report.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := report.Inputs[0]
+	if input.FetchMode != "range" || input.FetchStart != fixture.starts[0].Format(time.DateOnly) || input.FetchEnd != "2026-09-25" || input.Bars[len(input.Bars)-1].Date > input.FetchEnd || report.Coverage[0].FetchMode != "range" {
+		t.Fatalf("fetch evidence missing: %+v", input)
+	}
+	// Existing archives remain readable without recomputation or new metadata.
+	report.Version = "pattern-validation-v1"
+	legacy, err := s.patternValidations.Save(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = validationHTTPRequest(s, http.MethodGet, "/api/pattern-validation?id="+legacy.RunID, "")
+	if r.Code != 200 {
+		t.Fatalf("legacy archive rejected: %s", r.Body.String())
+	}
+}
+
+func TestPatternValidationSnapshotFallbackIsExplicitAndExcludesFuture(t *testing.T) {
+	s := patternValidationServerFixture(t.TempDir())
+	input := s.fetchPatternValidationHistory(t.Context(), "sh600004", "2026-06-01", "2026-08-20")
+	if input.Error != "" || input.FetchMode != "snapshot" || input.FetchWarning == "" || len(input.Bars) == 0 || input.Bars[len(input.Bars)-1].Date > "2026-08-20" {
+		t.Fatalf("silent fallback or future data: %+v", input)
+	}
+	s.patternHistory = &validationRangeFixture{err: errors.New("范围不足")}
+	input = s.fetchPatternValidationHistory(t.Context(), "sh600004", "2026-06-01", "2026-08-20")
+	if input.Error != "" || input.FetchMode != "snapshot" || !strings.Contains(input.FetchWarning, "范围不足") {
+		t.Fatal("range failure fallback was not disclosed")
+	}
 }
 
 func validationHTTPRequest(s *Server, method, path, body string) *httptest.ResponseRecorder {
@@ -117,6 +181,11 @@ func TestPatternValidationBrowserFixture(t *testing.T) {
 		t.Skip("browser fixture is opt-in")
 	}
 	s := patternValidationServerFixture(t.TempDir())
+	history := s.history.(patternHistoryFixture)
+	// A gap after all measured windows exercises diagnostics without changing returns.
+	bars := history["sh600007"]
+	history["sh600007"] = append(bars[:103:103], bars[104:]...)
+	s.patternHistory = &validationRangeFixture{patternHistoryFixture: history}
 	if err := http.ListenAndServe(address, s.Handler()); err != nil {
 		t.Fatal(err)
 	}

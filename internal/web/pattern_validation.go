@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/strategy"
@@ -23,6 +24,10 @@ type patternValidationArchive interface {
 
 func WithPatternValidation(store patternValidationArchive) ServerOption {
 	return func(s *Server) { s.patternValidations = store }
+}
+
+func WithPatternValidationHistory(history market.DailyBarRangeClient) ServerOption {
+	return func(s *Server) { s.patternHistory = history }
 }
 
 func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +59,7 @@ func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, 200, report)
 			return
 		}
-		if report.Version != strategy.PatternValidationVersion {
+		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" {
 			writeJSON(w, 409, errorResponse{Error: "归档算法版本不同，请导出查看或重新运行验证"})
 			return
 		}
@@ -92,7 +97,7 @@ func patternValidationFilter(r *http.Request) (strategy.PatternValidationFilter,
 }
 
 func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
-	if s.resolver == nil || s.history == nil {
+	if s.resolver == nil || (s.history == nil && s.patternHistory == nil) {
 		writeJSON(w, 503, errorResponse{Error: "日K数据服务未初始化"})
 		return
 	}
@@ -108,7 +113,8 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.currentTime()
-	if _, err := strategy.ValidatePatternValidationRequest(input, now); err != nil {
+	cutoff, err := strategy.ValidatePatternValidationRequest(input, now)
+	if err != nil {
 		writeJSON(w, 400, errorResponse{Error: err.Error()})
 		return
 	}
@@ -143,14 +149,9 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 408, errorResponse{Error: "形态验证已取消或超时"})
 			return
 		}
-		fetchCtx, stop := context.WithTimeout(ctx, 12*time.Second)
-		bars, err := s.fetchDailyBars(fetchCtx, symbol)
+		fetchCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+		series := s.fetchPatternValidationHistory(fetchCtx, symbol, input.Start, cutoff)
 		stop()
-		series := domain.PatternValidationInput{Symbol: symbol, Bars: bars}
-		if err != nil {
-			series.Error = err.Error()
-			series.Bars = nil
-		}
 		inputs = append(inputs, series)
 	}
 	report, err := strategy.BuildPatternValidation(ctx, input, inputs, now)
@@ -173,4 +174,40 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, view)
+}
+
+func (s *Server) fetchPatternValidationHistory(ctx context.Context, symbol, startDate, cutoff string) domain.PatternValidationInput {
+	start, _ := time.Parse(time.DateOnly, startDate)
+	start = start.AddDate(0, 0, -strategy.PatternValidationWarmupDays)
+	end, _ := time.Parse(time.DateOnly, cutoff)
+	input := domain.PatternValidationInput{Symbol: symbol, FetchStart: start.Format(time.DateOnly), FetchEnd: cutoff, FetchMode: "range"}
+	provider := s.patternHistory
+	if provider == nil {
+		provider, _ = s.history.(market.DailyBarRangeClient)
+	}
+	var err error
+	if provider != nil {
+		input.Bars, err = provider.FetchDailyBarsRange(ctx, symbol, start, end, backtest.AdjustmentNone)
+		if err != nil && ctx.Err() == nil && s.history != nil {
+			input.FetchMode = "snapshot"
+			input.FetchWarning = "区间取数失败（" + err.Error() + "），使用近期快照，较早历史可能缺失"
+			input.Bars, err = s.fetchDailyBars(ctx, symbol)
+		}
+	} else {
+		input.FetchMode = "snapshot"
+		input.FetchWarning = "当前数据源不支持日期区间，使用近期快照，较早历史可能缺失"
+		input.Bars, err = s.fetchDailyBars(ctx, symbol)
+	}
+	if err != nil {
+		input.Error, input.Bars = err.Error(), nil
+		return input
+	}
+	filtered := make([]domain.DailyBar, 0, len(input.Bars))
+	for _, bar := range input.Bars {
+		if bar.Date >= input.FetchStart && bar.Date <= cutoff {
+			filtered = append(filtered, bar)
+		}
+	}
+	input.Bars = filtered
+	return input
 }

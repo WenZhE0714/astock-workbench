@@ -15,7 +15,8 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
-const PatternValidationVersion = "pattern-validation-v1"
+const PatternValidationVersion = "pattern-validation-v2"
+const PatternValidationWarmupDays = 240
 
 func ValidatePatternValidationRequest(request domain.PatternValidationRequest, now time.Time) (string, error) {
 	if now.IsZero() || len(request.Symbols) == 0 || len(request.Symbols) > 10 {
@@ -34,7 +35,10 @@ func ValidatePatternValidationRequest(request domain.PatternValidationRequest, n
 }
 
 func patternValidationBars(input domain.PatternValidationInput, cutoff string) ([]domain.DailyBar, domain.PatternValidationCoverage) {
-	coverage := domain.PatternValidationCoverage{Symbol: input.Symbol, Error: input.Error}
+	coverage := domain.PatternValidationCoverage{Symbol: input.Symbol, Error: input.Error, FetchStart: input.FetchStart, FetchEnd: input.FetchEnd, FetchMode: input.FetchMode}
+	if input.FetchWarning != "" {
+		coverage.Notes = append(coverage.Notes, input.FetchWarning)
+	}
 	if input.Error != "" {
 		return nil, coverage
 	}
@@ -67,9 +71,6 @@ func patternValidationBars(input domain.PatternValidationInput, cutoff string) (
 	if len(clean) == 0 {
 		coverage.Error = "截止日期前没有已收盘日K"
 		return nil, coverage
-	}
-	if len(clean) > 600 {
-		clean = clean[len(clean)-600:]
 	}
 	coverage.Bars, coverage.FirstDate, coverage.LastDate = len(clean), clean[0].Date, clean[len(clean)-1].Date
 	sources := []string{}
@@ -147,8 +148,10 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		bars, coverage := patternValidationBars(input, cutoff)
 		clean[symbol] = bars
 		report.Coverage = append(report.Coverage, coverage)
-		report.Inputs = append(report.Inputs, domain.PatternValidationInput{Symbol: symbol, Bars: bars, Error: coverage.Error})
+		input.Bars, input.Error = bars, coverage.Error
+		report.Inputs = append(report.Inputs, input)
 	}
+	addPatternCoverageDiagnostics(&report, clean)
 	encoded, err := json.Marshal(report.Inputs)
 	if err != nil {
 		return report, err
@@ -163,6 +166,7 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		}
 		bars := clean[coverage.Symbol]
 		if len(bars) < 25 {
+			coverage.Status = "unavailable"
 			if coverage.Error == "" {
 				coverage.Error = "有效日K少于25根"
 			}
@@ -201,7 +205,13 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		}
 	}
 	if usable == 0 {
-		return report, fmt.Errorf("没有可验证的股票日K，请检查日期及数据源")
+		failures := []string{}
+		for _, coverage := range report.Coverage {
+			if coverage.Symbol != "sh000300" && coverage.Error != "" {
+				failures = append(failures, coverage.Symbol+": "+coverage.Error)
+			}
+		}
+		return report, fmt.Errorf("没有可验证的股票日K，请检查日期及数据源；%s", strings.Join(failures, "；"))
 	}
 	sort.Slice(report.Samples, func(i, j int) bool {
 		if report.Samples[i].ObservedOn != report.Samples[j].ObservedOn {

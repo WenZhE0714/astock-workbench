@@ -13,13 +13,17 @@ type patternValidationBarJSON struct {
 }
 
 type patternValidationInputJSON struct {
-	Symbol string                     `json:"symbol"`
-	Bars   []patternValidationBarJSON `json:"bars"`
-	Error  string                     `json:"error,omitempty"`
+	Symbol       string                     `json:"symbol"`
+	Bars         []patternValidationBarJSON `json:"bars"`
+	Error        string                     `json:"error,omitempty"`
+	FetchStart   string                     `json:"fetch_start,omitempty"`
+	FetchEnd     string                     `json:"fetch_end,omitempty"`
+	FetchMode    string                     `json:"fetch_mode,omitempty"`
+	FetchWarning string                     `json:"fetch_warning,omitempty"`
 }
 
 func (input PatternValidationInput) MarshalJSON() ([]byte, error) {
-	value := patternValidationInputJSON{Symbol: input.Symbol, Error: input.Error}
+	value := patternValidationInputJSON{Symbol: input.Symbol, Error: input.Error, FetchStart: input.FetchStart, FetchEnd: input.FetchEnd, FetchMode: input.FetchMode, FetchWarning: input.FetchWarning}
 	for _, bar := range input.Bars {
 		var turnover *float64
 		if !math.IsNaN(bar.Turnover) && !math.IsInf(bar.Turnover, 0) {
@@ -36,7 +40,7 @@ func (input *PatternValidationInput) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
-	result := PatternValidationInput{Symbol: value.Symbol, Error: value.Error}
+	result := PatternValidationInput{Symbol: value.Symbol, Error: value.Error, FetchStart: value.FetchStart, FetchEnd: value.FetchEnd, FetchMode: value.FetchMode, FetchWarning: value.FetchWarning}
 	for _, bar := range value.Bars {
 		bar.DailyBar.Turnover = math.NaN()
 		if bar.Turnover != nil {

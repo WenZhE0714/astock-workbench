@@ -7,3 +7,6 @@ export function validationState(state) { return {watching:'待确认',forming:'�
 export function validationOutcome(sample,horizon) { return sample?.outcomes?.find(item => item.horizon === Number(horizon)) || {state:'unconfirmed'} }
 export function validationSymbols(value) { return [...new Set(String(value || '').split(/[\s,，、;；]+/).map(item=>item.trim()).filter(Boolean))] }
 export function validationTone(value) { return value == null ? '' : value>0 ? 'gain' : value<0 ? 'loss' : '' }
+export function validationCoverageStatus(item) {
+  return {aligned:'已对齐基准日期',partial:'覆盖有缺口',unavailable:'覆盖无法核验',benchmark:'基准日期参照'}[item?.status] || '旧归档未记录覆盖诊断'
+}

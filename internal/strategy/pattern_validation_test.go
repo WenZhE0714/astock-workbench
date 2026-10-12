@@ -209,3 +209,43 @@ func TestPatternValidationExcludesIntradayAndRejectsConflictingBars(t *testing.T
 		t.Fatalf("cancellation ignored: %v", err)
 	}
 }
+
+func TestPatternValidationRetainsOlderSamplesBeyond600Bars(t *testing.T) {
+	bars, _ := validationFixture("bull-flag")
+	calendar := chartTestBars(800)
+	for i := len(bars); i < len(calendar); i++ {
+		bar := calendar[i]
+		bar.Open, bar.Close, bar.High, bar.Low = 100, 100, 101, 99
+		bars = append(bars, bar)
+	}
+	benchmark := append([]domain.DailyBar(nil), calendar...)
+	for i := range benchmark {
+		benchmark[i].Symbol = "sh000300"
+	}
+	report := validationReport(t, bars, benchmark, 799)
+	if report.Coverage[0].Bars != 800 || report.Inputs[0].Bars[0].Date != bars[0].Date {
+		t.Fatal("long history was truncated")
+	}
+	found := false
+	for _, sample := range report.Samples {
+		found = found || (sample.PatternID == "bull-flag" && sample.ObservedOn == bars[74].Date)
+	}
+	if !found {
+		t.Fatal("early pattern disappeared from long-range validation")
+	}
+}
+
+func TestPatternCoverageCountsOnlyKnownBenchmarkDates(t *testing.T) {
+	bars, benchmark := validationFixture("bull-flag")
+	missing := bars[82].Date
+	bars = append(bars[:82:82], bars[83:]...)
+	report := validationReport(t, bars, benchmark, len(bars)-1)
+	coverage := report.Coverage[0]
+	if coverage.ExpectedDays == nil || *coverage.ExpectedDays != 91 || coverage.AvailableDays != 90 || coverage.Status != "partial" || len(coverage.MissingDates) != 1 || coverage.MissingDates[0] != missing || coverage.WarmupBars != 24 || coverage.WarmupRequired != 120 {
+		t.Fatalf("incorrect coverage: %+v", coverage)
+	}
+	report = validationReport(t, bars, nil, len(bars)-1)
+	if report.Coverage[0].ExpectedDays != nil || report.Coverage[0].Status != "unavailable" {
+		t.Fatal("absent benchmark produced full coverage")
+	}
+}
