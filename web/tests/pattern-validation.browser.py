@@ -116,7 +116,7 @@ with sync_playwright() as p:
             page.get_by_role('button', name='运行验证', exact=True).click()
         assert adjusted_run.value.status == 200, adjusted_run.value.text()
         adjusted_result = adjusted_run.value.json()
-        assert adjusted_result['report']['version'] == 'pattern-validation-v6'
+        assert adjusted_result['report']['version'] == 'pattern-validation-v7'
         assert all(item['quality_status'] == 'passed' for item in adjusted_result['report']['adjustments'])
         assert adjusted_result['report']['adjustments'][1]['quality'][0]['share_ratio'] == 1.5
         expect(page.locator('.pv-basis')).to_contain_text('后复权研究')
@@ -188,6 +188,59 @@ with sync_playwright() as p:
         expect(page.locator('.pv-benchmark')).to_contain_text('旧归档未记录同期基准收益')
         expect(page.locator('.pv-benchmark')).to_contain_text('--')
         page.unroute('**/api/pattern-validation?*', legacy_benchmark)
+
+        page.get_by_label('分期评估', exact=True).check()
+        page.get_by_label('验证期起点', exact=True).fill('2026-08-31')
+        with page.expect_response(lambda r: r.url.endswith('/api/pattern-validation') and r.request.method == 'POST', timeout=60000) as study_run:
+            page.get_by_role('button', name='运行验证', exact=True).click()
+        assert study_run.value.status == 200, study_run.value.text()
+        study_result = study_run.value.json()
+        assert study_result['filter']['period'] == 'validation'
+        assert study_result['report']['study']['kind'] == 'retrospective'
+        assert len(study_result['report']['study']['config_hash']) == 64
+        expect(page.get_by_role('button', name='验证期', exact=True)).to_have_attribute('aria-pressed', 'true')
+        expect(page.locator('[data-study-period="research"]')).to_be_visible()
+        expect(page.locator('[data-study-period="validation"]')).to_be_visible()
+        page.get_by_role('button', name='研究期', exact=True).click()
+        page.get_by_label('筛选验证形态', exact=True).select_option('head-shoulders-bottom')
+        page.get_by_role('button', name='20日', exact=True).click()
+        expect(page.locator('.pv-sample')).to_have_count(1)
+        page.locator('.pv-sample > summary').click()
+        expect(page.locator('[data-period-state="excluded"]')).to_have_count(2)
+        expect(page.locator('.pv-basis')).to_contain_text('数据截止 2026-08-30')
+        expect(page.locator('[data-study-period="research"]')).to_contain_text('--')
+        page.locator('.pv-frozen-config > summary').click()
+        for width in [1440,390,320]:
+            page.set_viewport_size({'width':width,'height':1100 if width>600 else 844})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+            overflow = page.locator('.pattern-validation :is(button,strong,span,p,small,td)').evaluate_all('items=>items.filter(el=>el.getClientRects().length && el.clientWidth && el.scrollWidth > el.clientWidth+2).map(el=>el.textContent)')
+            assert not overflow, overflow
+            page.screenshot(path=str(output / f'study-{width}.png'), full_page=True)
+        page.set_viewport_size({'width':1440,'height':1100})
+        page.get_by_role('button', name='查看识别日 '+adjusted_sample['id'], exact=True).click()
+        page.get_by_role('button', name='返回形态验证', exact=True).click()
+        expect(page.get_by_role('button', name='研究期', exact=True)).to_have_attribute('aria-pressed', 'true')
+        expect(page.get_by_label('验证期起点', exact=True)).to_have_value('2026-08-31')
+        with page.expect_download() as download:
+            page.get_by_role('link', name='导出完整验证归档', exact=True).click()
+        study_export = json.loads(Path(download.value.path()).read_text())
+        assert study_export['study']['config_hash'] == study_result['report']['study']['config_hash']
+        assert study_export['request']['validation_start'] == '2026-08-31'
+        assert all(s['confirmed_on'] < '2026-08-31' for s in study_export['samples'] if s['period'] == 'research' and s.get('confirmed_on'))
+        page.get_by_label('验证期起点', exact=True).fill(adjusted_sample['observed_on'])
+        with page.expect_response(lambda r: r.url.endswith('/api/pattern-validation') and r.request.method == 'POST', timeout=60000) as earlier_study:
+            page.get_by_role('button', name='运行验证', exact=True).click()
+        assert earlier_study.value.status == 200, earlier_study.value.text()
+        assert earlier_study.value.json()['report']['study']['config_hash'] != study_export['study']['config_hash']
+        expect(page.get_by_role('button', name='验证期', exact=True)).to_have_attribute('aria-pressed', 'true')
+        expect(page.locator('.pv-sample').first).to_be_visible()
+        page.reload(wait_until='networkidle')
+        page.get_by_label('形态验证归档', exact=True).select_option(study_export['run_id'])
+        expect(page.get_by_label('验证期起点', exact=True)).to_have_value('2026-08-31')
+        expect(page.get_by_role('button', name='验证期', exact=True)).to_have_attribute('aria-pressed', 'true')
+        page.get_by_label('形态验证归档', exact=True).select_option(run_id)
+        expect(page.get_by_label('分期评估', exact=True)).not_to_be_checked()
+        expect(page.locator('.pv-study')).to_have_count(0)
 
         pending = []
         page.route('**/api/pattern-validation', lambda route: pending.append(route) if route.request.method == 'POST' else route.continue_())

@@ -15,7 +15,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
-const PatternValidationVersion = "pattern-validation-v6"
+const PatternValidationVersion = "pattern-validation-v7"
 const PatternValidationWarmupDays = 240
 
 func ValidatePatternValidationRequest(request domain.PatternValidationRequest, now time.Time) (string, error) {
@@ -34,7 +34,14 @@ func ValidatePatternValidationRequest(request domain.PatternValidationRequest, n
 	if local.Hour() < 15 {
 		local = local.AddDate(0, 0, -1)
 	}
-	return min(request.End, local.Format(time.DateOnly)), nil
+	cutoff := min(request.End, local.Format(time.DateOnly))
+	if request.ValidationStart != "" {
+		boundary, boundaryErr := time.Parse(time.DateOnly, request.ValidationStart)
+		if boundaryErr != nil || !boundary.After(start) || request.ValidationStart > cutoff {
+			return "", fmt.Errorf("验证期起点须晚于开始日期，且不晚于已收盘数据截止日")
+		}
+	}
+	return cutoff, nil
 }
 
 func patternValidationBars(input domain.PatternValidationInput, cutoff string) ([]domain.DailyBar, domain.PatternValidationCoverage) {
@@ -124,6 +131,9 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 	cutoff, err := ValidatePatternValidationRequest(request, now)
 	if err != nil {
 		return domain.PatternValidationReport{}, err
+	}
+	if request.ValidationStart != "" {
+		return buildPatternStudy(ctx, request, inputs, now, cutoff)
 	}
 	report := domain.PatternValidationReport{Version: PatternValidationVersion, GeneratedAt: now, Request: request, Cutoff: cutoff, Horizons: []int{5, 10, 20}, Coverage: []domain.PatternValidationCoverage{}, Samples: []domain.PatternValidationSample{}, Inputs: []domain.PatternValidationInput{}, Warnings: []string{
 		"使用本次取得的历史日K逐日回放，属于历史重建，不是当时已留存的前向信号；股票池为手动选择，存在选择偏差。",

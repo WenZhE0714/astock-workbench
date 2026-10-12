@@ -67,7 +67,7 @@ func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, 200, report)
 			return
 		}
-		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" && report.Version != "pattern-validation-v4" && report.Version != "pattern-validation-v5" {
+		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" && report.Version != "pattern-validation-v4" && report.Version != "pattern-validation-v5" && report.Version != "pattern-validation-v6" {
 			writeJSON(w, 409, errorResponse{Error: "归档算法版本不同，请导出查看或重新运行验证"})
 			return
 		}
@@ -93,6 +93,7 @@ func patternValidationFilter(r *http.Request) (strategy.PatternValidationFilter,
 	q := r.URL.Query()
 	filter := strategy.PatternValidationFilter{Pattern: q.Get("pattern"), Bias: q.Get("bias"), Regime: q.Get("regime"), State: q.Get("state")}
 	filter.Action = q.Get("action")
+	filter.Period = q.Get("period")
 	for key, destination := range map[string]*int{"horizon": &filter.Horizon, "offset": &filter.Offset, "limit": &filter.Limit} {
 		if value := q.Get(key); value != "" {
 			parsed, err := strconv.Atoi(value)

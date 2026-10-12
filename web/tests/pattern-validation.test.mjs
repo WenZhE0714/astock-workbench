@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { validationPatterns, validationSymbols, validationPercent, validationOutcome, validationState, validationActionState, validationSourceURL, validationPoints, validationBenchmarkState } from '../src/pattern-validation.mjs'
+import { validationPatterns, validationSymbols, validationPercent, validationOutcome, validationState, validationActionState, validationSourceURL, validationPoints, validationBenchmarkState, validationPeriod } from '../src/pattern-validation.mjs'
 
 assert.equal(validationPatterns.length,8)
 assert.deepEqual(validationSymbols('002080,600519，002080\n000001'),['002080','600519','000001'])
@@ -12,6 +12,9 @@ assert.equal(validationPoints(null),'--')
 assert.equal(validationBenchmarkState(null),'旧归档未记录')
 assert.equal(validationBenchmarkState({state:'matched'}),'已配对')
 assert.equal(validationBenchmarkState({state:'pending'}),'待成熟')
+assert.equal(validationPeriod('research'),'研究期')
+assert.equal(validationPeriod('validation'),'验证期')
+assert.equal(validationPeriod(''),'全区间')
 assert.equal(validationState('pending'),'待成熟')
 assert.equal(validationState('unavailable'),'数据缺失')
 assert.equal(validationOutcome({outcomes:[{horizon:5,state:'mature',direction_return:0}]},5).direction_return,0)

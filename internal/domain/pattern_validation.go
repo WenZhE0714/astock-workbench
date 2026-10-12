@@ -3,10 +3,11 @@ package domain
 import "time"
 
 type PatternValidationRequest struct {
-	PriceBasis string   `json:"price_basis,omitempty"`
-	Symbols    []string `json:"symbols"`
-	Start      string   `json:"start"`
-	End        string   `json:"end"`
+	ValidationStart string   `json:"validation_start,omitempty"`
+	PriceBasis      string   `json:"price_basis,omitempty"`
+	Symbols         []string `json:"symbols"`
+	Start           string   `json:"start"`
+	End             string   `json:"end"`
 }
 
 type PatternValidationInput struct {
@@ -57,6 +58,7 @@ type PatternValidationOutcome struct {
 	Detail          string                   `json:"detail,omitempty"`
 	ActionCheck     *PatternActionCheck      `json:"action_check,omitempty"`
 	Benchmark       *PatternBenchmarkOutcome `json:"benchmark,omitempty"`
+	PeriodCheck     *PatternPeriodCheck      `json:"period_check,omitempty"`
 }
 
 type PatternBenchmarkSpec struct {
@@ -77,6 +79,7 @@ type PatternBenchmarkOutcome struct {
 }
 
 type PatternValidationSample struct {
+	Period              string                     `json:"period,omitempty"`
 	ID                  string                     `json:"id"`
 	Symbol              string                     `json:"symbol"`
 	PatternID           string                     `json:"pattern_id"`
@@ -111,6 +114,7 @@ type PatternValidationReport struct {
 	ActionCoverage []CorporateActionSnapshot   `json:"action_coverage,omitempty"`
 	Adjustments    []PatternAdjustment         `json:"adjustments,omitempty"`
 	Benchmark      *PatternBenchmarkSpec       `json:"benchmark,omitempty"`
+	Study          *PatternValidationStudy     `json:"study,omitempty"`
 }
 
 type PatternValidationTotals struct {
@@ -130,6 +134,7 @@ type PatternValidationTotals struct {
 	InvalidationRate              *float64 `json:"invalidation_rate"`
 	BenchmarkPaired               int      `json:"benchmark_paired"`
 	BenchmarkUnpaired             int      `json:"benchmark_unpaired"`
+	BoundaryExcluded              int      `json:"boundary_excluded"`
 	PositiveExcess                int      `json:"positive_excess"`
 	PositiveDirectionExcess       int      `json:"positive_direction_excess"`
 	AveragePairedPriceReturn      *float64 `json:"average_paired_price_return"`

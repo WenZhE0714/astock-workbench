@@ -8,6 +8,7 @@ import (
 )
 
 type PatternValidationFilter struct {
+	Period  string `json:"period"`
 	Pattern string `json:"pattern"`
 	Bias    string `json:"bias"`
 	Regime  string `json:"regime"`
@@ -25,9 +26,19 @@ type PatternValidationView struct {
 	Groups  []domain.PatternValidationGroup  `json:"groups"`
 	Samples []domain.PatternValidationSample `json:"samples"`
 	Total   int                              `json:"total"`
+	Periods []domain.PatternPeriodSummary    `json:"periods,omitempty"`
 }
 
 func PatternValidationResult(report domain.PatternValidationReport, filter PatternValidationFilter) (PatternValidationView, error) {
+	if filter.Period != "" && filter.Period != "research" && filter.Period != "validation" {
+		return PatternValidationView{}, fmt.Errorf("无效评估时段")
+	}
+	if report.Study == nil && filter.Period != "" {
+		return PatternValidationView{}, fmt.Errorf("此归档未冻结分期配置")
+	}
+	if report.Study != nil && filter.Period == "" {
+		filter.Period = "validation"
+	}
 	if filter.Horizon == 0 {
 		filter.Horizon = 5
 	}
@@ -42,8 +53,13 @@ func PatternValidationResult(report domain.PatternValidationReport, filter Patte
 	}
 	view := PatternValidationView{Report: report, Filter: filter, Groups: []domain.PatternValidationGroup{}, Samples: []domain.PatternValidationSample{}}
 	view.Report.Inputs, view.Report.Samples = nil, nil
+	if report.Study != nil && filter.Period == "research" {
+		evidence := report.Study.Research
+		view.Report.Cutoff, view.Report.Coverage, view.Report.ActionCoverage, view.Report.Adjustments = evidence.Cutoff, evidence.Coverage, evidence.ActionCoverage, evidence.Adjustments
+		view.Report.InputHash = evidence.InputHash
+	}
 	selected := []domain.PatternValidationSample{}
-	grouped := map[string][]domain.PatternValidationSample{}
+	periodSamples := map[string][]domain.PatternValidationSample{"research": {}, "validation": {}}
 	for _, sample := range report.Samples {
 		if filter.Action != "" && filter.Action != patternActionState(sample, filter.Horizon) {
 			continue
@@ -51,11 +67,39 @@ func PatternValidationResult(report domain.PatternValidationReport, filter Patte
 		if (filter.Pattern != "" && sample.PatternID != filter.Pattern) || (filter.Bias != "" && sample.Bias != filter.Bias) || (filter.Regime != "" && sample.Regime != filter.Regime) || (filter.State != "" && sample.State != filter.State) {
 			continue
 		}
+		if report.Study != nil {
+			periodSamples[sample.Period] = append(periodSamples[sample.Period], sample)
+			if sample.Period != filter.Period {
+				continue
+			}
+		}
 		selected = append(selected, sample)
+	}
+	if report.Study != nil {
+		for _, period := range []string{"research", "validation"} {
+			start, end := report.Request.Start, report.Study.Config.ResearchEnd
+			if period == "validation" {
+				start, end = report.Study.Config.ValidationStart, report.Study.Config.DataCutoff
+			}
+			items := periodSamples[period]
+			view.Periods = append(view.Periods, domain.PatternPeriodSummary{Period: period, Start: start, End: end, Totals: SummarizePatternValidation(items, filter.Horizon), Groups: patternValidationGroups(items, filter.Horizon)})
+		}
+	}
+	view.Totals, view.Total = SummarizePatternValidation(selected, filter.Horizon), len(selected)
+	view.Groups = patternValidationGroups(selected, filter.Horizon)
+	start := min(filter.Offset, len(selected))
+	end := min(start+filter.Limit, len(selected))
+	view.Samples = append(view.Samples, selected[start:end]...)
+	return view, nil
+}
+
+func patternValidationGroups(samples []domain.PatternValidationSample, horizon int) []domain.PatternValidationGroup {
+	groups := []domain.PatternValidationGroup{}
+	grouped := map[string][]domain.PatternValidationSample{}
+	for _, sample := range samples {
 		key := sample.PatternID + "|" + sample.Bias + "|" + sample.Regime
 		grouped[key] = append(grouped[key], sample)
 	}
-	view.Totals, view.Total = SummarizePatternValidation(selected, filter.Horizon), len(selected)
 	keys := []string{}
 	for key := range grouped {
 		keys = append(keys, key)
@@ -64,12 +108,9 @@ func PatternValidationResult(report domain.PatternValidationReport, filter Patte
 	for _, key := range keys {
 		samples := grouped[key]
 		first := samples[0]
-		view.Groups = append(view.Groups, domain.PatternValidationGroup{PatternID: first.PatternID, Name: first.Name, Bias: first.Bias, Regime: first.Regime, Totals: SummarizePatternValidation(samples, filter.Horizon)})
+		groups = append(groups, domain.PatternValidationGroup{PatternID: first.PatternID, Name: first.Name, Bias: first.Bias, Regime: first.Regime, Totals: SummarizePatternValidation(samples, horizon)})
 	}
-	start := min(filter.Offset, len(selected))
-	end := min(start+filter.Limit, len(selected))
-	view.Samples = append(view.Samples, selected[start:end]...)
-	return view, nil
+	return groups
 }
 
 func SummarizePatternValidation(samples []domain.PatternValidationSample, horizon int) domain.PatternValidationTotals {
@@ -84,6 +125,10 @@ func SummarizePatternValidation(samples []domain.PatternValidationSample, horizo
 		}
 		for _, outcome := range sample.Outcomes {
 			if outcome.Horizon != horizon {
+				continue
+			}
+			if outcome.PeriodCheck != nil && outcome.PeriodCheck.State == "excluded" {
+				totals.BoundaryExcluded++
 				continue
 			}
 			if outcome.ActionCheck != nil {
