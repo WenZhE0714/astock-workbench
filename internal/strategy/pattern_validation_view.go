@@ -75,6 +75,7 @@ func PatternValidationResult(report domain.PatternValidationReport, filter Patte
 func SummarizePatternValidation(samples []domain.PatternValidationSample, horizon int) domain.PatternValidationTotals {
 	totals := domain.PatternValidationTotals{Samples: len(samples)}
 	price, direction, favorable, adverse, failed := 0.0, 0.0, 0.0, 0.0, 0.0
+	pairedPrice, benchmark, excess, directionExcess := 0.0, 0.0, 0.0, 0.0
 	for _, sample := range samples {
 		if sample.ConfirmedOn != "" {
 			totals.Confirmed++
@@ -116,6 +117,22 @@ func SummarizePatternValidation(samples []domain.PatternValidationSample, horizo
 				if *outcome.Invalidated {
 					failed++
 				}
+				if validPatternBenchmark(outcome.Benchmark) {
+					comparison := outcome.Benchmark
+					totals.BenchmarkPaired++
+					pairedPrice += *outcome.PriceReturn
+					benchmark += *comparison.Return
+					excess += *comparison.ExcessReturn
+					directionExcess += *comparison.DirectionExcessReturn
+					if *comparison.ExcessReturn > 0 {
+						totals.PositiveExcess++
+					}
+					if *comparison.DirectionExcessReturn > 0 {
+						totals.PositiveDirectionExcess++
+					}
+				} else {
+					totals.BenchmarkUnpaired++
+				}
 			}
 		}
 	}
@@ -123,6 +140,12 @@ func SummarizePatternValidation(samples []domain.PatternValidationSample, horizo
 		count := float64(totals.Mature)
 		totals.AveragePriceReturn, totals.AverageDirectionReturn = chartNumber(price/count), chartNumber(direction/count)
 		totals.AverageFavorable, totals.AverageAdverse, totals.InvalidationRate = chartNumber(favorable/count), chartNumber(adverse/count), chartNumber(failed/count*100)
+	}
+	if totals.BenchmarkPaired > 0 {
+		count := float64(totals.BenchmarkPaired)
+		totals.AveragePairedPriceReturn, totals.AverageBenchmarkReturn = chartNumber(pairedPrice/count), chartNumber(benchmark/count)
+		totals.AverageExcessReturn, totals.AverageDirectionExcessReturn = chartNumber(excess/count), chartNumber(directionExcess/count)
+		totals.PositiveExcessRate, totals.PositiveDirectionExcessRate = chartNumber(float64(totals.PositiveExcess)/count*100), chartNumber(float64(totals.PositiveDirectionExcess)/count*100)
 	}
 	return totals
 }

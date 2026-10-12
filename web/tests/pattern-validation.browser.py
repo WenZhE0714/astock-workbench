@@ -31,6 +31,9 @@ with sync_playwright() as p:
         result = run.value.json()
         run_id = result['report']['run_id']
         assert result['totals']['mature'] >= 2
+        assert result['report']['benchmark']['symbol'] == 'sh000300'
+        assert result['totals']['benchmark_paired'] == result['totals']['mature']
+        expect(page.get_by_role('heading', name='同期基准对照', exact=True)).to_be_visible()
         expect(page.locator('.pv-group-table tbody tr').first).to_be_visible()
         coverage = page.locator('[data-coverage-symbol="sh600007"]')
         expect(coverage).to_contain_text('区间取数')
@@ -51,6 +54,8 @@ with sync_playwright() as p:
         expect(page.locator('.pv-outcome')).to_have_count(3)
         expect(page.locator('.pv-outcome [data-action-state="affected"]')).to_have_count(2)
         expect(page.locator('.pv-outcome [data-action-state="clear"]')).to_have_count(1)
+        expect(page.locator('.pv-benchmark-outcome[data-benchmark-state="matched"]')).to_have_count(3)
+        expect(page.locator('.pv-benchmark')).to_contain_text('0 / 0')
         sample = next(item for item in result['samples'] if item['pattern_id'] == 'head-shoulders-bottom')
         page.get_by_role('button', name='查看识别日 '+sample['id'], exact=True).click()
         expect(page.locator('.chart-analysis-date')).to_contain_text(sample['observed_on'])
@@ -78,9 +83,13 @@ with sync_playwright() as p:
         assert exported['inputs'][0]['fetch_mode'] == 'range'
         assert exported['inputs'][0]['fetch_end'] == '2026-09-25'
         assert exported['inputs'][0]['actions']['events'][0]['id'] == 'browser-dividend'
+        assert exported['benchmark']['price_basis'] == 'price-index'
+        exported_sample = next(item for item in exported['samples'] if item['id'] == sample['id'])
+        assert all(item['benchmark']['state'] == 'matched' for item in exported_sample['outcomes'])
         page.get_by_label('筛选验证方向', exact=True).select_option('bearish')
         expect(page.locator('.pv-sample')).to_have_count(0)
-        expect(page.locator('.pv-totals')).to_contain_text('--')
+        expect(page.locator('.pv-totals').first).to_contain_text('--')
+        expect(page.locator('.pv-benchmark')).to_contain_text('--')
         page.reload(wait_until='networkidle')
         page.get_by_label('形态验证归档', exact=True).select_option(run_id)
         expect(page.locator('.pv-sample').first).to_be_visible()
@@ -107,7 +116,7 @@ with sync_playwright() as p:
             page.get_by_role('button', name='运行验证', exact=True).click()
         assert adjusted_run.value.status == 200, adjusted_run.value.text()
         adjusted_result = adjusted_run.value.json()
-        assert adjusted_result['report']['version'] == 'pattern-validation-v5'
+        assert adjusted_result['report']['version'] == 'pattern-validation-v6'
         assert all(item['quality_status'] == 'passed' for item in adjusted_result['report']['adjustments'])
         assert adjusted_result['report']['adjustments'][1]['quality'][0]['share_ratio'] == 1.5
         expect(page.locator('.pv-basis')).to_contain_text('后复权研究')
@@ -122,6 +131,11 @@ with sync_playwright() as p:
         page.locator('.pv-sample > summary').click()
         expect(page.locator('.pv-outcome [data-action-state="adjusted"]')).to_have_count(2)
         adjusted_sample = next(item for item in adjusted_result['samples'] if item['pattern_id'] == 'head-shoulders-bottom')
+        comparison = next(item for item in adjusted_sample['outcomes'] if item['horizon'] == 20)['benchmark']
+        expect(page.locator('.pv-benchmark')).to_contain_text('1 / 1')
+        expect(page.locator('.pv-benchmark')).to_contain_text(f"{comparison['return']:.2f}%")
+        expect(page.locator('.pv-benchmark')).to_contain_text(f"{comparison['excess_return']:.2f}")
+        expect(page.locator('.pv-benchmark-outcome').last).to_contain_text('个百分点')
         for width in [1440,390,320]:
             page.set_viewport_size({'width':width,'height':1100 if width>600 else 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
@@ -159,6 +173,21 @@ with sync_playwright() as p:
         expect(page.locator('[data-quality-state="mismatch"]')).to_contain_text('数值不一致')
         expect(page.locator('[data-quality-state="mismatch"]')).to_contain_text('0.0200')
         page.unroute('**/api/pattern-validation?*', mismatch)
+
+        def legacy_benchmark(route):
+            payload = json.loads(json.dumps(adjusted_result))
+            payload['report']['version'] = 'pattern-validation-v5'
+            payload['report'].pop('benchmark', None)
+            for sample in payload['samples']:
+                for outcome in sample['outcomes']:
+                    outcome.pop('benchmark', None)
+            payload['totals'].update(benchmark_paired=0, benchmark_unpaired=payload['totals']['mature'], average_benchmark_return=None, average_paired_price_return=None, average_excess_return=None, average_direction_excess_return=None, positive_excess_rate=None, positive_direction_excess_rate=None)
+            route.fulfill(status=200, json=payload)
+        page.route('**/api/pattern-validation?*', legacy_benchmark)
+        page.get_by_role('button', name='20日', exact=True).click()
+        expect(page.locator('.pv-benchmark')).to_contain_text('旧归档未记录同期基准收益')
+        expect(page.locator('.pv-benchmark')).to_contain_text('--')
+        page.unroute('**/api/pattern-validation?*', legacy_benchmark)
 
         pending = []
         page.route('**/api/pattern-validation', lambda route: pending.append(route) if route.request.method == 'POST' else route.continue_())

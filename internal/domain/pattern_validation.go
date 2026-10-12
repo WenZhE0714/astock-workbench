@@ -45,17 +45,35 @@ type PatternValidationCoverage struct {
 }
 
 type PatternValidationOutcome struct {
-	Horizon         int                 `json:"horizon"`
-	State           string              `json:"state"`
-	Through         string              `json:"through,omitempty"`
-	ObservedDays    int                 `json:"observed_days"`
-	PriceReturn     *float64            `json:"price_return"`
-	DirectionReturn *float64            `json:"direction_return"`
-	Favorable       *float64            `json:"favorable"`
-	Adverse         *float64            `json:"adverse"`
-	Invalidated     *bool               `json:"invalidated"`
-	Detail          string              `json:"detail,omitempty"`
-	ActionCheck     *PatternActionCheck `json:"action_check,omitempty"`
+	Horizon         int                      `json:"horizon"`
+	State           string                   `json:"state"`
+	Through         string                   `json:"through,omitempty"`
+	ObservedDays    int                      `json:"observed_days"`
+	PriceReturn     *float64                 `json:"price_return"`
+	DirectionReturn *float64                 `json:"direction_return"`
+	Favorable       *float64                 `json:"favorable"`
+	Adverse         *float64                 `json:"adverse"`
+	Invalidated     *bool                    `json:"invalidated"`
+	Detail          string                   `json:"detail,omitempty"`
+	ActionCheck     *PatternActionCheck      `json:"action_check,omitempty"`
+	Benchmark       *PatternBenchmarkOutcome `json:"benchmark,omitempty"`
+}
+
+type PatternBenchmarkSpec struct {
+	Symbol     string `json:"symbol"`
+	Name       string `json:"name"`
+	PriceBasis string `json:"price_basis"`
+	Method     string `json:"method"`
+}
+
+type PatternBenchmarkOutcome struct {
+	State                 string   `json:"state"`
+	Start                 string   `json:"start,omitempty"`
+	End                   string   `json:"end,omitempty"`
+	Return                *float64 `json:"return"`
+	ExcessReturn          *float64 `json:"excess_return"`
+	DirectionExcessReturn *float64 `json:"direction_excess_return"`
+	Detail                string   `json:"detail,omitempty"`
 }
 
 type PatternValidationSample struct {
@@ -92,6 +110,7 @@ type PatternValidationReport struct {
 	Inputs         []PatternValidationInput    `json:"inputs,omitempty"`
 	ActionCoverage []CorporateActionSnapshot   `json:"action_coverage,omitempty"`
 	Adjustments    []PatternAdjustment         `json:"adjustments,omitempty"`
+	Benchmark      *PatternBenchmarkSpec       `json:"benchmark,omitempty"`
 }
 
 type PatternValidationTotals struct {
@@ -109,6 +128,16 @@ type PatternValidationTotals struct {
 	AverageFavorable              *float64 `json:"average_favorable"`
 	AverageAdverse                *float64 `json:"average_adverse"`
 	InvalidationRate              *float64 `json:"invalidation_rate"`
+	BenchmarkPaired               int      `json:"benchmark_paired"`
+	BenchmarkUnpaired             int      `json:"benchmark_unpaired"`
+	PositiveExcess                int      `json:"positive_excess"`
+	PositiveDirectionExcess       int      `json:"positive_direction_excess"`
+	AveragePairedPriceReturn      *float64 `json:"average_paired_price_return"`
+	AverageBenchmarkReturn        *float64 `json:"average_benchmark_return"`
+	AverageExcessReturn           *float64 `json:"average_excess_return"`
+	AverageDirectionExcessReturn  *float64 `json:"average_direction_excess_return"`
+	PositiveExcessRate            *float64 `json:"positive_excess_rate"`
+	PositiveDirectionExcessRate   *float64 `json:"positive_direction_excess_rate"`
 }
 
 type PatternValidationGroup struct {

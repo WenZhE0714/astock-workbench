@@ -15,7 +15,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
-const PatternValidationVersion = "pattern-validation-v5"
+const PatternValidationVersion = "pattern-validation-v6"
 const PatternValidationWarmupDays = 240
 
 func ValidatePatternValidationRequest(request domain.PatternValidationRequest, now time.Time) (string, error) {
@@ -135,6 +135,11 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		"事件隔离属于基于当前供应商记录的历史数据质量检查，不代表当时已知的信息，也不改变原始形态识别及冻结计划。",
 		"同一冻结结构只计一次；识别后30根日K内未确认则观察到期。统计为描述性结果，小样本不能证明形态有效。",
 	}}
+	report.Benchmark = &domain.PatternBenchmarkSpec{Symbol: "sh000300", Name: "沪深300", PriceBasis: "price-index", Method: patternBenchmarkMethod}
+	report.Warnings = append(report.Warnings,
+		"基准为沪深300价格指数（非全收益指数），使用确认日收盘至同一窗口末日收盘；个股后复权与指数的分红口径不同，差值仅为价格表现对照。",
+		"超额为个股涨跌幅减去基准涨跌幅，单位为百分点；看跌形态的方向超额取反。正超额比例仅以通过公司行动核查的完整配对窗口为分母，绝对值小于1e-10百分点按浮点误差归零。",
+		"基准缺少个股已记录的窗口内交易日时不替换日期；双方共同缺失的日期尚不能通过独立交易日历核验。")
 	if request.PriceBasis == domain.PatternPriceHFQ {
 		report.Warnings[2] = "后复权价格涨跌以复权确认收盘为基准，不代表实际成交价或含税费的账户收益；看跌方向表现为价格涨跌取反。"
 		report.Warnings[3] = "研究OHLC = 原始OHLC × 当日新浪后复权因子 / 首根日K因子；研究成交量 = 原始成交量 / 校验通过的累计送转股比例，成交额和换手保留原始口径，沪深300基准不复权。"
@@ -292,7 +297,9 @@ func buildPatternSample(id, symbol string, structure domain.ChartStructure, fing
 	}
 	sample.Regime = string(marketregime.ClassifyBefore(benchmark, sample.RegimeDate))
 	for _, horizon := range []int{5, 10, 20} {
-		sample.Outcomes = append(sample.Outcomes, patternOutcome(sample, bars, confirmedIndex, benchmark, horizon))
+		outcome := patternOutcome(sample, bars, confirmedIndex, benchmark, horizon)
+		outcome.Benchmark = comparePatternBenchmark(sample, outcome, benchmark)
+		sample.Outcomes = append(sample.Outcomes, outcome)
 	}
 	return sample
 }
@@ -309,7 +316,24 @@ func patternOutcome(sample domain.PatternValidationSample, bars []domain.DailyBa
 	}
 	available := min(horizon, len(benchmark)-index-1)
 	outcome.ObservedDays = available
+	knownDates := map[string]bool{}
+	for _, day := range benchmark[index : index+available+1] {
+		knownDates[day.Date] = true
+	}
+	for _, bar := range bars[confirmed+1:] {
+		if bar.Date > benchmark[index+available].Date {
+			break
+		}
+		if !knownDates[bar.Date] {
+			outcome.State, outcome.Detail = "unavailable", "基准缺少个股已记录的交易日: "+bar.Date
+			return outcome
+		}
+	}
 	if available < horizon {
+		if len(bars)-confirmed-1 >= horizon {
+			outcome.State, outcome.Detail = "unavailable", "基准尚未覆盖个股已记录的完整观察窗口"
+			return outcome
+		}
 		outcome.State, outcome.Detail = "pending", "等待后续基准交易日或日K补齐"
 		return outcome
 	}

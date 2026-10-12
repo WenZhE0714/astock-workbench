@@ -3,6 +3,8 @@ export const validationPatterns = [
   ['head-shoulders-bottom','头肩底'], ['head-shoulders-top','头肩顶'], ['bull-flag','看涨旗形'], ['bear-flag','看跌旗形'],
 ]
 export function validationPercent(value) { return value == null || !Number.isFinite(Number(value)) ? '--' : `${Number(value).toFixed(2)}%` }
+export function validationPoints(value) { return value == null || !Number.isFinite(Number(value)) ? '--' : `${Number(value).toFixed(2)} 个百分点` }
+export function validationBenchmarkState(comparison) { return comparison == null ? '旧归档未记录' : comparison.state === 'matched' ? '已配对' : validationState(comparison.state) }
 export function validationState(state) { return {watching:'待确认',forming:'待确认',confirmed:'已确认',invalidated:'已失效',expired:'观察到期',mature:'已成熟',pending:'待成熟',unavailable:'数据缺失',unconfirmed:'未确认'}[state] || '--' }
 export function validationOutcome(sample,horizon) { return sample?.outcomes?.find(item => item.horizon === Number(horizon)) || {state:'unconfirmed'} }
 export function validationSymbols(value) { return [...new Set(String(value || '').split(/[\s,，、;；]+/).map(item=>item.trim()).filter(Boolean))] }
