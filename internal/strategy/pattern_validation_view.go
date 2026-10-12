@@ -12,6 +12,7 @@ type PatternValidationFilter struct {
 	Bias    string `json:"bias"`
 	Regime  string `json:"regime"`
 	State   string `json:"state"`
+	Action  string `json:"action"`
 	Horizon int    `json:"horizon"`
 	Offset  int    `json:"offset"`
 	Limit   int    `json:"limit"`
@@ -36,11 +37,17 @@ func PatternValidationResult(report domain.PatternValidationReport, filter Patte
 	if (filter.Horizon != 5 && filter.Horizon != 10 && filter.Horizon != 20) || filter.Offset < 0 || filter.Limit < 1 || filter.Limit > 100 {
 		return PatternValidationView{}, fmt.Errorf("窗口须为5、10或20，分页数量须为1至100")
 	}
+	if filter.Action != "" && filter.Action != "clear" && filter.Action != "affected" && filter.Action != "unverified" && filter.Action != "legacy" && filter.Action != "adjusted" {
+		return PatternValidationView{}, fmt.Errorf("无效公司行动筛选")
+	}
 	view := PatternValidationView{Report: report, Filter: filter, Groups: []domain.PatternValidationGroup{}, Samples: []domain.PatternValidationSample{}}
 	view.Report.Inputs, view.Report.Samples = nil, nil
 	selected := []domain.PatternValidationSample{}
 	grouped := map[string][]domain.PatternValidationSample{}
 	for _, sample := range report.Samples {
+		if filter.Action != "" && filter.Action != patternActionState(sample, filter.Horizon) {
+			continue
+		}
 		if (filter.Pattern != "" && sample.PatternID != filter.Pattern) || (filter.Bias != "" && sample.Bias != filter.Bias) || (filter.Regime != "" && sample.Regime != filter.Regime) || (filter.State != "" && sample.State != filter.State) {
 			continue
 		}
@@ -77,6 +84,19 @@ func SummarizePatternValidation(samples []domain.PatternValidationSample, horizo
 		for _, outcome := range sample.Outcomes {
 			if outcome.Horizon != horizon {
 				continue
+			}
+			if outcome.ActionCheck != nil {
+				switch outcome.ActionCheck.State {
+				case "affected":
+					totals.ActionAffected++
+					continue
+				case "clear":
+				case "adjusted":
+					totals.ActionAdjusted++
+				default:
+					totals.ActionUnverified++
+					continue
+				}
 			}
 			switch outcome.State {
 			case "pending":

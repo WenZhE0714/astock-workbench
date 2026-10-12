@@ -1090,6 +1090,7 @@ createApp({
       const index = this.bars.findIndex(bar => bar.date === target.date)
       if (index < 19) this.patternValidationChartError = "当前行情日K未覆盖验证日期 " + target.date + "，请在验证归档中查看冻结依据"
       else {
+        if (target.priceBasis === "hfq") this.patternValidationChartError = "当前图表为未复权价格；验证归档中的后复权点位不可直接用于实际价格计划。"
         this.chartStructureID = target.patternID
         this.updateDailyViewport(Math.min(80,index+1),index+1)
         this.scheduleChartAnalysis(true)

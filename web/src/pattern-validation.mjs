@@ -10,3 +10,13 @@ export function validationTone(value) { return value == null ? '' : value>0 ? 'g
 export function validationCoverageStatus(item) {
   return {aligned:'已对齐基准日期',partial:'覆盖有缺口',unavailable:'覆盖无法核验',benchmark:'基准日期参照'}[item?.status] || '旧归档未记录覆盖诊断'
 }
+export function validationActionState(check) {
+  return {clear:'未发现支持范围内事件',affected:'事件隔离',unverified:'公司行动未核验',adjusted:'分红已复权对齐'}[check?.state] || '旧口径未隔离'
+}
+export function validationPriceBasis(value) { return value === 'hfq' ? '后复权研究' : '未复权' }
+export function validationActionKinds(kinds) {
+  return (kinds || []).map(kind=>({'cash-dividend':'现金分红','bonus-share':'送股',capitalization:'转增'}[kind] || kind)).join('、')
+}
+export function validationSourceURL(value) {
+  try { const url = new URL(value); return url.protocol === 'https:' ? url.href : '' } catch { return '' }
+}

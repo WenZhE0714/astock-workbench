@@ -1,5 +1,5 @@
 import { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight } from 'lucide-vue-next'
-import { validationPatterns, validationPercent, validationState, validationOutcome, validationSymbols, validationTone, validationCoverageStatus } from './pattern-validation.mjs'
+import { validationPatterns, validationPercent, validationState, validationOutcome, validationSymbols, validationTone, validationCoverageStatus, validationActionState, validationActionKinds, validationSourceURL, validationPriceBasis } from './pattern-validation.mjs'
 import { shanghaiToday } from './review-calendar.mjs'
 
 export const PatternValidationView = {
@@ -10,14 +10,17 @@ export const PatternValidationView = {
     const today = shanghaiToday(), start = new Date(today+'T12:00:00Z')
     start.setUTCFullYear(start.getUTCFullYear()-1)
     return { symbols:this.selection?.symbols || this.defaultSymbol || '002080', start:this.selection?.start || start.toISOString().slice(0,10), end:this.selection?.end || today,
-      runID:this.selection?.runID || '', pattern:this.selection?.pattern || '', bias:this.selection?.bias || '', regime:this.selection?.regime || '', state:this.selection?.state || '', horizon:this.selection?.horizon || 5, offset:this.selection?.offset || 0,
+      priceBasis:this.selection?.priceBasis || 'raw',
+      runID:this.selection?.runID || '', pattern:this.selection?.pattern || '', bias:this.selection?.bias || '', regime:this.selection?.regime || '', state:this.selection?.state || '', action:this.selection?.action || '', horizon:this.selection?.horizon || 5, offset:this.selection?.offset || 0,
       view:null, runs:[], running:false, loading:false, error:'', controller:null, historyController:null, requestID:0, loadedKey:'', adoptArchive:false, patterns:validationPatterns, today }
   },
   computed: {
-    selectionValue() { return {symbols:this.symbols,start:this.start,end:this.end,runID:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,horizon:this.horizon,offset:this.offset} },
-    filterKey() { return [this.pattern,this.bias,this.regime,this.state,this.horizon].join('|') },
+    selectionValue() { return {symbols:this.symbols,start:this.start,end:this.end,priceBasis:this.priceBasis,runID:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,action:this.action,horizon:this.horizon,offset:this.offset} },
+    filterKey() { return [this.pattern,this.bias,this.regime,this.state,this.action,this.horizon].join('|') },
     requestKey() { return `${this.runID}|${this.filterKey}|${this.offset}` },
     report() { return this.view?.report },
+    adjusted() { return this.report?.request.price_basis === 'hfq' },
+    resultPriceLabel() { return this.adjusted ? '复权' : '原始' },
     totals() { return this.view?.totals || {} },
     busy() { return this.running || this.loading },
     exportURL() { return this.runID ? `/api/pattern-validation?id=${encodeURIComponent(this.runID)}&download=1` : '' },
@@ -29,11 +32,13 @@ export const PatternValidationView = {
   },
   methods: {
     percent:validationPercent, status:validationState, outcome:validationOutcome, tone:validationTone, coverageStatus:validationCoverageStatus,
+    actionStatus:validationActionState, actionKinds:validationActionKinds, sourceURL:validationSourceURL,
+    basisLabel:validationPriceBasis,
     biasLabel(value) { return value === 'bullish' ? '看涨' : '看跌' },
     time(value) { return new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}) },
     number(value) { return value == null ? '--' : Number(value).toFixed(2) },
     cancel() { this.controller?.abort() },
-    open(sample,date) { this.$emit('open-sample',{symbol:sample.symbol,date,patternID:sample.pattern_id,runID:this.runID}) },
+    open(sample,date) { this.$emit('open-sample',{symbol:sample.symbol,date,patternID:sample.pattern_id,runID:this.runID,priceBasis:this.report.request.price_basis || 'raw'}) },
     async history() {
       this.historyController?.abort()
       const controller = new AbortController(); this.historyController = controller
@@ -50,13 +55,14 @@ export const PatternValidationView = {
       if (!this.runID) return
       const controller = new AbortController(); this.controller = controller; this.loading = true
       try {
-        const query = new URLSearchParams({id:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,horizon:String(this.horizon),offset:String(this.offset),limit:'30'})
+        const query = new URLSearchParams({id:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,action:this.action,horizon:String(this.horizon),offset:String(this.offset),limit:'30'})
         const response = await fetch(`/api/pattern-validation?${query}`,{cache:'no-store',signal:controller.signal}), payload = await response.json()
         if (id !== this.requestID) return
         if (!response.ok) throw new Error(payload.error || '读取验证结果失败')
         if (payload.report?.run_id !== this.runID) throw new Error('归档与当前选择不一致，请重试')
         if (this.adoptArchive) {
           this.symbols = payload.report.request.symbols.join(', ')
+          this.priceBasis = payload.report.request.price_basis || 'raw'
           this.start = payload.report.request.start; this.end = payload.report.request.end; this.adoptArchive = false
         }
         this.view = payload; this.loadedKey = key
@@ -70,10 +76,10 @@ export const PatternValidationView = {
       const id = ++this.requestID, controller = new AbortController()
       this.controller = controller; this.running = true; this.loading = false; this.error = ''; this.view = null
       try {
-        const response = await fetch('/api/pattern-validation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbols,start:this.start,end:this.end}),signal:controller.signal}), payload = await response.json()
+        const response = await fetch('/api/pattern-validation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbols,start:this.start,end:this.end,price_basis:this.priceBasis}),signal:controller.signal}), payload = await response.json()
         if (id !== this.requestID) return
         if (!response.ok) throw new Error(payload.error || '运行形态验证失败')
-        this.pattern = ''; this.bias = ''; this.regime = ''; this.state = ''; this.horizon = 5; this.offset = 0
+        this.pattern = ''; this.bias = ''; this.regime = ''; this.state = ''; this.action = ''; this.horizon = 5; this.offset = 0
         this.runID = payload.report.run_id; this.view = payload; this.loadedKey = this.requestKey
         await this.history()
       } catch(error) { if (id === this.requestID) this.error = error.name === 'AbortError' ? '验证已取消' : error.message || String(error) }
@@ -83,11 +89,12 @@ export const PatternValidationView = {
   mounted() { this.history(); if (this.runID) this.load() },
   beforeUnmount() { this.requestID++; this.controller?.abort(); this.historyController?.abort() },
   template: `<section class="pattern-validation" aria-label="形态验证" :aria-busy="busy">
-    <div class="pv-heading"><h2>形态验证</h2><span>历史重建 · 未复权 · 确认后价格表现</span></div>
+    <div class="pv-heading"><h2>形态验证</h2><span>历史重建 · {{ basisLabel(report ? report.request.price_basis : priceBasis) }} · 确认后价格表现</span></div>
     <form class="pv-form" @submit.prevent="run">
       <label class="pv-symbols">股票池<input v-model="symbols" aria-label="验证股票池" placeholder="002080, 600519" required :disabled="running"></label>
       <label>开始日期<input type="date" v-model="start" aria-label="验证开始日期" required :max="end" :disabled="running"></label>
       <label>结束日期<input type="date" v-model="end" aria-label="验证结束日期" required :min="start" :max="today" :disabled="running"></label>
+      <label>价格口径<select v-model="priceBasis" aria-label="验证价格口径" :disabled="running"><option value="raw">未复权</option><option value="hfq">后复权研究</option></select></label>
       <button type="submit" :disabled="busy"><play :size="14"/>{{ running ? '验证中' : '运行验证' }}</button>
       <button v-if="running" type="button" class="icon-button" title="取消验证" aria-label="取消验证" @click="cancel"><square :size="14"/></button>
     </form>
@@ -95,17 +102,21 @@ export const PatternValidationView = {
     <p v-if="error" class="chart-plan-error" role="alert">{{ error }}<button v-if="runID && !running" type="button" class="text-action" @click="load">重试读取</button></p>
     <div class="pv-filters"><div class="dashboard-segment" role="group" aria-label="形态验证窗口"><button v-for="days in [5,10,20]" :key="days" type="button" :aria-pressed="horizon === days" :class="{active:horizon === days}" :disabled="running" @click="horizon = days">{{ days }}日</button></div><select v-model="pattern" aria-label="筛选验证形态" :disabled="running"><option value="">全部形态</option><option v-for="item in patterns" :value="item[0]" :key="item[0]">{{ item[1] }}</option></select><select v-model="bias" aria-label="筛选验证方向" :disabled="running"><option value="">全部方向</option><option value="bullish">看涨</option><option value="bearish">看跌</option></select><select v-model="regime" aria-label="筛选市场阶段" :disabled="running"><option value="">全部市场阶段</option><option v-for="item in ['牛市','熊市','震荡','高波动','数据不足']" :key="item">{{ item }}</option></select><select v-model="state" aria-label="筛选样本状态" :disabled="running"><option value="">全部状态</option><option value="watching">待确认</option><option value="forming">突破待确认</option><option value="confirmed">已确认</option><option value="invalidated">已失效</option><option value="expired">观察到期</option></select></div>
     <p v-if="busy" class="pv-empty" role="status">{{ running ? '正在逐日验证并归档' : '正在读取验证结果' }}</p>
+    <div class="pv-action-filter"><label>公司行动<select v-model="action" aria-label="筛选公司行动" :disabled="running"><option value="">全部核查状态</option><option value="clear">未发现支持范围内事件</option><option value="adjusted">分红已复权对齐</option><option value="affected">事件隔离</option><option value="unverified">公司行动未核验</option><option value="legacy">旧口径未隔离</option></select></label><span v-if="view">{{ horizon }}日 · 事件隔离 {{ totals.action_affected || 0 }} · 未核验 {{ totals.action_unverified || 0 }}<template v-if="adjusted"> · 复权对齐 {{ totals.action_adjusted || 0 }}</template></span></div>
     <template v-if="view">
-      <div class="pv-basis"><span>{{ report.request.start }} 至 {{ report.request.end }} · 数据截止 {{ report.cutoff }}</span><span>{{ report.version }} · {{ time(report.generated_at) }}</span></div>
-      <div class="pv-totals"><div><span>识别 / 确认</span><strong>{{ totals.samples }} / {{ totals.confirmed }}</strong><small>确认前失效 {{ totals.invalidated_before_confirmation }}</small></div><div><span>{{ horizon }}日成熟 / 待成熟</span><strong>{{ totals.mature }} / {{ totals.pending }}</strong><small>数据缺失 {{ totals.unavailable }}</small></div><div><span>平均方向表现</span><strong :class="tone(totals.average_direction_return)">{{ percent(totals.average_direction_return) }}</strong><small>价格涨跌 {{ percent(totals.average_price_return) }}</small></div><div><span>窗口失效率</span><strong>{{ percent(totals.invalidation_rate) }}</strong><small>仅完整成熟窗口</small></div></div>
+      <p v-if="!report.action_coverage" class="pv-action-warning">旧归档未做公司行动隔离，统计沿用原口径。</p>
+      <div class="pv-basis"><span>{{ report.request.start }} 至 {{ report.request.end }} · 数据截止 {{ report.cutoff }} · {{ basisLabel(report.request.price_basis) }}</span><span>{{ report.version }} · {{ time(report.generated_at) }}</span></div>
+      <div class="pv-totals"><div><span>{{ resultPriceLabel }}识别 / 确认</span><strong>{{ totals.samples }} / {{ totals.confirmed }}</strong><small>确认前失效 {{ totals.invalidated_before_confirmation }}</small></div><div><span>{{ horizon }}日纳入统计 / 待成熟</span><strong>{{ totals.mature }} / {{ totals.pending }}</strong><small>数据缺失 {{ totals.unavailable }}</small></div><div><span>平均方向表现</span><strong :class="tone(totals.average_direction_return)">{{ percent(totals.average_direction_return) }}</strong><small>价格涨跌 {{ percent(totals.average_price_return) }}</small></div><div><span>窗口失效率</span><strong>{{ percent(totals.invalidation_rate) }}</strong><small>仅纳入统计的成熟窗口</small></div></div>
       <div class="pv-section-title"><h3>形态与市场阶段</h3><span>{{ view.groups.length }} 组 · {{ horizon }}日窗口</span></div>
-      <table class="pv-group-table" v-if="view.groups.length"><thead><tr><th>形态 / 方向 / 市场</th><th>识别 / 确认</th><th>成熟 / 待成熟 / 缺失</th><th>价格涨跌</th><th>方向表现</th><th>有利 / 不利波动</th><th>失效率</th></tr></thead><tbody><tr v-for="group in view.groups" :key="group.pattern_id + group.regime"><td data-label="形态"><strong>{{ group.name }}</strong><small>{{ biasLabel(group.bias) }} · {{ group.regime }}</small></td><td data-label="识别 / 确认">{{ group.totals.samples }} / {{ group.totals.confirmed }}</td><td data-label="成熟 / 待成熟 / 缺失">{{ group.totals.mature }} / {{ group.totals.pending }} / {{ group.totals.unavailable }}<small v-if="group.totals.mature < 20">样本不足20</small></td><td data-label="价格涨跌" :class="tone(group.totals.average_price_return)">{{ percent(group.totals.average_price_return) }}</td><td data-label="方向表现" :class="tone(group.totals.average_direction_return)">{{ percent(group.totals.average_direction_return) }}</td><td data-label="有利 / 不利">{{ percent(group.totals.average_favorable) }} / {{ percent(group.totals.average_adverse) }}</td><td data-label="失效率">{{ percent(group.totals.invalidation_rate) }}</td></tr></tbody></table>
+      <table class="pv-group-table" v-if="view.groups.length"><thead><tr><th>形态 / 方向 / 市场</th><th>识别 / 确认</th><th>纳入 / 待成熟 / 缺失</th><th>价格涨跌</th><th>方向表现</th><th>有利 / 不利波动</th><th>失效率</th></tr></thead><tbody><tr v-for="group in view.groups" :key="group.pattern_id + group.regime"><td data-label="形态"><strong>{{ group.name }}</strong><small>{{ biasLabel(group.bias) }} · {{ group.regime }}</small></td><td data-label="识别 / 确认">{{ group.totals.samples }} / {{ group.totals.confirmed }}</td><td data-label="纳入 / 待成熟 / 缺失">{{ group.totals.mature }} / {{ group.totals.pending }} / {{ group.totals.unavailable }}<small v-if="group.totals.mature < 20">样本不足20</small></td><td data-label="价格涨跌" :class="tone(group.totals.average_price_return)">{{ percent(group.totals.average_price_return) }}</td><td data-label="方向表现" :class="tone(group.totals.average_direction_return)">{{ percent(group.totals.average_direction_return) }}</td><td data-label="有利 / 不利">{{ percent(group.totals.average_favorable) }} / {{ percent(group.totals.average_adverse) }}</td><td data-label="失效率">{{ percent(group.totals.invalidation_rate) }}</td></tr></tbody></table>
       <p v-else class="pv-empty">当前条件下没有样本</p>
       <div class="pv-section-title"><h3>样本明细</h3><span>{{ view.total }} 条</span></div>
-      <details class="pv-sample" v-for="sample in view.samples" :key="sample.id" :data-sample-id="sample.id"><summary><strong>{{ sample.symbol }} · {{ sample.name }}</strong><span>{{ sample.observed_on }}</span><span>{{ status(sample.state) }}</span><span>{{ status(outcome(sample,horizon).state) }}</span><b :class="tone(outcome(sample,horizon).direction_return)">{{ percent(outcome(sample,horizon).direction_return) }}</b></summary>
+      <details class="pv-sample" v-for="sample in view.samples" :key="sample.id" :data-sample-id="sample.id"><summary><strong>{{ sample.symbol }} · {{ sample.name }}</strong><span>{{ sample.observed_on }}</span><span>{{ status(sample.state) }}</span><span>{{ status(outcome(sample,horizon).state) }} · {{ actionStatus(outcome(sample,horizon).action_check) }}</span><b :class="tone(outcome(sample,horizon).direction_return)">{{ resultPriceLabel }} {{ percent(outcome(sample,horizon).direction_return) }}</b></summary>
+        <p v-if="adjusted" class="pv-action-warning">后复权研究点位 · 个股图表显示未复权价格</p>
         <ol class="pv-timeline"><li><span>首次识别</span><button type="button" :aria-label="'查看识别日 ' + sample.id" @click="open(sample,sample.observed_on)">{{ sample.observed_on }}<arrow-up-right :size="13"/></button></li><li><span>收盘确认</span><button v-if="sample.confirmed_on" type="button" :aria-label="'查看确认日 ' + sample.id" @click="open(sample,sample.confirmed_on)">{{ sample.confirmed_on }}<arrow-up-right :size="13"/></button><b v-else>--</b></li><li><span>失效 / 到期</span><b>{{ sample.invalidated_on || sample.expired_on || '--' }}</b></li><li><span>确认收盘 / 市场</span><b>{{ number(sample.confirmation_close) }} · {{ sample.regime }}</b></li></ol>
         <div class="pv-sample-levels"><span>冻结确认价 {{ number(sample.snapshot.pattern.trigger_price) }}</span><span>冻结失效位 {{ number(sample.snapshot.pattern.invalidation_price) }}</span><span>市场分类日 {{ sample.regime_date }}</span></div>
-        <div class="pv-outcome" v-for="result in sample.outcomes" :key="result.horizon"><strong>{{ result.horizon }}日 · {{ status(result.state) }}</strong><span>价格 {{ percent(result.price_return) }} · 方向 {{ percent(result.direction_return) }}</span><span>有利 {{ percent(result.favorable) }} · 不利 {{ percent(result.adverse) }}</span><small>{{ result.detail || (result.through ? '截至 ' + result.through + ' · ' + (result.invalidated ? '窗口内触及失效位' : '窗口内未触及失效位') : '') }}</small></div>
+        <div v-if="sample.action_check" class="pv-action-check"><strong>识别与确认核查 · {{ actionStatus(sample.action_check) }}</strong><p>{{ sample.action_check.start }} 至 {{ sample.action_check.end }} · {{ sample.action_check.detail }}</p></div>
+        <div class="pv-outcome" v-for="result in sample.outcomes" :key="result.horizon"><strong>{{ result.horizon }}日 · {{ status(result.state) }}</strong><span>{{ resultPriceLabel }}价格 {{ percent(result.price_return) }} · 方向 {{ percent(result.direction_return) }}</span><span>有利 {{ percent(result.favorable) }} · 不利 {{ percent(result.adverse) }}</span><small>{{ result.detail || (result.through ? '截至 ' + result.through + ' · ' + (result.invalidated ? '窗口内触及失效位' : '窗口内未触及失效位') : '') }}</small><div v-if="result.action_check" class="pv-action-check" :data-action-state="result.action_check.state"><strong>{{ actionStatus(result.action_check) }}</strong><p>{{ result.action_check.start }} 至 {{ result.action_check.end }} · {{ result.action_check.detail }}</p><p v-for="event in result.action_check.events" :key="event.id">{{ event.ex_date }} · {{ actionKinds(event.kinds) }} · {{ event.description }}</p></div></div>
         <details class="pv-evidence"><summary>识别日冻结依据</summary><p v-for="evidence in sample.snapshot.evidence" :key="evidence">{{ evidence }}</p><p class="pv-hash">快照 {{ sample.snapshot_fingerprint }}</p></details>
       </details>
       <div class="pv-pagination" v-if="view.total > 30"><button class="icon-button" type="button" title="上一页" aria-label="上一页样本" :disabled="busy || offset === 0" @click="offset = Math.max(0,offset-30)"><chevron-left :size="16"/></button><span>{{ Math.floor(offset/30)+1 }} / {{ Math.ceil(view.total/30) }}</span><button class="icon-button" type="button" title="下一页" aria-label="下一页样本" :disabled="busy || offset+30 >= view.total" @click="offset += 30"><chevron-right :size="16"/></button></div>
@@ -116,6 +127,8 @@ export const PatternValidationView = {
         <div class="pv-coverage-detail" v-if="item.fetch_start || item.notes?.length"><p v-if="item.fetch_start">{{ item.fetch_mode === 'range' ? '区间取数' : '近期快照' }} · {{ item.fetch_start }} 至 {{ item.fetch_end }}</p><p v-if="item.reference_start">基准参照 {{ item.reference_start }} 至 {{ item.reference_end }}</p><p v-for="note in item.notes" :key="note">{{ note }}</p></div>
         <details v-if="item.missing_dates?.length" class="pv-gaps"><summary>缺失日期 {{ item.missing_dates.length }} 日 · 原因未确认</summary><p>{{ item.missing_dates.join('、') }}</p></details>
       </div></details>
+      <details v-if="report.action_coverage" class="pv-actions" open><summary>分红送转记录</summary><div v-for="item in report.action_coverage" :key="item.symbol" :data-actions-symbol="item.symbol"><div class="pv-section-title"><strong>{{ item.symbol }} · {{ item.status === 'checked' ? '已查询' : '未核验' }}</strong><a v-if="sourceURL(item.source_url)" :href="sourceURL(item.source_url)" target="_blank" rel="noopener noreferrer">{{ item.source }}<arrow-up-right :size="12"/></a></div><p>{{ item.start || '--' }} 至 {{ item.end || '--' }} · {{ item.events.length }} 条记录<span v-if="item.fetched_at && !item.fetched_at.startsWith('0001')"> · 采集 {{ time(item.fetched_at) }}</span></p><p v-if="item.error" class="pv-action-warning">{{ item.error }}</p><p>供应商实施分配记录 · 仅现金分红、送股、转增 · 未逐条核验官方披露</p><ol><li v-for="event in item.events" :key="event.id"><strong>{{ event.ex_date }} · {{ actionKinds(event.kinds) }}</strong><span>{{ event.description }}</span><small>公告 {{ event.notice_date || '--' }} · 登记 {{ event.record_date || '--' }}</small></li></ol></div></details>
+      <details v-if="report.adjustments?.length" class="pv-actions pv-adjustments" open><summary>复权因子</summary><div v-for="item in report.adjustments" :key="item.symbol" :data-adjustment-symbol="item.symbol"><div class="pv-section-title"><strong>{{ item.symbol }} · {{ item.status === 'applied' ? '已应用' : '不可用' }}</strong><a v-if="sourceURL(item.source_url)" :href="sourceURL(item.source_url)" target="_blank" rel="noopener noreferrer">{{ item.source }}<arrow-up-right :size="12"/></a></div><p>{{ item.start || '--' }} 至 {{ item.end }} · {{ item.factor_count }} 个有效因子</p><p>归一基准 {{ item.anchor_date || '--' }} · 因子 {{ item.anchor_factor || '--' }}</p><p v-if="item.error" class="pv-action-warning">{{ item.error }}</p><p v-if="item.fetched_at && !item.fetched_at.startsWith('0001')">采集 {{ time(item.fetched_at) }}</p><p class="pv-hash">{{ item.method }} · {{ item.factor_version || '--' }}</p></div></details>
       <details class="pv-method"><summary>统计口径与限制</summary><p v-for="warning in report.warnings" :key="warning">{{ warning }}</p><p class="pv-hash">输入指纹 {{ report.input_hash }}</p></details>
     </template>
     <p v-else-if="!busy && !error" class="pv-empty">暂无验证结果</p>

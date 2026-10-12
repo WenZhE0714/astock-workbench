@@ -3,19 +3,22 @@ package domain
 import "time"
 
 type PatternValidationRequest struct {
-	Symbols []string `json:"symbols"`
-	Start   string   `json:"start"`
-	End     string   `json:"end"`
+	PriceBasis string   `json:"price_basis,omitempty"`
+	Symbols    []string `json:"symbols"`
+	Start      string   `json:"start"`
+	End        string   `json:"end"`
 }
 
 type PatternValidationInput struct {
-	Symbol       string     `json:"symbol"`
-	Bars         []DailyBar `json:"bars"`
-	Error        string     `json:"error,omitempty"`
-	FetchStart   string     `json:"fetch_start,omitempty"`
-	FetchEnd     string     `json:"fetch_end,omitempty"`
-	FetchMode    string     `json:"fetch_mode,omitempty"`
-	FetchWarning string     `json:"fetch_warning,omitempty"`
+	Symbol       string                   `json:"symbol"`
+	Bars         []DailyBar               `json:"bars"`
+	Error        string                   `json:"error,omitempty"`
+	FetchStart   string                   `json:"fetch_start,omitempty"`
+	FetchEnd     string                   `json:"fetch_end,omitempty"`
+	FetchMode    string                   `json:"fetch_mode,omitempty"`
+	FetchWarning string                   `json:"fetch_warning,omitempty"`
+	Actions      *CorporateActionSnapshot `json:"actions,omitempty"`
+	Adjustment   *AdjustmentSnapshot      `json:"adjustment,omitempty"`
 }
 
 type PatternValidationCoverage struct {
@@ -42,16 +45,17 @@ type PatternValidationCoverage struct {
 }
 
 type PatternValidationOutcome struct {
-	Horizon         int      `json:"horizon"`
-	State           string   `json:"state"`
-	Through         string   `json:"through,omitempty"`
-	ObservedDays    int      `json:"observed_days"`
-	PriceReturn     *float64 `json:"price_return"`
-	DirectionReturn *float64 `json:"direction_return"`
-	Favorable       *float64 `json:"favorable"`
-	Adverse         *float64 `json:"adverse"`
-	Invalidated     *bool    `json:"invalidated"`
-	Detail          string   `json:"detail,omitempty"`
+	Horizon         int                 `json:"horizon"`
+	State           string              `json:"state"`
+	Through         string              `json:"through,omitempty"`
+	ObservedDays    int                 `json:"observed_days"`
+	PriceReturn     *float64            `json:"price_return"`
+	DirectionReturn *float64            `json:"direction_return"`
+	Favorable       *float64            `json:"favorable"`
+	Adverse         *float64            `json:"adverse"`
+	Invalidated     *bool               `json:"invalidated"`
+	Detail          string              `json:"detail,omitempty"`
+	ActionCheck     *PatternActionCheck `json:"action_check,omitempty"`
 }
 
 type PatternValidationSample struct {
@@ -71,20 +75,23 @@ type PatternValidationSample struct {
 	SnapshotFingerprint string                     `json:"snapshot_fingerprint"`
 	Snapshot            ChartStructure             `json:"snapshot"`
 	Outcomes            []PatternValidationOutcome `json:"outcomes"`
+	ActionCheck         *PatternActionCheck        `json:"action_check,omitempty"`
 }
 
 type PatternValidationReport struct {
-	Version     string                      `json:"version"`
-	RunID       string                      `json:"run_id"`
-	GeneratedAt time.Time                   `json:"generated_at"`
-	Request     PatternValidationRequest    `json:"request"`
-	Cutoff      string                      `json:"cutoff"`
-	InputHash   string                      `json:"input_hash"`
-	Horizons    []int                       `json:"horizons"`
-	Coverage    []PatternValidationCoverage `json:"coverage"`
-	Samples     []PatternValidationSample   `json:"samples"`
-	Warnings    []string                    `json:"warnings"`
-	Inputs      []PatternValidationInput    `json:"inputs,omitempty"`
+	Version        string                      `json:"version"`
+	RunID          string                      `json:"run_id"`
+	GeneratedAt    time.Time                   `json:"generated_at"`
+	Request        PatternValidationRequest    `json:"request"`
+	Cutoff         string                      `json:"cutoff"`
+	InputHash      string                      `json:"input_hash"`
+	Horizons       []int                       `json:"horizons"`
+	Coverage       []PatternValidationCoverage `json:"coverage"`
+	Samples        []PatternValidationSample   `json:"samples"`
+	Warnings       []string                    `json:"warnings"`
+	Inputs         []PatternValidationInput    `json:"inputs,omitempty"`
+	ActionCoverage []CorporateActionSnapshot   `json:"action_coverage,omitempty"`
+	Adjustments    []PatternAdjustment         `json:"adjustments,omitempty"`
 }
 
 type PatternValidationTotals struct {
@@ -94,6 +101,9 @@ type PatternValidationTotals struct {
 	Mature                        int      `json:"mature"`
 	Pending                       int      `json:"pending"`
 	Unavailable                   int      `json:"unavailable"`
+	ActionAffected                int      `json:"action_affected"`
+	ActionUnverified              int      `json:"action_unverified"`
+	ActionAdjusted                int      `json:"action_adjusted"`
 	AveragePriceReturn            *float64 `json:"average_price_return"`
 	AverageDirectionReturn        *float64 `json:"average_direction_return"`
 	AverageFavorable              *float64 `json:"average_favorable"`

@@ -203,6 +203,8 @@ type Server struct {
 	quotes                    QuoteClient
 	history                   DailyHistoryClient
 	patternHistory            market.DailyBarRangeClient
+	patternActions            market.CorporateActionClient
+	patternFactors            market.AdjustmentFactorClient
 	minutes                   MinuteClient
 	boardDetails              BoardDetailClient
 	relatedBoards             market.BoardFlowClient

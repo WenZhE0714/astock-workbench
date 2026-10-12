@@ -53,7 +53,18 @@ func patternValidationServerFixture(root string) *Server {
 	}
 	history["sh000300"] = benchmark
 	s.now = func() time.Time { return time.Date(2026, 10, 9, 16, 0, 0, 0, realtimeWebLocation) }
+	s.patternActions = validationActionFixture{}
 	return s
+}
+
+type validationActionFixture struct {
+	Events map[string][]domain.CorporateAction
+	Err    error
+}
+
+func (fixture validationActionFixture) FetchCorporateActions(_ context.Context, symbol, start, end string) (domain.CorporateActionSnapshot, error) {
+	events := append([]domain.CorporateAction{}, fixture.Events[symbol]...)
+	return domain.CorporateActionSnapshot{Symbol: symbol, Start: start, End: end, Status: "checked", Scope: domain.CorporateActionScope, Source: "隔离分红送转数据", SourceURL: "https://data.eastmoney.com/yjfp/", FetchedAt: time.Date(2026, 10, 9, 16, 0, 0, 0, realtimeWebLocation), Events: events}, fixture.Err
 }
 
 type validationRangeFixture struct {
@@ -114,6 +125,44 @@ func TestPatternValidationSnapshotFallbackIsExplicitAndExcludesFuture(t *testing
 	input = s.fetchPatternValidationHistory(t.Context(), "sh600004", "2026-06-01", "2026-08-20")
 	if input.Error != "" || input.FetchMode != "snapshot" || !strings.Contains(input.FetchWarning, "范围不足") {
 		t.Fatal("range failure fallback was not disclosed")
+	}
+}
+
+func TestPatternValidationActionFailureDoesNotBecomeNoEvents(t *testing.T) {
+	s := patternValidationServerFixture(t.TempDir())
+	s.patternActions = validationActionFixture{Err: errors.New("分红接口暂不可用")}
+	r := validationHTTPRequest(s, http.MethodPost, "/api/pattern-validation", `{"symbols":["600004"],"start":"2026-06-01","end":"2026-09-25"}`)
+	var result strategy.PatternValidationView
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &result) != nil || result.Totals.Mature != 0 || result.Totals.ActionUnverified != 1 || result.Totals.AveragePriceReturn != nil {
+		t.Fatalf("failed event feed treated as empty: %d %+v", r.Code, result.Totals)
+	}
+	archive, err := s.patternValidations.Load(result.Report.RunID)
+	if err != nil || archive.Inputs[0].Actions.Error == "" || archive.Samples[0].Outcomes[0].PriceReturn == nil {
+		t.Fatalf("failure evidence or raw outcome missing: %v", err)
+	}
+	r = validationHTTPRequest(s, http.MethodGet, "/api/pattern-validation?id="+archive.RunID+"&action=unverified", "")
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &result) != nil || result.Total != 1 {
+		t.Fatal("unverified archive filter failed")
+	}
+	archive.Version = "pattern-validation-v2"
+	archive.ActionCoverage = nil
+	for i := range archive.Inputs {
+		archive.Inputs[i].Actions = nil
+	}
+	for i := range archive.Samples {
+		archive.Samples[i].ActionCheck = nil
+		for j := range archive.Samples[i].Outcomes {
+			archive.Samples[i].Outcomes[j].ActionCheck = nil
+		}
+	}
+	legacy, err := s.patternValidations.Save(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = validationHTTPRequest(s, http.MethodGet, "/api/pattern-validation?id="+legacy.RunID+"&action=legacy", "")
+	result = strategy.PatternValidationView{}
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &result) != nil || result.Total != 1 || result.Totals.Mature != 1 || result.Report.ActionCoverage != nil {
+		t.Fatal("legacy archive was reinterpreted as audited")
 	}
 }
 
@@ -186,6 +235,9 @@ func TestPatternValidationBrowserFixture(t *testing.T) {
 	bars := history["sh600007"]
 	history["sh600007"] = append(bars[:103:103], bars[104:]...)
 	s.patternHistory = &validationRangeFixture{patternHistoryFixture: history}
+	event := domain.CorporateAction{ID: "browser-dividend", Symbol: "sh600004", ExDate: history["sh600004"][85].Date, NoticeDate: history["sh600004"][80].Date, Kinds: []string{"cash-dividend"}, Description: "10派2.50元（隔离数据）", Source: "隔离分红送转数据", SourceURL: "https://data.eastmoney.com/yjfp/detail/600004.html"}
+	s.patternActions = validationActionFixture{Events: map[string][]domain.CorporateAction{"sh600004": {event}}}
+	s.patternFactors = validationFactorFixture{Date: event.ExDate}
 	if err := http.ListenAndServe(address, s.Handler()); err != nil {
 		t.Fatal(err)
 	}

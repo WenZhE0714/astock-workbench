@@ -30,6 +30,14 @@ func WithPatternValidationHistory(history market.DailyBarRangeClient) ServerOpti
 	return func(s *Server) { s.patternHistory = history }
 }
 
+func WithPatternValidationActions(actions market.CorporateActionClient) ServerOption {
+	return func(s *Server) { s.patternActions = actions }
+}
+
+func WithPatternValidationFactors(factors market.AdjustmentFactorClient) ServerOption {
+	return func(s *Server) { s.patternFactors = factors }
+}
+
 func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request) {
 	if s.patternValidations == nil {
 		writeJSON(w, 503, errorResponse{Error: "形态验证归档未初始化"})
@@ -59,7 +67,7 @@ func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, 200, report)
 			return
 		}
-		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" {
+		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" {
 			writeJSON(w, 409, errorResponse{Error: "归档算法版本不同，请导出查看或重新运行验证"})
 			return
 		}
@@ -84,6 +92,7 @@ func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request)
 func patternValidationFilter(r *http.Request) (strategy.PatternValidationFilter, error) {
 	q := r.URL.Query()
 	filter := strategy.PatternValidationFilter{Pattern: q.Get("pattern"), Bias: q.Get("bias"), Regime: q.Get("regime"), State: q.Get("state")}
+	filter.Action = q.Get("action")
 	for key, destination := range map[string]*int{"horizon": &filter.Horizon, "offset": &filter.Offset, "limit": &filter.Limit} {
 		if value := q.Get(key); value != "" {
 			parsed, err := strconv.Atoi(value)
@@ -152,6 +161,24 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 		fetchCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 		series := s.fetchPatternValidationHistory(fetchCtx, symbol, input.Start, cutoff)
 		stop()
+		if symbol != "sh000300" && s.patternActions != nil {
+			actionCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+			actions, actionErr := s.patternActions.FetchCorporateActions(actionCtx, symbol, series.FetchStart, cutoff)
+			stop()
+			if actionErr != nil {
+				actions.Status, actions.Error = "unavailable", actionErr.Error()
+			}
+			series.Actions = &actions
+		}
+		if symbol != "sh000300" && input.PriceBasis == domain.PatternPriceHFQ && s.patternFactors != nil && series.Error == "" {
+			factorCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+			factors, factorErr := s.patternFactors.FetchAdjustmentFactors(factorCtx, symbol, series.FetchStart, cutoff)
+			stop()
+			if factorErr != nil {
+				factors.Status, factors.Error = "unavailable", factorErr.Error()
+			}
+			series.Adjustment = &factors
+		}
 		inputs = append(inputs, series)
 	}
 	report, err := strategy.BuildPatternValidation(ctx, input, inputs, now)

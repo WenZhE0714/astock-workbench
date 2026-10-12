@@ -124,8 +124,9 @@ type GlobalExtendedQuote struct {
 	Source    string  `json:"source"`
 }
 
-// DailyBar is one unadjusted daily K-line. Price levels derived from these
-// bars stay on the same scale as the Level-1 quote shown to the user.
+// DailyBar holds unadjusted market data on the Level-1 quote price scale.
+// Pattern research may transform private copies with archived adjustment
+// factors; those copies must not enter market caches, plans or monitoring.
 type DailyBar struct {
 	Symbol   string  `json:"symbol"`
 	Source   string  `json:"source"`

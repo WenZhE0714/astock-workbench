@@ -62,7 +62,8 @@ func validationFixture(kind string) ([]domain.DailyBar, []domain.DailyBar) {
 func validationReport(t *testing.T, bars, benchmark []domain.DailyBar, end int) domain.PatternValidationReport {
 	t.Helper()
 	request := domain.PatternValidationRequest{Symbols: []string{"sh600519"}, Start: bars[24].Date, End: bars[end].Date}
-	report, err := BuildPatternValidation(context.Background(), request, []domain.PatternValidationInput{{Symbol: "sh600519", Bars: bars}, {Symbol: "sh000300", Bars: benchmark}}, chartTestTime(bars[len(bars)-1].Date, 16))
+	actions := checkedPatternActions(bars[0].Date, bars[end].Date)
+	report, err := BuildPatternValidation(context.Background(), request, []domain.PatternValidationInput{{Symbol: "sh600519", Bars: bars, Actions: &actions}, {Symbol: "sh000300", Bars: benchmark}}, chartTestTime(bars[len(bars)-1].Date, 16))
 	if err != nil {
 		t.Fatal(err)
 	}

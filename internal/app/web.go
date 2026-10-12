@@ -94,6 +94,8 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithTradePlans(storage.NewTradePlanStore(app.paths.TradePlansDir)),
 		web.WithPatternValidation(storage.NewPatternValidationStore(app.paths.PatternValidationsDir)),
 		web.WithPatternValidationHistory(app.backtestProvider()),
+		web.WithPatternValidationActions(market.EastmoneyClient{}),
+		web.WithPatternValidationFactors(market.SinaAdjustmentClient{}),
 		web.WithTradePlanReviews(storage.NewTradePlanReviewStore(app.paths.PlanReviewsDir)),
 		web.WithPlanMonitors(storage.NewPlanMonitorStore(app.paths.PlanMonitorsDir)),
 		web.WithPlanExperiment(storage.NewPlanExperimentStore(app.paths.PlanExperimentFile)),

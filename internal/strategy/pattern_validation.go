@@ -15,10 +15,13 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
-const PatternValidationVersion = "pattern-validation-v2"
+const PatternValidationVersion = "pattern-validation-v4"
 const PatternValidationWarmupDays = 240
 
 func ValidatePatternValidationRequest(request domain.PatternValidationRequest, now time.Time) (string, error) {
+	if request.PriceBasis != "" && request.PriceBasis != domain.PatternPriceRaw && request.PriceBasis != domain.PatternPriceHFQ {
+		return "", fmt.Errorf("价格口径须为 raw 或 hfq")
+	}
 	if now.IsZero() || len(request.Symbols) == 0 || len(request.Symbols) > 10 {
 		return "", fmt.Errorf("形态验证需要1至10只股票及有效时间")
 	}
@@ -127,8 +130,17 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		"窗口采用沪深300日K日期，确认日之后第5/10/20个基准交易日；缺少对应股票日K则不计算该窗口，停牌与数据缺失未区分。",
 		"价格涨跌以确认日收盘为基准；看跌形态的方向表现为价格涨跌取反，不代表可做空收益。未计费用、滑点、涨跌停与成交可行性。",
 		"价格未复权，除权除息可能影响形态及涨跌幅；缓存状态、实际数据覆盖和未成熟窗口单独展示。",
+		"公司行动只覆盖供应商已实施的现金分红、送股及转增记录，未逐条核验官方披露，未覆盖配股、拆合股等其他行动。",
+		"ATR递推依赖首根输入日K以来的价格，因此事件核查包含全部预热历史；跨事件或未核验窗口保留原始结果，但不进入常规均值和失效率。",
+		"事件隔离属于基于当前供应商记录的历史数据质量检查，不代表当时已知的信息，也不改变原始形态识别及冻结计划。",
 		"同一冻结结构只计一次；识别后30根日K内未确认则观察到期。统计为描述性结果，小样本不能证明形态有效。",
 	}}
+	if request.PriceBasis == domain.PatternPriceHFQ {
+		report.Warnings[2] = "后复权价格涨跌以复权确认收盘为基准，不代表实际成交价或含税费的账户收益；看跌方向表现为价格涨跌取反。"
+		report.Warnings[3] = "研究OHLC = 原始OHLC × 当日新浪后复权因子 / 首根日K因子；成交量、成交额及换手保留原始口径，沪深300基准不复权。"
+		report.Warnings[5] = "现金分红仅在事件日期与因子变动对齐后解除隔离；送股、转增仍因成交量可比性隔离，未匹配因子变动或事件数据缺失不纳入统计。"
+		report.Warnings = append(report.Warnings, "采用当前供应商因子进行历史重建，因子可能事后修订；因子快照、有效日期、基值及版本均归档。复权点位不可直接用于原始价格计划和监控。")
+	}
 	clean := map[string][]domain.DailyBar{}
 	bySymbol := map[string]domain.PatternValidationInput{}
 	for _, input := range inputs {
@@ -147,8 +159,25 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		}
 		bars, coverage := patternValidationBars(input, cutoff)
 		clean[symbol] = bars
-		report.Coverage = append(report.Coverage, coverage)
 		input.Bars, input.Error = bars, coverage.Error
+		if symbol != "sh000300" {
+			actions := normalizePatternActions(input.Actions, symbol, cutoff)
+			input.Actions = &actions
+			report.ActionCoverage = append(report.ActionCoverage, actions)
+			if request.PriceBasis == domain.PatternPriceHFQ {
+				adjusted, snapshot, info := preparePatternAdjustment(input.Adjustment, symbol, cutoff, bars)
+				input.Adjustment = &snapshot
+				report.Adjustments = append(report.Adjustments, info)
+				clean[symbol] = adjusted
+				if info.Error != "" {
+					coverage.Error = info.Error
+				}
+			} else {
+				input.Adjustment = nil
+			}
+		}
+		report.Coverage = append(report.Coverage, coverage)
+		bySymbol[symbol] = input
 		report.Inputs = append(report.Inputs, input)
 	}
 	addPatternCoverageDiagnostics(&report, clean)
@@ -197,6 +226,10 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 					return report, analysisErr
 				}
 				sample := buildPatternSample(id, coverage.Symbol, structure, analysis.Fingerprint, bars, i, clean["sh000300"])
+				applyPatternActionChecks(&sample, *bySymbol[coverage.Symbol].Actions, bars, clean["sh000300"], cutoff)
+				if request.PriceBasis == domain.PatternPriceHFQ {
+					applyAdjustedPatternActionChecks(&sample, *bySymbol[coverage.Symbol].Actions, bySymbol[coverage.Symbol].Adjustment.Factors)
+				}
 				report.Samples = append(report.Samples, sample)
 				if len(report.Samples) > 2000 {
 					return report, fmt.Errorf("样本超过2000条，请缩小股票池或日期区间")
