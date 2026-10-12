@@ -67,7 +67,7 @@ func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, 200, report)
 			return
 		}
-		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" {
+		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" && report.Version != "pattern-validation-v4" {
 			writeJSON(w, 409, errorResponse{Error: "归档算法版本不同，请导出查看或重新运行验证"})
 			return
 		}

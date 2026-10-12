@@ -88,11 +88,13 @@ func distributionEvent(row distributionRow, symbol, sourceURL string) (*domain.C
 		}
 	}
 	kinds := []string{}
+	amounts := [3]float64{}
 	for i, raw := range []json.RawMessage{row.Cash, row.Bonus, row.Transfer} {
 		amount, err := distributionAmount(raw)
 		if err != nil {
 			return nil, err
 		}
+		amounts[i] = amount
 		if amount > 0 {
 			kinds = append(kinds, []string{"cash-dividend", "bonus-share", "capitalization"}[i])
 		}
@@ -119,7 +121,8 @@ func distributionEvent(row distributionRow, symbol, sourceURL string) (*domain.C
 		return nil, fmt.Errorf("登记日晚于除权除息日")
 	}
 	hash := sha256.Sum256([]byte(symbol + "|" + row.ReportDate + "|" + exDate))
-	return &domain.CorporateAction{ID: hex.EncodeToString(hash[:]), Symbol: symbol, ExDate: exDate, RecordDate: recordDate, NoticeDate: noticeDate, Kinds: kinds, Description: row.Description, Source: "东方财富分红送配", SourceURL: sourceURL}, nil
+	return &domain.CorporateAction{ID: hex.EncodeToString(hash[:]), Symbol: symbol, ExDate: exDate, RecordDate: recordDate, NoticeDate: noticeDate, Kinds: kinds, Description: row.Description, Source: "东方财富分红送配", SourceURL: sourceURL,
+		Terms: &domain.DistributionTerms{CashPer10: &amounts[0], BonusPer10: &amounts[1], CapitalizationPer10: &amounts[2]}}, nil
 }
 
 func distributionAddress(base, symbol string, page int) string {

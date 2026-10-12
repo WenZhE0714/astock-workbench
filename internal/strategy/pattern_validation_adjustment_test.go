@@ -44,6 +44,7 @@ func TestAdjustedPatternWindowsMatchDividendsAndReplayArchive(t *testing.T) {
 	bars, benchmark := validationFixture("bull-flag")
 	actions := checkedPatternActions(bars[0].Date, bars[114].Date)
 	actions.Events = []domain.CorporateAction{fixtureAction(bars[85].Date)}
+	actions.Events[0].Terms = testDistributionTerms(bars[84].Close*2, 0, 0)
 	factors := adjustmentFixture(bars)
 	factors.Factors = append(factors.Factors, domain.AdjustmentFactor{Date: bars[85].Date, Value: 2.5})
 	request := domain.PatternValidationRequest{Symbols: []string{"sh600519"}, Start: bars[24].Date, End: bars[114].Date, PriceBasis: domain.PatternPriceHFQ}
@@ -79,7 +80,7 @@ func TestAdjustedPatternWindowsMatchDividendsAndReplayArchive(t *testing.T) {
 	}
 }
 
-func TestAdjustedPatternUnmatchedAndShareEventsRemainExcluded(t *testing.T) {
+func TestAdjustedPatternUnmatchedAndMissingTermsRemainExcluded(t *testing.T) {
 	bars, _ := validationFixture("bull-flag")
 	for _, kind := range []string{"missing-step", "unknown-step", "share", "unavailable"} {
 		t.Run(kind, func(t *testing.T) {
@@ -99,11 +100,9 @@ func TestAdjustedPatternUnmatchedAndShareEventsRemainExcluded(t *testing.T) {
 				actions.Status = "unavailable"
 			}
 			sample := domain.PatternValidationSample{Outcomes: []domain.PatternValidationOutcome{{Horizon: 10, State: "mature", ActionCheck: checkPatternActions(actions, bars[0].Date, bars[89].Date)}}}
-			applyAdjustedPatternActionChecks(&sample, actions, factors)
+			quality := validatePatternAdjustmentQuality(actions, factors, bars, bars, bars[114].Date)
+			applyAdjustedPatternActionChecks(&sample, actions, quality)
 			want := "unverified"
-			if kind == "share" {
-				want = "affected"
-			}
 			if sample.Outcomes[0].ActionCheck.State != want {
 				t.Fatalf("unsafe window admitted: %+v", sample.Outcomes[0])
 			}

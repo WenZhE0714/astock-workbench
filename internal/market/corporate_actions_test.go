@@ -106,4 +106,7 @@ func TestCorporateActionsDistinguishesProposalsEmptyAndImplemented(t *testing.T)
 	if err != nil || len(event.Kinds) != 3 || event.SourceURL == "" {
 		t.Fatalf("mixed distribution lost types: %+v %v", event, err)
 	}
+	if event.Terms == nil || *event.Terms.CashPer10 != 1 || *event.Terms.BonusPer10 != 1 || *event.Terms.CapitalizationPer10 != 2 {
+		t.Fatalf("numeric distribution terms lost: %+v", event.Terms)
+	}
 }

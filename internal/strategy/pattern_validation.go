@@ -15,7 +15,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
-const PatternValidationVersion = "pattern-validation-v4"
+const PatternValidationVersion = "pattern-validation-v5"
 const PatternValidationWarmupDays = 240
 
 func ValidatePatternValidationRequest(request domain.PatternValidationRequest, now time.Time) (string, error) {
@@ -137,8 +137,8 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 	}}
 	if request.PriceBasis == domain.PatternPriceHFQ {
 		report.Warnings[2] = "后复权价格涨跌以复权确认收盘为基准，不代表实际成交价或含税费的账户收益；看跌方向表现为价格涨跌取反。"
-		report.Warnings[3] = "研究OHLC = 原始OHLC × 当日新浪后复权因子 / 首根日K因子；成交量、成交额及换手保留原始口径，沪深300基准不复权。"
-		report.Warnings[5] = "现金分红仅在事件日期与因子变动对齐后解除隔离；送股、转增仍因成交量可比性隔离，未匹配因子变动或事件数据缺失不纳入统计。"
+		report.Warnings[3] = "研究OHLC = 原始OHLC × 当日新浪后复权因子 / 首根日K因子；研究成交量 = 原始成交量 / 校验通过的累计送转股比例，成交额和换手保留原始口径，沪深300基准不复权。"
+		report.Warnings[5] = "分红送转需核对每10股数值、前一基准交易日收盘价和因子隐含除权价（容差0.01元）；事件日前后日K缺口、数值不匹配或未匹配因子变动继续隔离。"
 		report.Warnings = append(report.Warnings, "采用当前供应商因子进行历史重建，因子可能事后修订；因子快照、有效日期、基值及版本均归档。复权点位不可直接用于原始价格计划和监控。")
 	}
 	clean := map[string][]domain.DailyBar{}
@@ -179,6 +179,17 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 		report.Coverage = append(report.Coverage, coverage)
 		bySymbol[symbol] = input
 		report.Inputs = append(report.Inputs, input)
+	}
+	qualityBySymbol := map[string][]domain.AdjustmentQualityCheck{}
+	for i := range report.Adjustments {
+		info := &report.Adjustments[i]
+		if info.Status != "applied" {
+			continue
+		}
+		input := bySymbol[info.Symbol]
+		info.Quality = validatePatternAdjustmentQuality(*input.Actions, input.Adjustment.Factors, input.Bars, clean["sh000300"], cutoff)
+		applyPatternShareVolumes(clean[info.Symbol], info, *input.Actions)
+		qualityBySymbol[info.Symbol] = info.Quality
 	}
 	addPatternCoverageDiagnostics(&report, clean)
 	encoded, err := json.Marshal(report.Inputs)
@@ -228,7 +239,7 @@ func BuildPatternValidation(ctx context.Context, request domain.PatternValidatio
 				sample := buildPatternSample(id, coverage.Symbol, structure, analysis.Fingerprint, bars, i, clean["sh000300"])
 				applyPatternActionChecks(&sample, *bySymbol[coverage.Symbol].Actions, bars, clean["sh000300"], cutoff)
 				if request.PriceBasis == domain.PatternPriceHFQ {
-					applyAdjustedPatternActionChecks(&sample, *bySymbol[coverage.Symbol].Actions, bySymbol[coverage.Symbol].Adjustment.Factors)
+					applyAdjustedPatternActionChecks(&sample, *bySymbol[coverage.Symbol].Actions, qualityBySymbol[coverage.Symbol])
 				}
 				report.Samples = append(report.Samples, sample)
 				if len(report.Samples) > 2000 {

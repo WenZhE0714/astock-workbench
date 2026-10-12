@@ -107,8 +107,14 @@ with sync_playwright() as p:
             page.get_by_role('button', name='运行验证', exact=True).click()
         assert adjusted_run.value.status == 200, adjusted_run.value.text()
         adjusted_result = adjusted_run.value.json()
+        assert adjusted_result['report']['version'] == 'pattern-validation-v5'
+        assert all(item['quality_status'] == 'passed' for item in adjusted_result['report']['adjustments'])
+        assert adjusted_result['report']['adjustments'][1]['quality'][0]['share_ratio'] == 1.5
         expect(page.locator('.pv-basis')).to_contain_text('后复权研究')
         expect(page.locator('[data-adjustment-symbol="sh600004"]')).to_contain_text('已应用')
+        expect(page.locator('[data-adjustment-symbol="sh600004"]')).to_contain_text('理论除权')
+        expect(page.locator('[data-adjustment-symbol="sh600007"]')).to_contain_text('股数比例 1.5000')
+        expect(page.locator('.pv-quality-list [data-quality-state="passed"]')).to_have_count(2)
         page.get_by_label('筛选验证形态', exact=True).select_option('head-shoulders-bottom')
         page.get_by_role('button', name='20日', exact=True).click()
         page.get_by_label('筛选公司行动', exact=True).select_option('adjusted')
@@ -135,10 +141,24 @@ with sync_playwright() as p:
         assert adjusted_export['inputs'][0]['bars'] == exported['inputs'][0]['bars']
         assert len(adjusted_export['inputs'][0]['adjustment']['factors']) == 2
         assert len(adjusted_export['adjustments'][0]['factor_version']) == 64
+        assert len(adjusted_export['adjustments'][0]['volume_version']) == 64
+        assert adjusted_export['inputs'][0]['actions']['events'][0]['terms']['cash_per_10'] == 2.5
         page.reload(wait_until='networkidle')
         page.get_by_label('形态验证归档', exact=True).select_option(adjusted_export['run_id'])
         expect(page.get_by_label('验证价格口径', exact=True)).to_have_value('hfq')
         expect(page.locator('.pv-basis')).to_contain_text('后复权研究')
+
+        def mismatch(route):
+            payload = json.loads(json.dumps(adjusted_result))
+            item = payload['report']['adjustments'][0]
+            item['quality_status'] = 'unverified'
+            item['quality'][0].update(state='mismatch', detail='理论除权价与因子隐含除权价偏差超过0.01元', price_error=0.02)
+            route.fulfill(status=200, json=payload)
+        page.route('**/api/pattern-validation?*', mismatch)
+        page.get_by_role('button', name='10日', exact=True).click()
+        expect(page.locator('[data-quality-state="mismatch"]')).to_contain_text('数值不一致')
+        expect(page.locator('[data-quality-state="mismatch"]')).to_contain_text('0.0200')
+        page.unroute('**/api/pattern-validation?*', mismatch)
 
         pending = []
         page.route('**/api/pattern-validation', lambda route: pending.append(route) if route.request.method == 'POST' else route.continue_())

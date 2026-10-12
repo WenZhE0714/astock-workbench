@@ -236,8 +236,21 @@ func TestPatternValidationBrowserFixture(t *testing.T) {
 	history["sh600007"] = append(bars[:103:103], bars[104:]...)
 	s.patternHistory = &validationRangeFixture{patternHistoryFixture: history}
 	event := domain.CorporateAction{ID: "browser-dividend", Symbol: "sh600004", ExDate: history["sh600004"][85].Date, NoticeDate: history["sh600004"][80].Date, Kinds: []string{"cash-dividend"}, Description: "10派2.50元（隔离数据）", Source: "隔离分红送转数据", SourceURL: "https://data.eastmoney.com/yjfp/detail/600004.html"}
-	s.patternActions = validationActionFixture{Events: map[string][]domain.CorporateAction{"sh600004": {event}}}
-	s.patternFactors = validationFactorFixture{Date: event.ExDate}
+	event.Terms = validationTerms(2.5, 0, 0)
+	shareEvent := domain.CorporateAction{ID: "browser-share", Symbol: "sh600007", ExDate: history["sh600007"][85].Date, Kinds: []string{"capitalization"}, Description: "10转5股（隔离数据）", Source: "隔离分红送转数据", Terms: validationTerms(0, 0, 5)}
+	for i := range history["sh600007"] {
+		bar := &history["sh600007"][i]
+		if bar.Date >= shareEvent.ExDate {
+			bar.Open /= 1.5
+			bar.High /= 1.5
+			bar.Low /= 1.5
+			bar.Close /= 1.5
+			bar.Volume *= 1.5
+		}
+	}
+	s.patternActions = validationActionFixture{Events: map[string][]domain.CorporateAction{"sh600004": {event}, "sh600007": {shareEvent}}}
+	previous := history["sh600004"][84].Close
+	s.patternFactors = validationFactorFixture{Date: event.ExDate, Ratio: previous / (previous - .25), ShareDate: shareEvent.ExDate}
 	if err := http.ListenAndServe(address, s.Handler()); err != nil {
 		t.Fatal(err)
 	}

@@ -4,16 +4,23 @@ import "time"
 
 const CorporateActionScope = "cash-dividend,bonus-share,capitalization"
 
+type DistributionTerms struct {
+	CashPer10           *float64 `json:"cash_per_10"`
+	BonusPer10          *float64 `json:"bonus_per_10"`
+	CapitalizationPer10 *float64 `json:"capitalization_per_10"`
+}
+
 type CorporateAction struct {
-	ID          string   `json:"id"`
-	Symbol      string   `json:"symbol"`
-	ExDate      string   `json:"ex_date"`
-	RecordDate  string   `json:"record_date,omitempty"`
-	NoticeDate  string   `json:"notice_date,omitempty"`
-	Kinds       []string `json:"kinds"`
-	Description string   `json:"description"`
-	Source      string   `json:"source"`
-	SourceURL   string   `json:"source_url"`
+	ID          string             `json:"id"`
+	Symbol      string             `json:"symbol"`
+	ExDate      string             `json:"ex_date"`
+	RecordDate  string             `json:"record_date,omitempty"`
+	NoticeDate  string             `json:"notice_date,omitempty"`
+	Kinds       []string           `json:"kinds"`
+	Description string             `json:"description"`
+	Source      string             `json:"source"`
+	SourceURL   string             `json:"source_url"`
+	Terms       *DistributionTerms `json:"terms,omitempty"`
 }
 
 type CorporateActionSnapshot struct {

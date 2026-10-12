@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 	"time"
 
@@ -37,6 +38,15 @@ func normalizePatternActions(input *domain.CorporateActionSnapshot, symbol, cuto
 		if !valid {
 			result.Status, result.Error = "unavailable", "公司行动记录缺少有效日期、类型或来源"
 			continue
+		}
+		if event.Terms != nil {
+			for _, number := range []*float64{event.Terms.CashPer10, event.Terms.BonusPer10, event.Terms.CapitalizationPer10} {
+				if number != nil && (math.IsNaN(*number) || math.IsInf(*number, 0)) {
+					result.Status, result.Error = "unavailable", "公司行动分配数值无效"
+					event.Terms = nil
+					break
+				}
+			}
 		}
 		encoded, _ := json.Marshal(event)
 		if previous, exists := seen[event.ID]; exists {
