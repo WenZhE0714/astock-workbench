@@ -1,9 +1,10 @@
 import { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { validationPatterns, validationPercent, validationState, validationOutcome, validationSymbols, validationTone, validationCoverageStatus, validationActionState, validationActionKinds, validationSourceURL, validationPriceBasis, validationQualityState, validationPoints, validationBenchmarkState, validationPeriod } from './pattern-validation.mjs'
 import { shanghaiToday } from './review-calendar.mjs'
+import { PatternBatchView } from './pattern-batch-view.js'
 
 export const PatternValidationView = {
-  components: { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight },
+  components: { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight, PatternBatchView },
   props: ['selection', 'defaultSymbol'],
   emits: ['selection', 'open-sample'],
   data() {
@@ -11,12 +12,13 @@ export const PatternValidationView = {
     start.setUTCFullYear(start.getUTCFullYear()-1)
     return { symbols:this.selection?.symbols || this.defaultSymbol || '002080', start:this.selection?.start || start.toISOString().slice(0,10), end:this.selection?.end || today,
       priceBasis:this.selection?.priceBasis || 'raw',
+      batchMode:!!this.selection?.batchMode,
       splitEnabled:!!this.selection?.validationStart, validationStart:this.selection?.validationStart || '', period:this.selection?.period || '',
       runID:this.selection?.runID || '', pattern:this.selection?.pattern || '', bias:this.selection?.bias || '', regime:this.selection?.regime || '', state:this.selection?.state || '', action:this.selection?.action || '', horizon:this.selection?.horizon || 5, offset:this.selection?.offset || 0,
       view:null, runs:[], running:false, loading:false, error:'', controller:null, historyController:null, requestID:0, loadedKey:'', adoptArchive:false, patterns:validationPatterns, today }
   },
   computed: {
-    selectionValue() { return {symbols:this.symbols,start:this.start,end:this.end,priceBasis:this.priceBasis,validationStart:this.splitEnabled ? this.validationStart : '',period:this.period,runID:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,action:this.action,horizon:this.horizon,offset:this.offset} },
+    selectionValue() { return {symbols:this.symbols,start:this.start,end:this.end,priceBasis:this.priceBasis,batchMode:this.batchMode,validationStart:this.splitEnabled ? this.validationStart : '',period:this.period,runID:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,action:this.action,horizon:this.horizon,offset:this.offset} },
     filterKey() { return [this.pattern,this.bias,this.regime,this.state,this.action,this.horizon,this.period].join('|') },
     requestKey() { return `${this.runID}|${this.filterKey}|${this.offset}` },
     report() { return this.view?.report },
@@ -44,6 +46,7 @@ export const PatternValidationView = {
     number(value) { return value == null ? '--' : Number(value).toFixed(2) },
     qualityNumber(value) { return value == null ? '--' : Number(value).toFixed(4) },
     cancel() { this.controller?.abort() },
+    async openBatchRun(id) { this.pattern='';this.bias='';this.regime='';this.state='';this.action='';this.period='';this.horizon=5;this.offset=0;this.adoptArchive=true;this.loadedKey='';this.runID=id;await this.$nextTick();if(!this.loading && this.loadedKey!==this.requestKey)await this.load();this.history() },
     open(sample,date) { this.$emit('open-sample',{symbol:sample.symbol,date,patternID:sample.pattern_id,runID:this.runID,priceBasis:this.report.request.price_basis || 'raw'}) },
     async history() {
       this.historyController?.abort()
@@ -99,7 +102,9 @@ export const PatternValidationView = {
   beforeUnmount() { this.requestID++; this.controller?.abort(); this.historyController?.abort() },
   template: `<section class="pattern-validation" aria-label="形态验证" :aria-busy="busy">
     <div class="pv-heading"><h2>形态验证</h2><span>历史重建 · {{ basisLabel(report ? report.request.price_basis : priceBasis) }} · 确认后价格表现</span></div>
-    <form class="pv-form" @submit.prevent="run">
+    <div class="pv-run-modes" role="group" aria-label="验证方式"><button type="button" :aria-pressed="!batchMode" :disabled="running" @click="batchMode=false">单次验证</button><button type="button" :aria-pressed="batchMode" :disabled="running" @click="batchMode=true">批量验证</button></div>
+    <pattern-batch-view v-if="batchMode" :initial="{start,end,price_basis:priceBasis,validation_start:splitEnabled ? validationStart : ''}" @open-run="openBatchRun"/>
+    <form v-else class="pv-form" @submit.prevent="run">
       <label class="pv-symbols">股票池<input v-model="symbols" aria-label="验证股票池" placeholder="002080, 600519" required :disabled="running"></label>
       <label>开始日期<input type="date" v-model="start" aria-label="验证开始日期" required :max="end" :disabled="running"></label>
       <label>结束日期<input type="date" v-model="end" aria-label="验证结束日期" required :min="start" :max="today" :disabled="running"></label>
@@ -133,6 +138,7 @@ export const PatternValidationView = {
       <div class="pv-section-title"><h3>形态与市场阶段</h3><span>{{ view.groups.length }} 组 · {{ horizon }}日窗口</span></div>
       <table class="pv-group-table" v-if="view.groups.length"><thead><tr><th>形态 / 方向 / 市场</th><th>识别 / 确认</th><th>纳入 / 待成熟 / 缺失</th><th>价格涨跌</th><th>方向表现</th><th>有利 / 不利波动</th><th>沪深300 / 超额</th><th>失效率</th></tr></thead><tbody><tr v-for="group in view.groups" :key="group.pattern_id + group.regime"><td data-label="形态"><strong>{{ group.name }}</strong><small>{{ biasLabel(group.bias) }} · {{ group.regime }}</small></td><td data-label="识别 / 确认">{{ group.totals.samples }} / {{ group.totals.confirmed }}</td><td data-label="纳入 / 待成熟 / 缺失">{{ group.totals.mature }} / {{ group.totals.pending }} / {{ group.totals.unavailable }}<small v-if="group.totals.mature < 20">样本不足20</small></td><td data-label="价格涨跌" :class="tone(group.totals.average_price_return)">{{ percent(group.totals.average_price_return) }}</td><td data-label="方向表现" :class="tone(group.totals.average_direction_return)">{{ percent(group.totals.average_direction_return) }}</td><td data-label="有利 / 不利">{{ percent(group.totals.average_favorable) }} / {{ percent(group.totals.average_adverse) }}</td><td data-label="沪深300 / 超额"><span>{{ percent(group.totals.average_benchmark_return) }}</span><small :class="tone(group.totals.average_excess_return)">超额 {{ points(group.totals.average_excess_return) }}</small><small>配对 {{ group.totals.benchmark_paired || 0 }} · 正超额 {{ percent(group.totals.positive_excess_rate) }}</small></td><td data-label="失效率">{{ percent(group.totals.invalidation_rate) }}</td></tr></tbody></table>
       <p v-else class="pv-empty">当前条件下没有样本</p>
+      <section v-if="report.pool" class="pv-pool-distribution" aria-label="股票池样本分布"><div class="pv-section-title"><h3>{{ report.pool.name }} · 样本分布</h3><span>{{ report.pool.members.length }}只 · {{ report.pool.version.slice(0,8) }}</span></div><p class="pv-study-basis">{{ report.pool.source }} · 冻结 {{ time(report.pool.created_at) }}</p><p v-if="view.stocks?.length" class="pv-study-basis">最高单股样本占比 {{ percent(view.stocks[0].sample_share) }} · {{ view.stocks[0].symbol }}</p><table class="pv-group-table"><thead><tr><th>行业标签</th><th>股票数</th><th>样本 / 占比</th><th>配对 / 平均超额</th></tr></thead><tbody><tr v-for="item in view.industries" :key="item.industry"><td data-label="行业标签">{{ item.industry }}</td><td data-label="股票数">{{ item.stocks }}</td><td data-label="样本 / 占比">{{ item.totals.samples }} / {{ percent(item.sample_share) }}</td><td data-label="配对 / 平均超额">{{ item.totals.benchmark_paired }} / {{ points(item.totals.average_excess_return) }}</td></tr></tbody></table><details><summary>逐股票分布 · {{ view.stocks?.length || 0 }}只</summary><table class="pv-group-table"><thead><tr><th>股票 / 标签</th><th>样本 / 占比</th><th>配对 / 平均超额</th><th>缺失 / 隔离</th></tr></thead><tbody><tr v-for="item in view.stocks" :key="item.symbol" :data-distribution-symbol="item.symbol"><td data-label="股票"><strong>{{ item.symbol }} {{ item.name }}</strong><small>{{ item.industry }}</small></td><td data-label="样本 / 占比">{{ item.totals.samples }} / {{ percent(item.sample_share) }}</td><td data-label="配对 / 平均超额">{{ item.totals.benchmark_paired }} / {{ points(item.totals.average_excess_return) }}</td><td data-label="缺失 / 隔离">{{ item.totals.unavailable }} / {{ item.totals.action_affected + item.totals.action_unverified }}</td></tr></tbody></table></details></section>
       <div class="pv-section-title"><h3>样本明细</h3><span>{{ view.total }} 条</span></div>
       <details class="pv-sample" v-for="sample in view.samples" :key="sample.id" :data-sample-id="sample.id"><summary><strong>{{ sample.symbol }} · {{ sample.name }}</strong><span>{{ sample.observed_on }}</span><span>{{ status(sample.state) }}</span><span>{{ status(outcome(sample,horizon).state) }} · {{ actionStatus(outcome(sample,horizon).action_check) }}</span><b :class="tone(outcome(sample,horizon).direction_return)">{{ resultPriceLabel }} {{ percent(outcome(sample,horizon).direction_return) }}</b></summary>
         <p v-if="adjusted" class="pv-action-warning">后复权研究点位 · 个股图表显示未复权价格</p>

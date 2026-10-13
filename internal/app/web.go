@@ -93,6 +93,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAIConfigService(webAIConfigService{app: app}),
 		web.WithTradePlans(storage.NewTradePlanStore(app.paths.TradePlansDir)),
 		web.WithPatternValidation(storage.NewPatternValidationStore(app.paths.PatternValidationsDir)),
+		web.WithPatternBatches(storage.NewPatternBatchStore(app.paths.PatternBatchesDir)),
 		web.WithPatternValidationHistory(app.backtestProvider()),
 		web.WithPatternValidationActions(market.EastmoneyClient{}),
 		web.WithPatternValidationFactors(market.SinaAdjustmentClient{}),

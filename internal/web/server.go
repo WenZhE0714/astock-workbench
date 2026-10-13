@@ -228,6 +228,10 @@ type Server struct {
 	strategyArchive           backtestArchive
 	patternValidations        patternValidationArchive
 	patternValidationMu       sync.Mutex
+	patternBatches            patternBatchArchive
+	patternBatchMu            sync.Mutex
+	patternBatchActive        *patternBatchExecution
+	patternBatchErrors        map[string]string
 	candidateEngine           backtest.Engine
 	candidateArchive          continuousOptimizationArchive
 	realtimeScanner           realtimeScanner
@@ -1055,6 +1059,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/chart-analysis", s.handleChartAnalysis)
 	mux.HandleFunc("/api/chart-timeframes", s.handleChartTimeframes)
 	mux.HandleFunc("/api/pattern-validation", s.handlePatternValidation)
+	mux.HandleFunc("/api/pattern-pools", s.handlePatternPools)
+	mux.HandleFunc("/api/pattern-batches", s.handlePatternBatches)
 	mux.HandleFunc("/api/trade-plans", s.handleTradePlans)
 	mux.HandleFunc("/api/position-preview", s.handlePositionPreview)
 	mux.HandleFunc("/api/trade-plan-reviews", s.handleTradePlanReviews)
@@ -1095,6 +1101,7 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 		ctx = context.Background()
 	}
 	defer s.cancelAssistantJobs()
+	defer s.StopPatternBatches()
 	server := &http.Server{Addr: address, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	automationCtx, cancelAutomation := context.WithCancel(ctx)
 	defer cancelAutomation()

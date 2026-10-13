@@ -15,15 +15,15 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/marketregime"
 )
 
-const PatternValidationVersion = "pattern-validation-v7"
+const PatternValidationVersion = "pattern-validation-v8"
 const PatternValidationWarmupDays = 240
 
 func ValidatePatternValidationRequest(request domain.PatternValidationRequest, now time.Time) (string, error) {
 	if request.PriceBasis != "" && request.PriceBasis != domain.PatternPriceRaw && request.PriceBasis != domain.PatternPriceHFQ {
 		return "", fmt.Errorf("价格口径须为 raw 或 hfq")
 	}
-	if now.IsZero() || len(request.Symbols) == 0 || len(request.Symbols) > 10 {
-		return "", fmt.Errorf("形态验证需要1至10只股票及有效时间")
+	if now.IsZero() || len(request.Symbols) == 0 || len(request.Symbols) > domain.PatternPoolLimit {
+		return "", fmt.Errorf("形态验证需要1至50只股票及有效时间")
 	}
 	start, startErr := time.Parse(time.DateOnly, request.Start)
 	end, endErr := time.Parse(time.DateOnly, request.End)

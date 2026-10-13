@@ -20,13 +20,15 @@ type PatternValidationFilter struct {
 }
 
 type PatternValidationView struct {
-	Report  domain.PatternValidationReport   `json:"report"`
-	Filter  PatternValidationFilter          `json:"filter"`
-	Totals  domain.PatternValidationTotals   `json:"totals"`
-	Groups  []domain.PatternValidationGroup  `json:"groups"`
-	Samples []domain.PatternValidationSample `json:"samples"`
-	Total   int                              `json:"total"`
-	Periods []domain.PatternPeriodSummary    `json:"periods,omitempty"`
+	Report     domain.PatternValidationReport   `json:"report"`
+	Filter     PatternValidationFilter          `json:"filter"`
+	Totals     domain.PatternValidationTotals   `json:"totals"`
+	Groups     []domain.PatternValidationGroup  `json:"groups"`
+	Samples    []domain.PatternValidationSample `json:"samples"`
+	Total      int                              `json:"total"`
+	Periods    []domain.PatternPeriodSummary    `json:"periods,omitempty"`
+	Stocks     []domain.PatternStockSummary     `json:"stocks,omitempty"`
+	Industries []domain.PatternIndustrySummary  `json:"industries,omitempty"`
 }
 
 func PatternValidationResult(report domain.PatternValidationReport, filter PatternValidationFilter) (PatternValidationView, error) {
@@ -87,6 +89,9 @@ func PatternValidationResult(report domain.PatternValidationReport, filter Patte
 	}
 	view.Totals, view.Total = SummarizePatternValidation(selected, filter.Horizon), len(selected)
 	view.Groups = patternValidationGroups(selected, filter.Horizon)
+	if report.Pool != nil {
+		view.Stocks, view.Industries = patternPoolDistribution(*report.Pool, selected, filter.Horizon)
+	}
 	start := min(filter.Offset, len(selected))
 	end := min(start+filter.Limit, len(selected))
 	view.Samples = append(view.Samples, selected[start:end]...)

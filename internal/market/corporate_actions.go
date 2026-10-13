@@ -81,7 +81,7 @@ func distributionEvent(row distributionRow, symbol, sourceURL string) (*domain.C
 	}
 	if row.Progress != "实施分配" {
 		switch row.Progress {
-		case "董事会预案", "股东大会预案", "股东大会通过", "不分配不转增", "不分配", "取消分配", "终止实施":
+		case "预披露", "董事会预案", "董事会决议通过", "股东大会预案", "股东大会通过", "股东大会决议通过", "不分配不转增", "不分配", "取消分配", "终止实施":
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("无法识别分红方案进度 %q", row.Progress)

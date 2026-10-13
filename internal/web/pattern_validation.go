@@ -67,7 +67,7 @@ func (s *Server) handlePatternValidation(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, 200, report)
 			return
 		}
-		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" && report.Version != "pattern-validation-v4" && report.Version != "pattern-validation-v5" && report.Version != "pattern-validation-v6" {
+		if report.Version != strategy.PatternValidationVersion && report.Version != "pattern-validation-v1" && report.Version != "pattern-validation-v2" && report.Version != "pattern-validation-v3" && report.Version != "pattern-validation-v4" && report.Version != "pattern-validation-v5" && report.Version != "pattern-validation-v6" && report.Version != "pattern-validation-v7" {
 			writeJSON(w, 409, errorResponse{Error: "归档算法版本不同，请导出查看或重新运行验证"})
 			return
 		}
@@ -123,6 +123,10 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.currentTime()
+	if len(input.Symbols) > 10 {
+		writeJSON(w, 400, errorResponse{Error: "单次验证最多10只股票，请使用批量任务"})
+		return
+	}
 	cutoff, err := strategy.ValidatePatternValidationRequest(input, now)
 	if err != nil {
 		writeJSON(w, 400, errorResponse{Error: err.Error()})
@@ -153,33 +157,15 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	input.Symbols = resolved
+	fetchRequest := input
+	fetchRequest.End = cutoff
 	inputs := []domain.PatternValidationInput{}
 	for _, symbol := range append(append([]string{}, resolved...), "sh000300") {
 		if err := ctx.Err(); err != nil {
 			writeJSON(w, 408, errorResponse{Error: "形态验证已取消或超时"})
 			return
 		}
-		fetchCtx, stop := context.WithTimeout(ctx, 30*time.Second)
-		series := s.fetchPatternValidationHistory(fetchCtx, symbol, input.Start, cutoff)
-		stop()
-		if symbol != "sh000300" && s.patternActions != nil {
-			actionCtx, stop := context.WithTimeout(ctx, 10*time.Second)
-			actions, actionErr := s.patternActions.FetchCorporateActions(actionCtx, symbol, series.FetchStart, cutoff)
-			stop()
-			if actionErr != nil {
-				actions.Status, actions.Error = "unavailable", actionErr.Error()
-			}
-			series.Actions = &actions
-		}
-		if symbol != "sh000300" && input.PriceBasis == domain.PatternPriceHFQ && s.patternFactors != nil && series.Error == "" {
-			factorCtx, stop := context.WithTimeout(ctx, 10*time.Second)
-			factors, factorErr := s.patternFactors.FetchAdjustmentFactors(factorCtx, symbol, series.FetchStart, cutoff)
-			stop()
-			if factorErr != nil {
-				factors.Status, factors.Error = "unavailable", factorErr.Error()
-			}
-			series.Adjustment = &factors
-		}
+		series := s.fetchPatternValidationInput(ctx, symbol, fetchRequest)
 		inputs = append(inputs, series)
 	}
 	report, err := strategy.BuildPatternValidation(ctx, input, inputs, now)
@@ -202,6 +188,31 @@ func (s *Server) runPatternValidation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, view)
+}
+
+func (s *Server) fetchPatternValidationInput(ctx context.Context, symbol string, request domain.PatternValidationRequest) domain.PatternValidationInput {
+	fetchCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+	series := s.fetchPatternValidationHistory(fetchCtx, symbol, request.Start, request.End)
+	stop()
+	if symbol != "sh000300" && s.patternActions != nil {
+		actionCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+		actions, err := s.patternActions.FetchCorporateActions(actionCtx, symbol, series.FetchStart, request.End)
+		stop()
+		if err != nil {
+			actions.Status, actions.Error = "unavailable", err.Error()
+		}
+		series.Actions = &actions
+	}
+	if symbol != "sh000300" && request.PriceBasis == domain.PatternPriceHFQ && s.patternFactors != nil && series.Error == "" {
+		factorCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+		factors, err := s.patternFactors.FetchAdjustmentFactors(factorCtx, symbol, series.FetchStart, request.End)
+		stop()
+		if err != nil {
+			factors.Status, factors.Error = "unavailable", err.Error()
+		}
+		series.Adjustment = &factors
+	}
+	return series
 }
 
 func (s *Server) fetchPatternValidationHistory(ctx context.Context, symbol, startDate, cutoff string) domain.PatternValidationInput {

@@ -115,6 +115,8 @@ type PatternValidationReport struct {
 	Adjustments    []PatternAdjustment         `json:"adjustments,omitempty"`
 	Benchmark      *PatternBenchmarkSpec       `json:"benchmark,omitempty"`
 	Study          *PatternValidationStudy     `json:"study,omitempty"`
+	Pool           *PatternPool                `json:"pool,omitempty"`
+	BatchID        string                      `json:"batch_id,omitempty"`
 }
 
 type PatternValidationTotals struct {

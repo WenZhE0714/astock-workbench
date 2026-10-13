@@ -116,7 +116,7 @@ with sync_playwright() as p:
             page.get_by_role('button', name='运行验证', exact=True).click()
         assert adjusted_run.value.status == 200, adjusted_run.value.text()
         adjusted_result = adjusted_run.value.json()
-        assert adjusted_result['report']['version'] == 'pattern-validation-v7'
+        assert adjusted_result['report']['version'] == 'pattern-validation-v8'
         assert all(item['quality_status'] == 'passed' for item in adjusted_result['report']['adjustments'])
         assert adjusted_result['report']['adjustments'][1]['quality'][0]['share_ratio'] == 1.5
         expect(page.locator('.pv-basis')).to_contain_text('后复权研究')

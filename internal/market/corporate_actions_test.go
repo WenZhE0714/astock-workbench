@@ -81,6 +81,13 @@ func TestCorporateActionsRejectsAmbiguousResponses(t *testing.T) {
 }
 
 func TestCorporateActionsDistinguishesProposalsEmptyAndImplemented(t *testing.T) {
+	for _, progress := range []string{"预披露", "董事会决议通过", "股东大会决议通过"} {
+		row := distributionFixtureRow("2024-05-01")
+		row.Progress = progress
+		if event, err := distributionEvent(row, "sz002080", "https://data.eastmoney.com/"); err != nil || event != nil {
+			t.Fatalf("proposal mistaken for implemented action: %s %v", progress, err)
+		}
+	}
 	for _, count := range []int{0, 1} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			rows := []distributionRow{}
