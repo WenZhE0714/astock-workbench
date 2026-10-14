@@ -96,10 +96,11 @@ func New(output, errorOutput io.Writer) (*App, error) {
 		httpHistory:     historyClient,
 		// Keep CLI and Web on the same preferred minute-data path so both
 		// surfaces can expose the Shanghai leading yellow line when available.
-		minutes:         market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
-		httpMinutes:     market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
-		rankings:        rankingClient,
-		marketScan:      market.EastmoneyClient{},
+		minutes:     market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
+		httpMinutes: market.NewFallbackMinuteClient(market.EastmoneyMinuteClient{}, market.TencentClient{}),
+		rankings:    rankingClient,
+		marketScan: market.NewFallbackMarketScanClient(market.EastmoneyClient{},
+			market.THSStockScanClient{Industries: market.THSStockIndustryClient{}}, market.THSMarketRankingClient{}),
 		industryLeaders: market.EastmoneyClient{},
 		news:            market.EastmoneyClient{},
 		research:        market.EastmoneyClient{},

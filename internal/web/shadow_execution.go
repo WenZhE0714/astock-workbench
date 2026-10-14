@@ -99,6 +99,7 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 		defer s.shadowMu.Unlock()
 		ctx, cancel := context.WithTimeout(request.Context(), shadowExecutionTimeout)
 		defer cancel()
+		ctx = s.withTradingCalendarSnapshot(ctx, s.currentTime())
 		profileIDs := []string{requestedProfile}
 		if requestedProfile == "all" {
 			profileIDs = s.orderedShadowProfileIDs()
@@ -696,6 +697,12 @@ func (s *Server) tradingCalendar(ctx context.Context, now time.Time) ([]string, 
 	}
 	if now.IsZero() {
 		now = time.Now()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if snapshot, ok := ctx.Value(tradingCalendarSnapshotKey{}).(tradingCalendarSnapshot); ok && snapshot.server == s && snapshot.date == now.In(realtimeWebLocation).Format("2006-01-02") {
+		return append([]string(nil), snapshot.dates...), nil
 	}
 	s.shadowCalendarMu.Lock()
 	if !s.shadowCalendarFetchedAt.IsZero() && now.Sub(s.shadowCalendarFetchedAt) >= 0 && now.Sub(s.shadowCalendarFetchedAt) < shadowCalendarCacheTTL {

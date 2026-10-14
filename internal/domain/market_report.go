@@ -14,6 +14,8 @@ const (
 // used by the market scanner. Amount and MainNet are denominated in yuan.
 type MarketStockSnapshot struct {
 	Symbol        string  `json:"symbol"`
+	Source        string  `json:"source,omitempty"`
+	QuoteTime     string  `json:"quote_time,omitempty"`
 	Name          string  `json:"name"`
 	Industry      string  `json:"industry"`
 	Price         float64 `json:"price"`

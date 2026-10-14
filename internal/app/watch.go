@@ -38,6 +38,8 @@ type marketSession struct {
 
 var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
+const watchClosingRefreshWindow = 5 * time.Minute
+
 func marketSessionAt(now time.Time) marketSession {
 	local := now.In(shanghaiLocation)
 	if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
@@ -60,6 +62,31 @@ func marketSessionAt(now time.Time) marketSession {
 	default:
 		return marketSession{Label: "已收盘"}
 	}
+}
+
+// Display polling outlives the exchange session so delayed provider snapshots
+// can settle. Research and trading checks continue to use marketSessionAt.
+func watchSessionAt(now time.Time) marketSession {
+	session := marketSessionAt(now)
+	local := now.In(shanghaiLocation)
+	if session.Poll || local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+		return session
+	}
+	for _, boundary := range []struct{ hour, minute int }{{11, 30}, {15, 0}} {
+		closedAt := time.Date(local.Year(), local.Month(), local.Day(), boundary.hour, boundary.minute, 0, 0, shanghaiLocation)
+		if !local.Before(closedAt) && local.Before(closedAt.Add(watchClosingRefreshWindow)) {
+			session.Poll = true
+			break
+		}
+	}
+	return session
+}
+
+func watchSessionNeedsRefresh(previous, next marketSession) bool {
+	if next.Poll {
+		return !previous.Poll || (previous.Continuous && !next.Continuous)
+	}
+	return previous.Poll && (next.Label == "午间休市" || next.Label == "已收盘")
 }
 
 type watchViewState struct {
@@ -562,7 +589,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	refreshed := time.Time{}
 	message := ""
 	flowMessage := ""
-	session := marketSessionAt(time.Now())
+	session := watchSessionAt(time.Now())
 	viewState := watchViewState{}
 	command := watchCommand{}
 	sortState := watchSortState{}
@@ -1257,8 +1284,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 		}()
 	}
-	startMarketRankingFetch := func() {
-		if app.rankings == nil || !marketRanking.active || marketRankingRunning || !session.Poll {
+	startMarketRankingFetch := func(force bool) {
+		if app.rankings == nil || !marketRanking.active || marketRankingRunning || (!force && !session.Poll) {
 			return
 		}
 		marketRankingRunning = true
@@ -3263,15 +3290,17 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				setNotice("")
 				render(true)
 			}
-			nextSession := marketSessionAt(now)
+			nextSession := watchSessionAt(now)
 			if nextSession != session {
-				wasPolling := session.Poll
+				refreshSession := watchSessionNeedsRefresh(session, nextSession)
 				session = nextSession
 				render(true)
-				if !wasPolling && session.Poll {
-					startMarketRankingFetch()
-					startFundMonitorFetch(false)
-					startIndustryFlowFetch(false)
+				if refreshSession {
+					// Force one refresh both at the break and at the end of its
+					// grace window, even if the normal tickers have not fired.
+					startMarketRankingFetch(true)
+					startFundMonitorFetch(true)
+					startIndustryFlowFetch(true)
 					if err := fetch(); err != nil {
 						if errors.Is(err, context.Canceled) {
 							return nil
@@ -3281,6 +3310,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					startFlowFetch()
 					startAmountFetch()
 					startBoardAssetFetch(true)
+					startBoardFundDashboardFetch(true)
+					if boardDetail.viewing {
+						startBoardDetailFetch(boardDetail.symbol)
+					}
 					if viewState.Detail && viewState.Selected >= 0 && viewState.Selected < len(symbols) {
 						symbol := symbols[viewState.Selected]
 						startBoardFetch(symbol, true)
@@ -3294,7 +3327,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			if !session.Poll {
 				continue
 			}
-			startMarketRankingFetch()
+			startMarketRankingFetch(false)
 			if err := fetch(); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil

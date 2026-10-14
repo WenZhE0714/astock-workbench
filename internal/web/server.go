@@ -1326,9 +1326,12 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 		s.persistAutomationState()
 	}()
 
-	cycleCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	// Independent task deadlines keep a slow scan from consuming the later
+	// accounts' budget. Shutdown still cancels the entire cycle.
+	cycleCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	now := s.currentTime()
+	cycleCtx = s.withTradingCalendarSnapshot(cycleCtx, now)
 	session := s.marketSession(cycleCtx, now)
 	cycleErrors := make([]error, 0, 4)
 	appendCycleError := func(label string, err error) {
@@ -1365,7 +1368,9 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			}
 			s.realtimeMu.Unlock()
 			if shouldScan {
-				result, err := s.realtimeScanner.Scan(cycleCtx, symbols, true)
+				scanCtx, cancelScan := context.WithTimeout(cycleCtx, realtimeScanTimeout)
+				result, err := s.realtimeScanner.Scan(scanCtx, symbols, true)
+				cancelScan()
 				s.realtimeMu.Lock()
 				s.realtimeRunning = false
 				if err != nil {
@@ -1407,6 +1412,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 		s.setAutomationTask(automationTaskOutcomes, "waiting", outcomePlan.Detail, now, nil)
 	} else {
 		s.setAutomationTask(automationTaskOutcomes, "running", "正在更新信号验证结果", now, nil)
+		outcomeCtx, cancelOutcomes := context.WithTimeout(cycleCtx, realtimeOutcomeTimeout)
 		// Read the complete append-only signal archive. Passing a negative limit
 		// explicitly requests full-archive mode; truncating this to the newest
 		// 2000 rows leaves older 5/10-day horizons pending forever when the
@@ -1421,7 +1427,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			next := nextAutomaticOutcomeValidation(session, now.In(realtimeWebLocation))
 			s.setAutomationTaskNextRun(automationTaskOutcomes, next)
 			s.setAutomationTask(automationTaskOutcomes, "success", "当前没有待验证信号", now, nil)
-		} else if report, err := s.realtimeOutcomes.Evaluate(cycleCtx, signals, realtime.OutcomeOptions{SignalLimit: -1}); err != nil {
+		} else if report, err := s.realtimeOutcomes.Evaluate(outcomeCtx, signals, realtime.OutcomeOptions{SignalLimit: -1}); err != nil {
 			appendCycleError("更新信号验证失败", err)
 			s.setAutomationTask(automationTaskOutcomes, "error", "更新信号验证失败", now, err)
 		} else if outcomeReportCoversTradingDate(report, session.TradingDate) {
@@ -1443,6 +1449,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 				s.setAutomationTask(automationTaskOutcomes, "waiting", fmt.Sprintf("日K仅更新至%s，16:05重试", dataThrough), now, nil)
 			}
 		}
+		cancelOutcomes()
 	}
 
 	currentShadowSnapshot := s.hasCurrentSessionSnapshot(latestSnapshot, session)
@@ -1467,20 +1474,27 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 		}
 		allCached := true
 		for _, id := range s.orderedShadowProfileIDs() {
+			if cycleCtx.Err() != nil {
+				shadowFailed = true
+				appendCycleError("影子账户同步取消", cycleCtx.Err())
+				break
+			}
 			profile := s.shadowProfiles[id]
+			profileCtx, cancelProfile := context.WithTimeout(cycleCtx, shadowExecutionTimeout)
 			options := paper.Options{Config: profile.Config, Limit: 0, Realtime: session.State == realtime.MarketStateTrading || session.State == realtime.MarketStateAuction, RealtimeAt: now}
-			if dates, calendarErr := s.tradingCalendar(cycleCtx, now); calendarErr == nil {
+			if dates, calendarErr := s.tradingCalendar(profileCtx, now); calendarErr == nil {
 				options.CalendarDates = dates
 			}
 			if options.Realtime {
-				options.RealtimeQuotes = s.shadowRealtimeQuotes(cycleCtx, latestSnapshot)
+				options.RealtimeQuotes = s.shadowRealtimeQuotes(profileCtx, latestSnapshot)
 			}
-			cached, preserved, preserveReason, err := s.syncShadowProfileFromSnapshot(cycleCtx, nil, profile, options, loadSignals, latestSnapshot.Signals)
+			cached, preserved, preserveReason, err := s.syncShadowProfileFromSnapshot(profileCtx, nil, profile, options, loadSignals, latestSnapshot.Signals)
+			cancelProfile()
 			if err != nil {
 				shadowFailed = true
 				appendCycleError(profile.Name+"影子账户同步失败", err)
 				s.setAutomationTask(automationTaskShadow, "error", profile.Name+"影子账户同步失败", now, err)
-				break
+				continue
 			}
 			allCached = allCached && cached
 			if preserved {

@@ -72,6 +72,7 @@ TradingAgents-Astock ──> Python bridge ──> AnalysisResult(JSON)
 
 ## 模块边界
 
+- 实时扫描通过 `FallbackMarketScanClient` 为东方财富点查和候选榜单保留独立回退时间，点查缺项由同花顺快照补齐，来源和行情时间保留在 `MarketStockSnapshot`。扫描器接受显式部分结果并记录警告，跨交易日资金字段不与新报价混用。Web 自动任务按扫描、验证和单个影子账户分别设置超时，成功日历快照在本轮同一日期内复用；日历错误不会被缓存为工作日日历。
 - 沪深 A 股榜单由 `FallbackMarketRankingClient` 在东方财富和同花顺之间整榜切换，为备用请求保留超时预算。同花顺适配器覆盖涨跌幅、涨速、成交额、换手率，过滤北交所后分页补齐并校验顺序。`IndustryEnrichedRankingClient` 仅补齐缺失分类：F10 申万行业优先、资金页行业备用，成功结果缓存 24 小时，以四路并发和同股票请求合并控制查询量；分类失败不抹掉榜单。`MarketRankingItem.Source` / `IndustrySource` 分别保留行情与分类来源，终端和 Web API 均可见。
 - 资金流由 `FallbackFundFlowClient` 合并东方财富与同花顺公开大单净额，保留主源有效值并补齐缺失项；部分结果可与覆盖错误同时返回。`FundFlow.Source` 标记供应商及口径，`FetchedAt` 仅记录获取时间。同花顺个股资金与三大指数快照分别适配，指数校验证券代码、市场及 `DataTime`，不复用个股代码。个股备用涨速根据连续一分钟分时价格计算，独立标记 `SpeedSource` / `SpeedTime`，不跨午休或使用盘后固定价格交易。ETF、可转债或北交所未覆盖项保持缺失。资金雷达跨来源或跨日重置累计差分样本。
 - `internal/market`：个股/指数行情、沪深个股涨跌幅/涨速榜、未复权日 K、沪深京历史成交额、个股与全行业主力资金流、行业板块成份股成交额排行、关联板块排行、龙虎榜、公告索引、新闻搜索、券商研报索引和名称解析适配器，不包含策略逻辑。可选同花顺 Quant API 通过 `--source ths` 接入实时行情、高频序列和历史行情（日 K 使用 `cmd_history_quotation`，固定 `Interval=D,CPS=1,Fill=Original`），失败时回退现有 HTTP 源；个股榜单直接携带东方财富行业分类；默认日 K 先使用东方财富，自动回退腾讯未复权序列，再回退14天内本地有效缓存；上一交易日成交额使用新浪上证指数、深证综指和北证 50 的 5 分钟精确成交额按日汇总。

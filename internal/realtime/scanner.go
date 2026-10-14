@@ -235,7 +235,10 @@ func (scanner *Scanner) Scan(ctx context.Context, watchlist []string, includeLea
 
 	stocks, err := scanner.market.FetchStocks(ctx, symbols)
 	if err != nil {
-		return ScanResult{}, fmt.Errorf("实时行情扫描失败: %w", err)
+		if len(stocks) == 0 || ctx.Err() != nil {
+			return ScanResult{}, fmt.Errorf("实时行情扫描失败: %w", err)
+		}
+		warnings = append(warnings, "部分扫描行情缺失: "+err.Error())
 	}
 	stockBySymbol := make(map[string]domain.MarketStockSnapshot, len(stocks))
 	for _, stock := range stocks {
@@ -390,6 +393,9 @@ func (scanner *Scanner) fetchHistory(ctx context.Context, symbol string) ([]doma
 }
 
 func (scanner *Scanner) evaluate(input Snapshot) Signal {
+	if len(input.Stock.QuoteTime) >= 10 && input.Stock.QuoteTime[:10] != input.Now.In(marketLocation).Format("2006-01-02") {
+		input.Stock.MainNet, input.Stock.MainRatio, input.Stock.Speed = math.NaN(), math.NaN(), math.NaN()
+	}
 	speedEstimated := false
 	if !finite(input.Stock.Speed) {
 		if speed, ok := estimatedMinuteSpeed(input.Minutes); ok {
@@ -399,6 +405,12 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 	}
 	components := make([]Component, 0, len(scanner.strategies))
 	warnings := make([]string, 0)
+	if input.Stock.Source != "" && input.Stock.Source != "东方财富" {
+		warnings = append(warnings, "扫描行情来源: "+input.Stock.Source)
+	}
+	if len(input.Stock.QuoteTime) >= 10 && input.Stock.QuoteTime[:10] != input.Now.In(marketLocation).Format("2006-01-02") {
+		warnings = append(warnings, "扫描点查时间为"+input.Stock.QuoteTime+"，旧交易日资金和涨速不用于当前报价")
+	}
 	for _, item := range scanner.strategies {
 		value := item.Evaluate(input)
 		components = append(components, value)
@@ -479,8 +491,8 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 	if riskOverlayReason != "" {
 		risks = append(risks, riskOverlayReason)
 	}
-	quoteTime := ""
-	if input.Quote != nil {
+	quoteTime := input.Stock.QuoteTime
+	if input.Quote != nil && strings.TrimSpace(input.Quote.QuoteTime) != "" {
 		quoteTime = input.Quote.QuoteTime
 	}
 	return Signal{
@@ -942,6 +954,9 @@ func (scanner *Scanner) fetchQuotes(ctx context.Context, symbols []string, warni
 // Quote.Amount is expressed in ten-thousand yuan and Quote market caps in
 // hundred-million yuan; MarketStockSnapshot keeps both values in yuan.
 func mergeRealtimeQuote(stock domain.MarketStockSnapshot, quote domain.Quote) domain.MarketStockSnapshot {
+	if len(stock.QuoteTime) >= 10 && len(quote.QuoteTime) >= 10 && stock.QuoteTime[:10] != quote.QuoteTime[:10] {
+		stock.MainNet, stock.MainRatio, stock.Speed = math.NaN(), math.NaN(), math.NaN()
+	}
 	if symbol := normalizeCandidateSymbol(quote.Symbol); symbol != "" {
 		stock.Symbol = symbol
 	}

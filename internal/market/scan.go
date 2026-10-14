@@ -108,7 +108,8 @@ func ParseMarketStockScanPayload(raw string) []domain.MarketStockSnapshot {
 		}
 		result = append(result, domain.MarketStockSnapshot{
 			Symbol: symbol, Name: strings.TrimSpace(item.Name), Industry: strings.TrimSpace(item.Industry),
-			Price: rawNumber(item.Price), Percent: rawNumber(item.Percent), Amount: rawNumber(item.Amount),
+			Source: "东方财富",
+			Price:  rawNumber(item.Price), Percent: rawNumber(item.Percent), Amount: rawNumber(item.Amount),
 			Turnover: rawNumber(item.Turnover), VolumeRatio: rawNumber(item.VolumeRatio), Speed: rawNumber(item.Speed),
 			High: rawNumber(item.High), Low: rawNumber(item.Low), Open: rawNumber(item.Open),
 			PreviousClose: rawNumber(item.PreviousClose), MarketCap: rawNumber(item.MarketCap),
