@@ -232,6 +232,12 @@ type Server struct {
 	patternBatchMu            sync.Mutex
 	patternBatchActive        *patternBatchExecution
 	patternBatchErrors        map[string]string
+	patternForwards           patternForwardArchive
+	patternForwardMu          sync.Mutex
+	patternForwardStateMu     sync.Mutex
+	patternForwardWake        chan struct{}
+	patternForwardCancels     map[string]context.CancelFunc
+	patternForwardErrors      map[string]string
 	candidateEngine           backtest.Engine
 	candidateArchive          continuousOptimizationArchive
 	realtimeScanner           realtimeScanner
@@ -885,6 +891,7 @@ func NewServer(resolver SymbolResolver, quotes QuoteClient, history DailyHistory
 		assistantJobs:      make(map[string]*assistantChatJob),
 		automationTasks:    make(map[string]storage.AutomationTaskState),
 		planMonitorWake:    make(chan struct{}, 1),
+		patternForwardWake: make(chan struct{}, 1),
 		now:                time.Now,
 	}
 	for _, option := range options {
@@ -1061,6 +1068,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/pattern-validation", s.handlePatternValidation)
 	mux.HandleFunc("/api/pattern-pools", s.handlePatternPools)
 	mux.HandleFunc("/api/pattern-batches", s.handlePatternBatches)
+	mux.HandleFunc("/api/pattern-forwards", s.handlePatternForwards)
 	mux.HandleFunc("/api/trade-plans", s.handleTradePlans)
 	mux.HandleFunc("/api/position-preview", s.handlePositionPreview)
 	mux.HandleFunc("/api/trade-plan-reviews", s.handleTradePlanReviews)
@@ -1117,6 +1125,9 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	}()
 	go s.runAutomationLoop(automationCtx)
 	go s.runPlanMonitorLoop(automationCtx)
+	forwardDone := make(chan struct{})
+	go func() { defer close(forwardDone); s.runPatternForwardLoop(automationCtx) }()
+	defer func() { cancelAutomation(); <-forwardDone }()
 	serveError := make(chan error, 1)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

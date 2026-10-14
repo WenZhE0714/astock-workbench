@@ -2,9 +2,10 @@ import { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRi
 import { validationPatterns, validationPercent, validationState, validationOutcome, validationSymbols, validationTone, validationCoverageStatus, validationActionState, validationActionKinds, validationSourceURL, validationPriceBasis, validationQualityState, validationPoints, validationBenchmarkState, validationPeriod } from './pattern-validation.mjs'
 import { shanghaiToday } from './review-calendar.mjs'
 import { PatternBatchView } from './pattern-batch-view.js'
+import { PatternForwardView } from './pattern-forward-view.js'
 
 export const PatternValidationView = {
-  components: { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight, PatternBatchView },
+  components: { Play, Square, RefreshCw, Download, ArrowUpRight, ChevronLeft, ChevronRight, PatternBatchView, PatternForwardView },
   props: ['selection', 'defaultSymbol'],
   emits: ['selection', 'open-sample'],
   data() {
@@ -13,12 +14,13 @@ export const PatternValidationView = {
     return { symbols:this.selection?.symbols || this.defaultSymbol || '002080', start:this.selection?.start || start.toISOString().slice(0,10), end:this.selection?.end || today,
       priceBasis:this.selection?.priceBasis || 'raw',
       batchMode:!!this.selection?.batchMode,
+      forwardMode:!!this.selection?.forwardMode,
       splitEnabled:!!this.selection?.validationStart, validationStart:this.selection?.validationStart || '', period:this.selection?.period || '',
       runID:this.selection?.runID || '', pattern:this.selection?.pattern || '', bias:this.selection?.bias || '', regime:this.selection?.regime || '', state:this.selection?.state || '', action:this.selection?.action || '', horizon:this.selection?.horizon || 5, offset:this.selection?.offset || 0,
       view:null, runs:[], running:false, loading:false, error:'', controller:null, historyController:null, requestID:0, loadedKey:'', adoptArchive:false, patterns:validationPatterns, today }
   },
   computed: {
-    selectionValue() { return {symbols:this.symbols,start:this.start,end:this.end,priceBasis:this.priceBasis,batchMode:this.batchMode,validationStart:this.splitEnabled ? this.validationStart : '',period:this.period,runID:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,action:this.action,horizon:this.horizon,offset:this.offset} },
+    selectionValue() { return {symbols:this.symbols,start:this.start,end:this.end,priceBasis:this.priceBasis,batchMode:this.batchMode,forwardMode:this.forwardMode,validationStart:this.splitEnabled ? this.validationStart : '',period:this.period,runID:this.runID,pattern:this.pattern,bias:this.bias,regime:this.regime,state:this.state,action:this.action,horizon:this.horizon,offset:this.offset} },
     filterKey() { return [this.pattern,this.bias,this.regime,this.state,this.action,this.horizon,this.period].join('|') },
     requestKey() { return `${this.runID}|${this.filterKey}|${this.offset}` },
     report() { return this.view?.report },
@@ -101,9 +103,10 @@ export const PatternValidationView = {
   mounted() { this.history(); if (this.runID) this.load() },
   beforeUnmount() { this.requestID++; this.controller?.abort(); this.historyController?.abort() },
   template: `<section class="pattern-validation" aria-label="形态验证" :aria-busy="busy">
-    <div class="pv-heading"><h2>形态验证</h2><span>历史重建 · {{ basisLabel(report ? report.request.price_basis : priceBasis) }} · 确认后价格表现</span></div>
-    <div class="pv-run-modes" role="group" aria-label="验证方式"><button type="button" :aria-pressed="!batchMode" :disabled="running" @click="batchMode=false">单次验证</button><button type="button" :aria-pressed="batchMode" :disabled="running" @click="batchMode=true">批量验证</button></div>
-    <pattern-batch-view v-if="batchMode" :initial="{start,end,price_basis:priceBasis,validation_start:splitEnabled ? validationStart : ''}" @open-run="openBatchRun"/>
+    <div class="pv-heading"><h2>形态验证</h2><span>{{ forwardMode ? '前向观察 · 当日快照' : '历史重建 · '+basisLabel(report ? report.request.price_basis : priceBasis)+' · 确认后价格表现' }}</span></div>
+    <div class="pv-run-modes" role="group" aria-label="验证方式"><button type="button" :aria-pressed="!batchMode && !forwardMode" :disabled="running" @click="batchMode=false; forwardMode=false">单次验证</button><button type="button" :aria-pressed="batchMode" :disabled="running" @click="batchMode=true; forwardMode=false">批量验证</button><button type="button" :aria-pressed="forwardMode" :disabled="running" @click="forwardMode=true; batchMode=false">前向观察</button></div>
+    <pattern-forward-view v-if="forwardMode" @manage-pools="forwardMode=false; batchMode=true"/>
+    <pattern-batch-view v-else-if="batchMode" :initial="{start,end,price_basis:priceBasis,validation_start:splitEnabled ? validationStart : ''}" @open-run="openBatchRun"/>
     <form v-else class="pv-form" @submit.prevent="run">
       <label class="pv-symbols">股票池<input v-model="symbols" aria-label="验证股票池" placeholder="002080, 600519" required :disabled="running"></label>
       <label>开始日期<input type="date" v-model="start" aria-label="验证开始日期" required :max="end" :disabled="running"></label>
@@ -114,6 +117,7 @@ export const PatternValidationView = {
       <button type="submit" :disabled="busy"><play :size="14"/>{{ running ? '验证中' : '运行验证' }}</button>
       <button v-if="running" type="button" class="icon-button" title="取消验证" aria-label="取消验证" @click="cancel"><square :size="14"/></button>
     </form>
+    <template v-if="!forwardMode">
     <div class="pv-archive"><label>归档<select v-model="runID" @change="adoptArchive = !!runID; period = ''; offset = 0" aria-label="形态验证归档" :disabled="running"><option value="">本次验证</option><option v-for="run in runs" :key="run.run_id" :value="run.run_id">{{ time(run.generated_at) }} · {{ run.request.symbols.join(', ') }} · {{ run.samples }} 样本</option></select></label><button type="button" class="icon-button" title="刷新归档" aria-label="刷新验证归档" :disabled="running" @click="history"><refresh-cw :size="15"/></button><a v-if="runID && !busy" :href="exportURL" class="icon-button" title="导出完整验证归档" aria-label="导出完整验证归档"><download :size="15"/></a></div>
     <p v-if="error" class="chart-plan-error" role="alert">{{ error }}<button v-if="runID && !running" type="button" class="text-action" @click="load">重试读取</button></p>
     <div class="pv-filters"><div class="dashboard-segment" role="group" aria-label="形态验证窗口"><button v-for="days in [5,10,20]" :key="days" type="button" :aria-pressed="horizon === days" :class="{active:horizon === days}" :disabled="running" @click="horizon = days">{{ days }}日</button></div><select v-model="pattern" aria-label="筛选验证形态" :disabled="running"><option value="">全部形态</option><option v-for="item in patterns" :value="item[0]" :key="item[0]">{{ item[1] }}</option></select><select v-model="bias" aria-label="筛选验证方向" :disabled="running"><option value="">全部方向</option><option value="bullish">看涨</option><option value="bearish">看跌</option></select><select v-model="regime" aria-label="筛选市场阶段" :disabled="running"><option value="">全部市场阶段</option><option v-for="item in ['牛市','熊市','震荡','高波动','数据不足']" :key="item">{{ item }}</option></select><select v-model="state" aria-label="筛选样本状态" :disabled="running"><option value="">全部状态</option><option value="watching">待确认</option><option value="forming">突破待确认</option><option value="confirmed">已确认</option><option value="invalidated">已失效</option><option value="expired">观察到期</option></select></div>
@@ -161,5 +165,6 @@ export const PatternValidationView = {
       <details class="pv-method"><summary>统计口径与限制</summary><p v-for="warning in report.warnings" :key="warning">{{ warning }}</p><p class="pv-hash">输入指纹 {{ report.input_hash }}</p></details>
     </template>
     <p v-else-if="!busy && !error" class="pv-empty">暂无验证结果</p>
+    </template>
   </section>`,
 }

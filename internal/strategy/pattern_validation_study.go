@@ -24,7 +24,7 @@ func freezePatternStudy(request domain.PatternValidationRequest, cutoff string, 
 	}
 	config := domain.PatternStudyConfig{
 		AlgorithmVersion: PatternValidationVersion, PatternVersion: "classic-v1",
-		Patterns: []string{"ascending-triangle", "bear-flag", "bull-flag", "descending-triangle", "double-bottom", "double-top", "head-shoulders-bottom", "head-shoulders-top"},
+		Patterns: classicPatternIDs(),
 		Symbols:  symbols, PriceBasis: basis, Start: request.Start, ResearchEnd: boundary.AddDate(0, 0, -1).Format(time.DateOnly), ValidationStart: request.ValidationStart, End: request.End, DataCutoff: cutoff,
 		Horizons: []int{5, 10, 20}, WarmupDays: PatternValidationWarmupDays, LookbackBars: classicLookback, PivotRadius: classicPivotRadius, ConfirmationBars: classicMaximumAge,
 		PriceMethod: "unadjusted", VolumeMethod: "raw", QualityMethod: domain.CorporateActionScope, BenchmarkMethod: patternBenchmarkMethod,

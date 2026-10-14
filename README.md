@@ -82,6 +82,14 @@ TradingAgents-Astock 做多智能体策略研究，并为模拟盘、回测和�
 
 股票池及任务保存在 `~/.local/share/astock-workbench/pattern-batches/`（遵循 `XDG_DATA_HOME`），与验证归档分开。`GET/POST /api/pattern-pools` 列出/冻结股票池，创建体为 `{name,source,members:[{symbol,name,industry}]}`。`POST /api/pattern-batches` 创建体为 `{action:"create",pool_version,request:{start,end,price_basis,validation_start}}`，股票名单来自版本，返回202及任务ID；`GET /api/pattern-batches?id=...` 查询进度，省略ID列出近期任务；控制请求为 `{id,action:"cancel"|"resume"|"retry-failed"}`。单次验证入口仍限10只，v1至v7归档继续读取，不自动补充股票池版本。
 
+“前向观察”使用独立的 `pattern-forward-v1` 任务和快照存储，不与历史回溯统计合并。创建任务时固定股票池版本、价格口径、形态规则及引擎版本、参数、历史请求起点和采集窗口，并记录实际创建时间与配置SHA-256。上海时间15:00前创建的任务可从当天起等待交易日确认，15:00及之后创建的任务最早从下一天开始；API不接受指定历史采集日或修改冻结配置。暂停/启用仅改变运行开关，规则或口径变化需要新建任务。
+
+服务启动后及每分钟检查收盘采集，窗口为15:30至18:00，失败项间隔10分钟重试。优先使用配置交易日历；未配置时以沪深300实际日K日期为参照，并要求当日日K就绪，不按工作日猜测交易日。每个采集日先冻结一份基准，再逐只保存当前股票数据、复权因子、公司行动及当日首次可识别形态；至少需要120根此前日K预热，当日股票日K缺失或成交量为零则保留待采集原因。历史请求起点固定为任务最早采集日前240个自然日，后续持续使用相同起点。已经留存的证券不重新取数，索引写入中断可从不可变快照恢复，同一任务的形态身份去重。
+
+任务配置、基准及股票观察快照通过不可覆盖文件发布并校验指纹；同日未完成的索引可更新，全部完成或窗口结束后封存。服务重启、暂停或错过窗口后，只把已确认的过去交易日记为缺采或部分缺采，不补抓历史信号，也不把跨日返回的数据记作前一天的观察。日历覆盖之外的日期保持待核验，缺采计数不承诺覆盖未知日历区间。数据仍是当时收到的供应商快照，留存不表示形态已经通过公司行动核查；其来源及质量状态同时保留。
+
+本阶段只提供前向任务、收盘采集、首次观察和快照导出，尚不追加后续确认/失效或5/10/20日成熟表现，因此前向页面不展示胜率与收益统计。后续跟踪须另建追加式记录，不能覆盖原始观察。数据保存在 `~/.local/share/astock-workbench/pattern-forwards/`（遵循 `XDG_DATA_HOME`）。`POST /api/pattern-forwards` 创建体为 `{action:"create",pool_version,name,price_basis}`，控制为 `{action:"pause"|"enable"|"collect",id}`；`collect` 只触发当日窗口检查，不绕过重试间隔。`GET /api/pattern-forwards` 列出任务，`?id=...` 查看采集日，`?id=...&date=YYYY-MM-DD` 查看摘要，追加 `&download=1` 导出含完整输入的当日快照。
+
 均值和窗口失效率只使用完整成熟窗口，未确认、待成熟和缺失数据不会记作零收益。确认前失效另行计数。页面按形态、方向和市场阶段筛选，支持分页、样本冻结依据、识别日/确认日图表跳转及返回原筛选；图表使用当前数据源重算，原始证据保留在归档中。
 
 `POST /api/pattern-validation` 接收 `symbols`、`start`、`end`。`GET /api/pattern-validation` 列出归档，`?id=...&horizon=20&pattern=bull-flag` 读取及筛选，`?id=...&download=1` 导出包含输入日K、基准、算法版本、数据指纹及冻结样本的JSON。每次运行独立保存于 `~/.local/share/astock-workbench/pattern-validations/`（遵循 `XDG_DATA_HOME`）；读取和筛选不会重新取行情，也不会修改计划、监控、影子账户或策略参数。

@@ -37,6 +37,9 @@
 .pv-adjustments .pv-quality-list li { display:block; border-top:1px solid var(--line); padding:10px 0; }
 .pv-quality-list li[data-quality-state=mismatch]>strong,.pv-quality-list li[data-quality-state=unverified]>strong { color:var(--warn); }
 .pv-benchmark { min-width:0; }
+.pv-forward { min-width:0; padding:8px 0; }.pv-forward-status { padding:12px 0; border-bottom:1px solid var(--line); font-size:12px; line-height:1.7; }.pv-forward-status p { color:var(--muted); margin:6px 0; overflow-wrap:anywhere; }
+.pv-observation { border-bottom:1px solid var(--line); padding:12px 0; font-size:11px; line-height:1.7; }.pv-observation>summary { display:flex; flex-wrap:wrap; gap:6px 16px; cursor:pointer; }.pv-observation>summary span { color:var(--muted); }.pv-observation p { overflow-wrap:anywhere; margin:6px 0; }.pv-forward-sample { border-top:1px solid var(--line); padding:10px 0; }
+.pv-forward :is(select,input) { min-width:0; width:100%; }.pv-forward .pv-action-warning { color:var(--warn); }.pv-forward-day .pv-totals strong { font-size:18px; }
 .pv-run-modes { display:flex; gap:0; margin:8px 0; }.pv-run-modes [aria-pressed=true] { color:#101719; background:var(--accent); }
 .pv-batch { padding:8px 0 16px; border-bottom:1px solid var(--line); min-width:0; }.pv-pool-select,.pv-job-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }.pv-pool-select select { flex:1; min-width:150px; }
 .pv-pool-editor { display:flex; flex-wrap:wrap; gap:10px; padding:12px 0; }.pv-pool-editor label { display:flex; flex-direction:column; gap:6px; flex:1 1 180px; min-width:0; font-size:11px; color:var(--muted); }.pv-pool-editor .pv-pool-codes { flex-basis:100%; }.pv-pool-editor textarea { width:100%; resize:vertical; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:4px; font:inherit; font-size:12px; padding:8px; }
