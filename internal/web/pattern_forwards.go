@@ -30,6 +30,8 @@ type patternForwardArchive interface {
 	SaveBenchmark(domain.PatternForwardBenchmark) (domain.PatternForwardBenchmark, error)
 	Snapshot(string, string, string) (domain.PatternForwardSnapshot, error)
 	SaveSnapshot(domain.PatternForwardSnapshot) (domain.PatternForwardSnapshot, error)
+	Tracking(string) ([]domain.PatternForwardTracking, error)
+	SaveTracking(domain.PatternForwardTracking) (domain.PatternForwardTracking, error)
 	Acquire() (func(), error)
 }
 
@@ -90,6 +92,10 @@ func (s *Server) handlePatternForwards(w http.ResponseWriter, r *http.Request) {
 			task, err := s.patternForwards.Load(id)
 			if err != nil {
 				writeJSON(w, 404, errorResponse{Error: err.Error()})
+				return
+			}
+			if r.URL.Query().Get("tracking") == "1" {
+				s.forwardTrackingResponse(w, r, task)
 				return
 			}
 			if date := r.URL.Query().Get("date"); date != "" {
@@ -357,6 +363,13 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 		}
 		if len(dates) > 0 {
 			status.CalendarStart, status.CalendarEnd = dates[0], dates[len(dates)-1]
+		}
+		if control.Enabled {
+			through, trackingErr := s.reconcileForwardTracking(ctx, task, dates)
+			status.TrackingThrough, status.TrackingError = through, ""
+			if trackingErr != nil {
+				status.TrackingError = trackingErr.Error()
+			}
 		}
 		s.recordForwardStatus(task.ID, status)
 	}

@@ -330,6 +330,12 @@ func TestPatternForwardBrowserFixture(t *testing.T) {
 			day, _ = time.ParseInLocation(time.DateOnly, dates[index+3], realtimeWebLocation)
 			clock.Set(day.Add(16 * time.Hour))
 			s.wakePatternForwards()
+		case "mature":
+			for _, date := range dates[index+1:] {
+				day, _ = time.ParseInLocation(time.DateOnly, date, realtimeWebLocation)
+				clock.Set(day.Add(16 * time.Hour))
+				s.runPatternForwardCycle(ctx)
+			}
 		default:
 			w.WriteHeader(400)
 			return

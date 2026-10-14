@@ -51,12 +51,14 @@ type PatternForwardControl struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 type PatternForwardStatus struct {
-	CheckedAt      time.Time `json:"checked_at"`
-	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	CalendarSource string    `json:"calendar_source,omitempty"`
-	CalendarStart  string    `json:"calendar_start,omitempty"`
-	CalendarEnd    string    `json:"calendar_end,omitempty"`
+	CheckedAt       time.Time `json:"checked_at"`
+	LastAttemptAt   time.Time `json:"last_attempt_at,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	CalendarSource  string    `json:"calendar_source,omitempty"`
+	CalendarStart   string    `json:"calendar_start,omitempty"`
+	CalendarEnd     string    `json:"calendar_end,omitempty"`
+	TrackingThrough string    `json:"tracking_through,omitempty"`
+	TrackingError   string    `json:"tracking_error,omitempty"`
 }
 
 type PatternForwardItem struct {
