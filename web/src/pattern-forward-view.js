@@ -1,10 +1,11 @@
 import { Play, Pause, RefreshCw, Download, FolderOpen } from 'lucide-vue-next'
 import { validationPriceBasis, validationActionState } from './pattern-validation.mjs'
 import { PatternForwardResultsView } from './pattern-forward-results-view.js'
+import { PatternForwardHealthView } from './pattern-forward-health-view.js'
 
 export const PatternForwardView = {
-  components:{Play,Pause,RefreshCw,Download,FolderOpen,PatternForwardResultsView}, emits:['manage-pools'],
-  data(){return {pools:[],items:[],poolVersion:'',taskID:'',name:'',priceBasis:'hfq',date:'',detail:null,error:'',busy:false,closed:false,timer:null,controller:null,detailController:null,detailSequence:0,loadedKey:'',resultsMode:false}},
+  components:{Play,Pause,RefreshCw,Download,FolderOpen,PatternForwardResultsView,PatternForwardHealthView}, emits:['manage-pools'],
+  data(){return {pools:[],items:[],poolVersion:'',taskID:'',name:'',priceBasis:'hfq',date:'',detail:null,error:'',busy:false,closed:false,timer:null,controller:null,detailController:null,detailSequence:0,loadedKey:'',dataView:'observations',runtime:null}},
   computed:{
     selected(){return this.items.find(v=>v.task.id===this.taskID)},
     day(){return this.selected?.days.find(d=>d.date===this.date)},
@@ -23,7 +24,7 @@ export const PatternForwardView = {
     async api(url,options={}){const r=await fetch(url,{cache:'no-store',...options}),p=await r.json();if(!r.ok)throw new Error(p.error || '前向研究请求失败');return p},
     async refresh(){
       clearTimeout(this.timer);this.controller?.abort();this.controller=new AbortController()
-      try{const p=await this.api('/api/pattern-forwards',{signal:this.controller.signal});if(this.closed)return;this.items=p.items || [];if(!this.taskID)this.taskID=this.items[0]?.task.id || '';if(!this.selected?.days.some(d=>d.date===this.date))this.date=this.selected?.days[0]?.date || '';await this.loadDay()}
+      try{const p=await this.api('/api/pattern-forwards',{signal:this.controller.signal});if(this.closed)return;this.items=p.items || [];this.runtime=p.runtime;if(!this.taskID)this.taskID=this.items[0]?.task.id || '';if(!this.selected?.days.some(d=>d.date===this.date))this.date=this.selected?.days[0]?.date || '';await this.loadDay()}
       catch(e){if(e.name!=='AbortError')this.error=e.message}
       finally{if(!this.closed)this.timer=setTimeout(()=>this.refresh(),5000)}
     },
@@ -52,8 +53,9 @@ export const PatternForwardView = {
     <p v-if="error" role="alert" class="pv-action-warning">{{ error }}</p>
     <label class="pv-job-select">研究任务<select v-model="taskID" aria-label="前向研究任务" @change="selectTask"><option value="">暂无任务</option><option v-for="v in items" :key="v.task.id" :value="v.task.id">{{ v.task.name }} · {{ time(v.task.created_at) }} · {{ v.control.enabled ? '已启用' : '已暂停' }}</option></select></label>
     <template v-if="selected"><div class="pv-forward-status" :data-forward-enabled="selected.control.enabled"><strong>{{ selected.control.enabled ? '已启用' : '已暂停' }} · {{ selected.task.pool.members.length }}只 · {{ basis(selected.task.config.price_basis) }}</strong><p>冻结 {{ time(selected.task.created_at) }} · 最早采集日 {{ selected.task.config.start_on }}</p><p>上海时间 {{ clock(selected.task.config.open_minute) }} 至 {{ clock(selected.task.config.close_minute) }} · 重试间隔 {{ selected.task.config.retry_minutes }}分钟</p><p v-if="selected.status.calendar_start">{{ selected.status.calendar_source }} · {{ selected.status.calendar_start }} 至 {{ selected.status.calendar_end }}</p><p v-if="selected.status.error" class="pv-action-warning">{{ selected.status.error }}</p><div class="pv-job-actions"><button type="button" :disabled="busy" @click="command(selected.control.enabled ? 'pause' : 'enable')"><pause v-if="selected.control.enabled" :size="14"/><play v-else :size="14"/>{{ selected.control.enabled ? '暂停前向任务' : '启用前向任务' }}</button><button type="button" :disabled="busy || !selected.can_collect" @click="command('collect')"><refresh-cw :size="14"/>检查收盘采集</button></div><details class="pv-method"><summary>冻结配置</summary><p>{{ selected.task.pool.name }} · {{ selected.task.pool.source }}</p><p>{{ selected.task.config.version }} · {{ selected.task.config.engine_version }} · {{ selected.task.config.patterns.length }}种形态 · {{ selected.task.config.pattern_version }}</p><p>固定历史起点 {{ selected.task.config.history_start }} · 预热 {{ selected.task.config.warmup_days }}天 · 回看 {{ selected.task.config.lookback_bars }}根 · 确认期限 {{ selected.task.config.confirmation_bars }}根</p><p>{{ selected.task.config.price_method }} · {{ selected.task.config.volume_method }} · {{ selected.task.config.quality_method }}</p><p class="pv-hash">股票池 {{ selected.task.pool.version }}</p><p class="pv-hash">配置 {{ selected.task.config_hash }}</p></details></div>
-    <div class="pv-run-modes" role="group" aria-label="前向数据视图"><button type="button" :aria-pressed="!resultsMode" @click="resultsMode=false">观察快照</button><button type="button" :aria-pressed="resultsMode" @click="resultsMode=true">结果跟踪</button></div>
-    <pattern-forward-results-view v-if="resultsMode" :key="taskID" :task="selected"/>
+    <div class="pv-run-modes" role="group" aria-label="前向数据视图"><button type="button" :aria-pressed="dataView==='observations'" @click="dataView='observations'">观察快照</button><button type="button" :aria-pressed="dataView==='results'" @click="dataView='results'">结果跟踪</button><button type="button" :aria-pressed="dataView==='health'" @click="dataView='health'">运行监控</button></div>
+    <pattern-forward-results-view v-if="dataView==='results'" :key="taskID" :task="selected"/>
+    <pattern-forward-health-view v-else-if="dataView==='health'" :key="taskID" :record="selected" :runtime="runtime" @refresh="refresh" @open-day="date=$event; dataView='observations'; loadDay()"/>
     <template v-else><div class="pv-section-title"><h3>收盘观察快照</h3><a v-if="exportURL" :href="exportURL" class="icon-button" title="导出当日快照" aria-label="导出当日快照"><download :size="15"/></a></div>
     <label class="pv-job-select">采集日<select v-model="date" aria-label="前向采集日" @change="loadDay"><option value="">暂无采集记录</option><option v-for="d in selected.days" :key="d.date" :value="d.date">{{ d.date }} · {{ state(d.state) }}</option></select></label>
     <div v-if="day" class="pv-forward-day" :data-forward-day-state="day.state"><div class="pv-totals"><div><span>已留存 / 股票池</span><strong>{{ captured }} / {{ day.items.length }}</strong></div><div><span>首次观察样本</span><strong>{{ sampleCount }}</strong></div><div><span>缺采或待完成</span><strong>{{ day.items.length-captured }}</strong></div><div><span>当日状态</span><strong>{{ state(day.state) }}</strong></div></div><p class="pv-study-basis">{{ day.calendar_source }} · 最近尝试 {{ time(day.last_attempt_at) }} · 封存 {{ time(day.sealed_at) }}</p><p v-if="day.error" class="pv-action-warning">{{ day.error }}</p>

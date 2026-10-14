@@ -57,6 +57,9 @@ type PatternForwardStatus struct {
 	CalendarSource  string    `json:"calendar_source,omitempty"`
 	CalendarStart   string    `json:"calendar_start,omitempty"`
 	CalendarEnd     string    `json:"calendar_end,omitempty"`
+	CalendarDates   []string  `json:"calendar_dates,omitempty"`
+	CalendarError   string    `json:"calendar_error,omitempty"`
+	CollectionError string    `json:"collection_error,omitempty"`
 	TrackingThrough string    `json:"tracking_through,omitempty"`
 	TrackingError   string    `json:"tracking_error,omitempty"`
 }

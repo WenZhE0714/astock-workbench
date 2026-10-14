@@ -32,15 +32,20 @@ type patternForwardArchive interface {
 	SaveSnapshot(domain.PatternForwardSnapshot) (domain.PatternForwardSnapshot, error)
 	Tracking(string) ([]domain.PatternForwardTracking, error)
 	SaveTracking(domain.PatternForwardTracking) (domain.PatternForwardTracking, error)
+	Operations(string) (domain.PatternForwardOperations, error)
+	UpdateOperations(string, func(domain.PatternForwardOperations) (domain.PatternForwardOperations, error)) (domain.PatternForwardOperations, error)
+	Audit(string, time.Time) domain.PatternForwardAudit
 	Acquire() (func(), error)
 }
 
 type patternForwardView struct {
-	Task       domain.PatternForwardTask    `json:"task"`
-	Control    domain.PatternForwardControl `json:"control"`
-	Status     domain.PatternForwardStatus  `json:"status"`
-	Days       []domain.PatternForwardDay   `json:"days"`
-	CanCollect bool                         `json:"can_collect"`
+	Task       domain.PatternForwardTask       `json:"task"`
+	Control    domain.PatternForwardControl    `json:"control"`
+	Status     domain.PatternForwardStatus     `json:"status"`
+	Days       []domain.PatternForwardDay      `json:"days"`
+	CanCollect bool                            `json:"can_collect"`
+	Health     domain.PatternForwardHealth     `json:"health"`
+	Operations domain.PatternForwardOperations `json:"operations"`
 }
 
 func WithPatternForwards(store patternForwardArchive) ServerOption {
@@ -64,6 +69,15 @@ func (s *Server) forwardView(task domain.PatternForwardTask) (patternForwardView
 	}
 	if v.Days, err = s.patternForwards.Days(task.ID); err != nil {
 		return v, err
+	}
+	if v.Operations, err = s.patternForwards.Operations(task.ID); err != nil {
+		return v, err
+	}
+	v.Health = strategy.PatternForwardHealth(task, v.Control, v.Status, v.Days, s.currentTime())
+	runtime := s.forwardRuntime()
+	if runtime.Checking && runtime.TaskID == task.ID && runtime.Stage == "capture" && v.Control.Enabled {
+		v.Health.Phase, v.Health.Detail = "collecting", "正在采集当日快照"
+		v.Health.NextAttemptAt = time.Time{}
 	}
 	s.patternForwardStateMu.Lock()
 	if message := s.patternForwardErrors[task.ID]; message != "" {
@@ -98,6 +112,10 @@ func (s *Server) handlePatternForwards(w http.ResponseWriter, r *http.Request) {
 				s.forwardTrackingResponse(w, r, task)
 				return
 			}
+			if r.URL.Query().Get("audit") == "1" {
+				writeJSON(w, 200, s.patternForwards.Audit(task.ID, s.currentTime()))
+				return
+			}
 			if date := r.URL.Query().Get("date"); date != "" {
 				s.forwardDayResponse(w, r, task, date)
 				return
@@ -124,7 +142,7 @@ func (s *Server) handlePatternForwards(w http.ResponseWriter, r *http.Request) {
 			}
 			views = append(views, v)
 		}
-		writeJSON(w, 200, map[string]any{"items": views})
+		writeJSON(w, 200, map[string]any{"items": views, "runtime": s.forwardRuntime()})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -137,6 +155,7 @@ func (s *Server) handlePatternForwards(w http.ResponseWriter, r *http.Request) {
 		PoolVersion string `json:"pool_version"`
 		Name        string `json:"name"`
 		PriceBasis  string `json:"price_basis"`
+		Sequence    int64  `json:"sequence"`
 	}
 	if err := decodePatternBatch(w, r, &input); err != nil {
 		writeJSON(w, 400, errorResponse{Error: err.Error()})
@@ -178,6 +197,24 @@ func (s *Server) handlePatternForwards(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch input.Action {
+	case "ack-alert":
+		_, err := s.patternForwards.UpdateOperations(task.ID, func(v domain.PatternForwardOperations) (domain.PatternForwardOperations, error) {
+			for i := range v.Events {
+				if v.Events[i].Sequence == input.Sequence {
+					if v.Events[i].AcknowledgedAt.IsZero() {
+						v.Events[i].AcknowledgedAt = s.currentTime()
+					}
+					return v, nil
+				}
+			}
+			return v, fmt.Errorf("未找到异常记录")
+		})
+		if err != nil {
+			writeJSON(w, 400, errorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "acknowledged"})
+		return
 	case "pause", "enable":
 		if err = s.patternForwards.SetControl(task.ID, domain.PatternForwardControl{Enabled: input.Action == "enable", UpdatedAt: s.currentTime()}); err != nil {
 			writeJSON(w, 500, errorResponse{Error: err.Error()})
@@ -245,6 +282,8 @@ func (s *Server) runPatternForwardLoop(ctx context.Context) {
 	if s.patternForwards == nil {
 		return
 	}
+	s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Running = true; v.StartedAt = s.currentTime() })
+	defer s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Running = false })
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -260,13 +299,16 @@ func (s *Server) runPatternForwardLoop(ctx context.Context) {
 
 func (s *Server) recordForwardStatus(id string, status domain.PatternForwardStatus) {
 	err := s.patternForwards.SaveStatus(id, status)
+	if err == nil {
+		err = s.recordForwardOperations(id, status)
+	}
 	s.patternForwardStateMu.Lock()
 	defer s.patternForwardStateMu.Unlock()
 	if s.patternForwardErrors == nil {
 		s.patternForwardErrors = map[string]string{}
 	}
 	if err != nil {
-		s.patternForwardErrors[id] = "运行状态写入失败: " + err.Error()
+		s.patternForwardErrors[id] = "运行状态或异常记录写入失败: " + err.Error()
 	} else {
 		delete(s.patternForwardErrors, id)
 	}
@@ -277,13 +319,21 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 		return
 	}
 	defer s.patternForwardMu.Unlock()
+	s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Checking = true; v.CycleStartedAt = s.currentTime(); v.Error = "" })
+	defer s.updateForwardRuntime(func(v *patternForwardRuntime) {
+		v.Checking = false
+		v.LastCycleAt = s.currentTime()
+		v.TaskID, v.Stage = "", ""
+	})
 	unlock, err := s.patternForwards.Acquire()
 	if err != nil {
+		s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Error = err.Error() })
 		return
 	}
 	defer unlock()
 	tasks, err := s.patternForwards.Tasks()
 	if err != nil {
+		s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Error = err.Error() })
 		return
 	}
 	for _, task := range tasks {
@@ -291,9 +341,7 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 			return
 		}
 		now := s.currentTime()
-		if now.In(realtimeWebLocation).Format(time.DateOnly) < task.Config.StartOn {
-			continue
-		}
+		s.updateForwardRuntime(func(v *patternForwardRuntime) { v.TaskID, v.Stage = task.ID, "calendar" })
 		status, statusErr := s.patternForwards.Status(task.ID)
 		if statusErr != nil {
 			status.Error = statusErr.Error()
@@ -301,6 +349,7 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 			continue
 		}
 		status.CheckedAt = now
+		status.Error = ""
 		calendarCtx, stop := context.WithTimeout(ctx, 15*time.Second)
 		var dates []string
 		if s.tradingCalendarProvider != nil {
@@ -314,12 +363,15 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 		dates = realtime.NormalizeTradingDates(dates)
 		if err != nil || (len(dates) == 0 && s.tradingCalendarProvider != nil) {
 			status.Error = "交易日历不可用，未推断工作日"
+			status.CalendarError = status.Error
 			if e := s.reconcileForwardDays(task, nil, now, status.CalendarSource); e != nil {
 				status.Error = e.Error()
 			}
 			s.recordForwardStatus(task.ID, status)
 			continue
 		}
+		status.CalendarError = ""
+		status.CalendarDates = dates
 		if len(dates) > 0 {
 			status.CalendarStart, status.CalendarEnd = dates[0], dates[len(dates)-1]
 		}
@@ -340,6 +392,8 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 				status.Error = "规则版本已变更，需新建前向任务"
 			} else if s.patternValidationMu.TryLock() {
 				status.LastAttemptAt, status.Error = now, ""
+				status.CollectionError = ""
+				s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Stage = "capture" })
 				err = s.patternForwards.SaveStatus(task.ID, status)
 				if err == nil {
 					err = s.collectPatternForward(ctx, task, dates, status.CalendarSource)
@@ -347,9 +401,11 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 				s.patternValidationMu.Unlock()
 				if err != nil {
 					status.Error = err.Error()
+					status.CollectionError = status.Error
 				}
 			} else {
 				status.Error = "形态验证正忙，等待后续收盘调度"
+				status.CollectionError = status.Error
 			}
 		}
 		if s.tradingCalendarProvider == nil {
@@ -360,11 +416,14 @@ func (s *Server) runPatternForwardCycle(ctx context.Context) {
 		}
 		if len(dates) == 0 {
 			status.Error = "尚未取得交易日历，缺采覆盖等待核验"
+			status.CalendarError = status.Error
 		}
+		status.CalendarDates = dates
 		if len(dates) > 0 {
 			status.CalendarStart, status.CalendarEnd = dates[0], dates[len(dates)-1]
 		}
 		if control.Enabled {
+			s.updateForwardRuntime(func(v *patternForwardRuntime) { v.Stage = "tracking" })
 			through, trackingErr := s.reconcileForwardTracking(ctx, task, dates)
 			status.TrackingThrough, status.TrackingError = through, ""
 			if trackingErr != nil {

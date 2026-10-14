@@ -238,6 +238,7 @@ type Server struct {
 	patternForwardWake        chan struct{}
 	patternForwardCancels     map[string]context.CancelFunc
 	patternForwardErrors      map[string]string
+	patternForwardRuntime     patternForwardRuntime
 	candidateEngine           backtest.Engine
 	candidateArchive          continuousOptimizationArchive
 	realtimeScanner           realtimeScanner

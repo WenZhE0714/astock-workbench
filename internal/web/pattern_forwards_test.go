@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -309,7 +310,14 @@ func TestPatternForwardBrowserFixture(t *testing.T) {
 	if address == "" {
 		t.Skip("browser fixture is opt-in")
 	}
-	s, _, clock, dates, index := forwardServerFixture(t)
+	s, history, clock, dates, index := forwardServerFixture(t)
+	var calendarFailed atomic.Bool
+	s.tradingCalendarProvider = func(context.Context, time.Time) ([]string, error) {
+		if calendarFailed.Load() {
+			return nil, fmt.Errorf("测试日历暂不可用")
+		}
+		return dates, nil
+	}
 	batchPoolFixture(t, s, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -324,6 +332,21 @@ func TestPatternForwardBrowserFixture(t *testing.T) {
 		}
 		day, _ := time.ParseInLocation(time.DateOnly, dates[index], realtimeWebLocation)
 		switch r.URL.Query().Get("step") {
+		case "calendar-fail", "calendar-recover":
+			calendarFailed.Store(r.URL.Query().Get("step") == "calendar-fail")
+			s.wakePatternForwards()
+		case "partial":
+			history.mu.Lock()
+			history.stale = "sh600101"
+			history.mu.Unlock()
+			clock.Set(day.Add(16 * time.Hour))
+			s.wakePatternForwards()
+		case "retry":
+			history.mu.Lock()
+			history.stale = ""
+			history.mu.Unlock()
+			clock.Set(clock.Now().Add(11 * time.Minute))
+			s.wakePatternForwards()
 		case "close":
 			clock.Set(day.Add(16 * time.Hour))
 		case "later":

@@ -96,6 +96,8 @@ TradingAgents-Astock 做多智能体策略研究，并为模拟盘、回测和�
 
 日志保存在任务目录的 `tracking/YYYY-MM-DD.json`，记录计算时间、证据指纹和前序日志指纹，不覆盖原始任务配置、观察快照或已有结果。写入中断后可仅从已存证据恢复，暂停时停止追加；旧前向任务无需修改配置。若日历修订涉及已封存跟踪区间则报告错误，保留既有结果。`GET /api/pattern-forwards?id=...&tracking=1` 返回结果摘要，支持 `horizon=5|10|20`、`pattern`、`bias`、`state`、`action`、`offset`、`limit`；`date` 指结果截止日，`sample` 查看单样本逐日日志，`download=1` 导出日志链及原始证据。GET只读取档案，不触发采集或重算。
 
+“运行监控”展示采集完成率、已知日历下的下次重试、缺采明细、结果衔接和完整性验收。异常持续期间去重，恢复后保留恢复记录，最近300条记录及确认状态写入任务的 `operations.json`，不会修改原始观察。`astock forward audit` 可只读验收配置、快照和日志链；没有采集日时返回等待状态，不视为真实收盘验收通过。`astock forward import --from 数据目录` 默认只预检，追加 `--apply` 才复制任务和引用的股票池，拒绝覆盖不同内容。正式运行和迁移步骤见 [前向任务运行与验收](docs/forward-operations.md)。
+
 均值和窗口失效率只使用完整成熟窗口，未确认、待成熟和缺失数据不会记作零收益。确认前失效另行计数。页面按形态、方向和市场阶段筛选，支持分页、样本冻结依据、识别日/确认日图表跳转及返回原筛选；图表使用当前数据源重算，原始证据保留在归档中。
 
 `POST /api/pattern-validation` 接收 `symbols`、`start`、`end`。`GET /api/pattern-validation` 列出归档，`?id=...&horizon=20&pattern=bull-flag` 读取及筛选，`?id=...&download=1` 导出包含输入日K、基准、算法版本、数据指纹及冻结样本的JSON。每次运行独立保存于 `~/.local/share/astock-workbench/pattern-validations/`（遵循 `XDG_DATA_HOME`）；读取和筛选不会重新取行情，也不会修改计划、监控、影子账户或策略参数。
@@ -277,6 +279,8 @@ macOS 上如果需要在关闭终端后仍持续运行自动扫描、信号验�
 
 服务只负责在登录后拉起并保持 `astock web` 进程；自动任务状态、信号和影子账本仍写入本地
 数据目录。若用户主动停止或卸载服务，自动运行也会停止。
+安装时可用 `--data-home`、`--config-home`、`--cache-home` 和 `--calendar` 固定数据根目录及日历；
+`--dry-run` 仅输出配置。电脑睡眠或关机期间不会采集，恢复后按缺采规则处理。
 
 CLI 默认使用通达信 TCP 行情源，底层为 MIT 许可的 `tdxrs`（Python 3.11+）：
 

@@ -179,6 +179,8 @@ func (app *App) Run(ctx context.Context, arguments []string) error {
 		return app.runWeb(ctx, rest)
 	case "service":
 		return app.runService(rest)
+	case "forward":
+		return app.runForward(rest)
 	case "version", "-V", "--version":
 		fmt.Fprintf(app.out, "%s %s\n", programName, version)
 		return nil
@@ -215,6 +217,8 @@ const usageText = `A 股实时行情与策略研究工作台
 	astock stock-report [--full] [--no-ai] 股票代码或名称
 	astock web [--listen 地址] [--symbol 代码或名称]
 	astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]
+	astock forward audit [--id 任务ID]
+	astock forward import --from 数据目录 [--apply]
 	astock backtest run [选项] 股票代码或名称 ...
   astock backtest optimize [选项] 股票代码或名称 ...
   astock backtest continuous [选项] 股票代码或名称 ...

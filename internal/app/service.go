@@ -5,19 +5,27 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 )
 
 const launchdLabel = "com.github.wenzhe.astock-workbench.web"
 
 type launchdServiceConfig struct {
-	Listen string
-	Source string
-	Symbol string
+	Listen       string
+	Source       string
+	Symbol       string
+	DataHome     string
+	ConfigHome   string
+	CacheHome    string
+	CalendarFile string
+	DryRun       bool
 }
 
 // runService manages an optional macOS launchd wrapper for the read-only Web
@@ -29,6 +37,11 @@ func (app *App) runService(arguments []string) error {
 	listen := set.String("listen", "127.0.0.1:8765", "Web 监听地址")
 	source := set.String("source", "", "行情源：http、tdx 或 ths")
 	symbol := set.String("symbol", "", "首次打开的股票")
+	dataHome := set.String("data-home", filepath.Dir(app.paths.DataDir), "固定 XDG_DATA_HOME")
+	configHome := set.String("config-home", filepath.Dir(app.paths.ConfigDir), "固定 XDG_CONFIG_HOME")
+	cacheHome := set.String("cache-home", filepath.Dir(app.paths.CacheDir), "固定 XDG_CACHE_HOME")
+	calendarFile := set.String("calendar", os.Getenv("ASTOCK_TRADING_CALENDAR_FILE"), "固定交易日历文件")
+	dryRun := set.Bool("dry-run", false, "仅输出 launchd 配置，不安装服务")
 	if len(arguments) == 0 {
 		return fmt.Errorf("用法: astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]")
 	}
@@ -43,6 +56,11 @@ func (app *App) runService(arguments []string) error {
 		return fmt.Errorf("launchd 服务仅支持 macOS")
 	}
 	config := launchdServiceConfig{Listen: strings.TrimSpace(*listen), Source: strings.TrimSpace(*source), Symbol: strings.TrimSpace(*symbol)}
+	config.DataHome, config.ConfigHome, config.CacheHome = *dataHome, *configHome, *cacheHome
+	config.CalendarFile, config.DryRun = *calendarFile, *dryRun
+	if *dryRun && action != "install" {
+		return fmt.Errorf("--dry-run 仅支持 service install")
+	}
 	switch action {
 	case "install":
 		return app.installLaunchdService(config)
@@ -66,6 +84,25 @@ func (app *App) launchdServicePath() (string, error) {
 func (app *App) installLaunchdService(config launchdServiceConfig) error {
 	if config.Listen == "" {
 		return errors.New("Web 监听地址不能为空")
+	}
+	_, port, err := net.SplitHostPort(config.Listen)
+	portNumber, portErr := strconv.Atoi(port)
+	if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("服务需要有效的固定监听端口")
+	}
+	if config.Source != "" && config.Source != "http" && config.Source != "tdx" && config.Source != "ths" {
+		return fmt.Errorf("行情源须为 http、tdx 或 ths")
+	}
+	environment := map[string]string{}
+	for key, value := range map[string]string{"XDG_DATA_HOME": config.DataHome, "XDG_CONFIG_HOME": config.ConfigHome, "XDG_CACHE_HOME": config.CacheHome, "ASTOCK_TRADING_CALENDAR_FILE": config.CalendarFile} {
+		if value == "" {
+			continue
+		}
+		path, err := filepath.Abs(value)
+		if err != nil {
+			return err
+		}
+		environment[key] = path
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -91,8 +128,12 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 		return err
 	}
 	logDir := filepath.Join(home, "Library", "Logs", "astock-workbench")
-	plist, err := renderLaunchdPlist(arguments, filepath.Join(home, "Library", "Logs", "astock-workbench", "web.out.log"), filepath.Join(logDir, "web.err.log"))
+	plist, err := renderLaunchdPlist(arguments, filepath.Join(home, "Library", "Logs", "astock-workbench", "web.out.log"), filepath.Join(logDir, "web.err.log"), environment)
 	if err != nil {
+		return err
+	}
+	if config.DryRun {
+		_, err := app.out.Write(plist)
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -173,7 +214,7 @@ func launchdUserID() (string, error) {
 	return value, nil
 }
 
-func renderLaunchdPlist(arguments []string, stdoutPath, stderrPath string) ([]byte, error) {
+func renderLaunchdPlist(arguments []string, stdoutPath, stderrPath string, environments ...map[string]string) ([]byte, error) {
 	if len(arguments) == 0 {
 		return nil, errors.New("launchd 参数不能为空")
 	}
@@ -199,6 +240,20 @@ func renderLaunchdPlist(arguments []string, stdoutPath, stderrPath string) ([]by
 		writeString(argument)
 	}
 	builder.WriteString("</array>\n")
+	if len(environments) > 0 && len(environments[0]) > 0 {
+		writeKey("EnvironmentVariables")
+		builder.WriteString("<dict>\n")
+		keys := []string{}
+		for key := range environments[0] {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			writeKey(key)
+			writeString(environments[0][key])
+		}
+		builder.WriteString("</dict>\n")
+	}
 	writeKey("RunAtLoad")
 	builder.WriteString("<true/>\n")
 	writeKey("KeepAlive")
