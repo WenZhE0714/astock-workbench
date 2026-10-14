@@ -28,6 +28,7 @@ type Renderer struct {
 	height   int
 	offset   int
 	started  bool
+	painted  []string
 }
 
 func NewRenderer(output io.Writer, terminal bool) *Renderer {
@@ -86,25 +87,35 @@ func (renderer *Renderer) drawTerminalFrame() {
 	renderer.clampOffset()
 	contentRows := renderer.contentRows()
 	overflow := len(renderer.lines) > contentRows
+	visible := make([]string, renderer.height)
+	var output strings.Builder
 	for row := 0; row < renderer.height; row++ {
-		// CUP uses an absolute screen coordinate. No LF/CR is emitted, so the
-		// terminal cannot create scrollback rows during a refresh.
-		fmt.Fprintf(renderer.output, "\x1b[%d;1H\x1b[2K", row+1)
 		if row < contentRows {
 			lineIndex := renderer.offset + row
 			if lineIndex < len(renderer.lines) {
-				fmt.Fprint(renderer.output, renderer.lines[lineIndex])
+				visible[row] = renderer.lines[lineIndex]
 			}
-			continue
-		}
-		if overflow && row == contentRows {
+		} else if overflow && row == contentRows {
 			status := renderer.statusLine()
 			if renderer.width > 1 {
 				status = truncateWidth(status, renderer.width-1)
 			}
-			fmt.Fprint(renderer.output, status)
+			visible[row] = status
+		}
+		if row < len(renderer.painted) && renderer.painted[row] == visible[row] {
+			continue
+		}
+		// Absolute coordinates avoid scrollback; clearing changed rows also
+		// removes the old suffix when a line becomes shorter or empty.
+		fmt.Fprintf(&output, "\x1b[%d;1H\x1b[2K%s", row+1, visible[row])
+	}
+	if output.Len() > 0 {
+		if n, err := io.WriteString(renderer.output, output.String()); err != nil || n != output.Len() {
+			renderer.painted = nil
+			return
 		}
 	}
+	renderer.painted = visible
 }
 
 // Render replaces the cached frame and draws the current viewport. width and
@@ -131,15 +142,19 @@ func (renderer *Renderer) Render(frame string, width, height int) {
 		// command starts at the bottom of the user's main terminal.
 		fmt.Fprint(renderer.output, "\x1b[?1049h\x1b[?25l\x1b[?6l\x1b[r\x1b[2J")
 		renderer.started = true
+		renderer.painted = nil
 	}
 	dimensionsChanged := width != renderer.width || height != renderer.height
-	if !frameChanged && !dimensionsChanged {
+	if !frameChanged && !dimensionsChanged && renderer.painted != nil {
 		return
 	}
 	renderer.frame = frame
 	renderer.lines = strings.Split(frame, "\n")
 	renderer.width = width
 	renderer.height = height
+	if dimensionsChanged {
+		renderer.painted = nil
+	}
 	renderer.clampOffset()
 	renderer.drawTerminalFrame()
 }
@@ -187,6 +202,9 @@ func (renderer *Renderer) Offset() int {
 // so callers can switch between list and detail views without an intermediate
 // repaint of the old frame.
 func (renderer *Renderer) ResetViewport() {
+	if renderer.offset != 0 {
+		renderer.painted = nil
+	}
 	renderer.offset = 0
 }
 

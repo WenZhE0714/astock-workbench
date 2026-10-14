@@ -1,11 +1,55 @@
 package market
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"math"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
+
+func TestTDXBridgePreservesETFPricePrecision(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required to exercise the optional TDX bridge")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, python, "-c", `
+import json, sys
+scope = {"__name__": "tdx_bridge_test"}
+exec(compile(sys.stdin.read(), "tdx_bridge.py", "exec"), scope)
+print(json.dumps(scope["quote_item"]({
+    "market": 1, "code": "516350", "price": 1.237, "last_close": 1.230,
+    "open": 1.231, "high": 1.239, "low": 1.229,
+    "bid1": 1.236, "ask1": 1.238, "bid5": 1.232, "ask5": 1.242,
+})))
+`)
+	command.Stdin = strings.NewReader(tdxBridgeSource)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bridge failed: %v: %s", err, output)
+	}
+	var raw tdxQuote
+	if err := json.Unmarshal(output, &raw); err != nil {
+		t.Fatal(err)
+	}
+	quote := mergeTDXQuote(raw, domain.Quote{Symbol: "sh516350", Name: "ETF"})
+	if quote.Current != "1.237" || quote.PreviousClose != "1.23" || quote.Open != "1.231" || quote.High != "1.239" || quote.Low != "1.229" {
+		t.Fatalf("bridge rounded ETF prices: %+v", quote)
+	}
+	if len(quote.Bids) != 5 || len(quote.Asks) != 5 || quote.Bids[0].Price != "1.236" || quote.Asks[0].Price != "1.238" || quote.Bids[4].Price != "1.232" || quote.Asks[4].Price != "1.242" {
+		t.Fatalf("bridge rounded ETF depth: bids=%+v asks=%+v", quote.Bids, quote.Asks)
+	}
+	if math.Abs(quote.Delta-0.007) > 1e-10 {
+		t.Fatalf("bridge changed ETF price delta: %v", quote.Delta)
+	}
+}
 
 func TestMergeTDXQuoteUsesTCPPricesAndHTTPMetadata(t *testing.T) {
 	metadata := domain.Quote{

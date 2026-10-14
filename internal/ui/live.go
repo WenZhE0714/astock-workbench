@@ -108,7 +108,7 @@ func marketOverview(indices []domain.Quote, moyu, color bool, width int) string 
 		current := "--"
 		percent := "--"
 		if ok {
-			current = displayPrice(item.Current)
+			current = displayPrice(item.Current, item.Symbol)
 			percent = signedPercent(item.Percent)
 			if color && !moyu {
 				current = trendValue(current, item.Delta, true)
@@ -517,7 +517,7 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 		return frame
 	}
 
-	if data.RankingKind != "" && len(data.RankingItems) > 0 {
+	if data.RankingKind != "" {
 		industrySources := make(map[string]bool)
 		for _, item := range data.RankingItems {
 			if item.IndustrySource != "" && item.Industry != "" && item.Industry != "--" {
@@ -536,7 +536,8 @@ func BuildLiveFrame(data LiveData, options ViewOptions, terminalWidth, terminalH
 			}
 			header += "\n" + truncateWidth(label+strings.Join(sources, " / "), terminalWidth)
 		}
-		if source := data.RankingItems[0].Source; source != "" {
+		if len(data.RankingItems) > 0 && data.RankingItems[0].Source != "" {
+			source := data.RankingItems[0].Source
 			label := "榜单来源  "
 			if options.Moyu {
 				label = "RANK SOURCE  "

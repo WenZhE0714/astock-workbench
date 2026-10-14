@@ -2,7 +2,9 @@ package market
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -52,6 +54,21 @@ func validRankingOrder(items []domain.MarketRankingItem, kind domain.MarketRanki
 
 type FallbackMarketRankingClient struct{ clients []MarketRankingClient }
 
+func rankingFailure(source MarketRankingClient, index int, err error) string {
+	name := fmt.Sprintf("数据源%d", index+1)
+	switch source.(type) {
+	case EastmoneyClient, *EastmoneyClient:
+		name = "东方财富"
+	case THSMarketRankingClient, *THSMarketRankingClient:
+		name = "同花顺"
+	}
+	var requestError *url.Error
+	if errors.As(err, &requestError) {
+		err = requestError.Err
+	}
+	return name + ": " + err.Error()
+}
+
 func NewFallbackMarketRankingClient(clients ...MarketRankingClient) FallbackMarketRankingClient {
 	result := FallbackMarketRankingClient{}
 	for _, client := range clients {
@@ -72,6 +89,9 @@ func (client FallbackMarketRankingClient) FetchMarketRanking(ctx context.Context
 	failures := make([]string, 0, len(client.clients))
 	for index, source := range client.clients {
 		if ctx.Err() != nil {
+			if len(failures) > 0 {
+				return nil, fmt.Errorf("榜单数据源均不可用:\n%s\n%w", strings.Join(failures, "\n"), ctx.Err())
+			}
 			return nil, ctx.Err()
 		}
 		requestCtx, cancel := fallbackContext(ctx, len(client.clients)-index, 2*time.Second)
@@ -81,16 +101,16 @@ func (client FallbackMarketRankingClient) FetchMarketRanking(ctx context.Context
 			return items[:limit], nil
 		}
 		if err != nil {
-			failures = append(failures, err.Error())
+			failures = append(failures, rankingFailure(source, index, err))
 		} else {
-			failures = append(failures, fmt.Sprintf("榜单不完整或排序无效（%d/%d）", len(items), limit))
+			failures = append(failures, rankingFailure(source, index, fmt.Errorf("榜单不完整或排序无效（%d/%d）", len(items), limit)))
 		}
 	}
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("榜单数据源均不可用:\n%s\n%w", strings.Join(failures, "\n"), ctx.Err())
 	}
 	if len(failures) == 0 {
 		return nil, fmt.Errorf("榜单数据源未初始化")
 	}
-	return nil, fmt.Errorf("榜单数据源均不可用: %s", strings.Join(failures, "；"))
+	return nil, fmt.Errorf("榜单数据源均不可用:\n%s", strings.Join(failures, "\n"))
 }

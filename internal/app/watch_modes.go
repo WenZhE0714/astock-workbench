@@ -318,6 +318,7 @@ func (assignment watchGroupAssignment) controls(moyu bool) string {
 
 type watchMarketRanking struct {
 	active       bool
+	loading      bool
 	kind         domain.MarketRankingKind
 	items        []domain.MarketRankingItem
 	selected     int
@@ -332,6 +333,10 @@ func (ranking *watchMarketRanking) begin(kind domain.MarketRankingKind, items []
 		items:       append([]domain.MarketRankingItem(nil), items...),
 		refreshedAt: time.Now(),
 	}
+}
+
+func (ranking *watchMarketRanking) beginLoading(kind domain.MarketRankingKind) {
+	*ranking = watchMarketRanking{active: true, loading: true, kind: kind}
 }
 
 func (ranking *watchMarketRanking) refresh(items []domain.MarketRankingItem) {
@@ -351,11 +356,13 @@ func (ranking *watchMarketRanking) refresh(items []domain.MarketRankingItem) {
 		}
 	}
 	ranking.refreshedAt = time.Now()
+	ranking.loading = false
 	ranking.refreshError = ""
 }
 
 func (ranking *watchMarketRanking) failRefresh(err error) {
 	if ranking.active && err != nil {
+		ranking.loading = false
 		ranking.refreshError = err.Error()
 	}
 }
@@ -403,8 +410,23 @@ func (ranking watchMarketRanking) controls(moyu bool) string {
 }
 
 func (ranking watchMarketRanking) status(moyu bool) string {
-	if !ranking.active || ranking.refreshError == "" {
+	if !ranking.active {
 		return ""
+	}
+	if ranking.loading {
+		if moyu {
+			return "LOADING RANKING..."
+		}
+		return "正在加载个股榜单…"
+	}
+	if ranking.refreshError == "" {
+		return ""
+	}
+	if ranking.refreshedAt.IsZero() {
+		if moyu {
+			return "RANKING LOAD FAILED: " + ranking.refreshError
+		}
+		return "榜单加载失败: " + ranking.refreshError
 	}
 	if moyu {
 		return "RANKING REFRESH FAILED; KEEPING " + ranking.refreshedAt.Format("15:04:05") + ": " + ranking.refreshError

@@ -214,7 +214,7 @@ func buildQuoteTable(quotes []domain.Quote, flows map[string]domain.FundFlow, se
 				flowCode = trendCode(flow.MainNet, false)
 			}
 		}
-		row := []string{task, displayPrice(item.Current), signedPercent(item.Percent), speed, flowText}
+		row := []string{task, displayPrice(item.Current, item.Symbol), signedPercent(item.Percent), speed, flowText}
 		codes := []string{"", trendCode(item.Delta, true), trendCode(item.Percent, false), speedCode, flowCode}
 		if !moyu {
 			row = append(row, item.LimitUp, item.LimitDown)

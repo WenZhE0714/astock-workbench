@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -471,6 +472,12 @@ func (app *App) runWatch(ctx context.Context, arguments []string) error {
 }
 
 func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOptions, initialGroup string) error {
+	return app.watchLoopWithEventSource(ctx, symbols, options, initialGroup, func(ctx context.Context, terminal bool) (<-chan terminalEvent, func() error, error) {
+		return startTerminalEvents(ctx, os.Stdin, terminal)
+	})
+}
+
+func (app *App) watchLoopWithEventSource(ctx context.Context, symbols []string, options watchOptions, initialGroup string, eventSource func(context.Context, bool) (<-chan terminalEvent, func() error, error)) error {
 	var pinyins *storage.PinyinCache
 	var err error
 	if options.Pinyin {
@@ -537,9 +544,11 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		return nil
 	}
 
+	ctx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
 	terminal := isTerminal(app.out)
 	renderer := ui.NewRenderer(app.out, terminal)
-	events, restoreInput, err := startTerminalEvents(ctx, os.Stdin, terminal)
+	events, restoreInput, err := eventSource(ctx, terminal)
 	if err != nil {
 		return fmt.Errorf("无法启用终端导航: %w", err)
 	}
@@ -556,21 +565,10 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	dragonTigers := map[string]domain.DragonTigerSnapshot{}
 	technicalSignals := map[string]domain.TechnicalSignal{}
 	previousAmounts := domain.MarketAmountSnapshot{}
-	leadingRefreshedAt := time.Time{}
-	refreshIndexLeading := func() {
-		if app.minutes == nil || len(indices) == 0 {
-			return
-		}
-		now := time.Now()
-		if !leadingRefreshedAt.IsZero() && now.Sub(leadingRefreshedAt) < 5*time.Second {
-			return
-		}
-		points, err := app.minutes.FetchMinutePoints(ctx, "sh000001")
-		if err != nil || len(points) == 0 {
-			return
-		}
-		latest := points[len(points)-1]
-		leading := latest.Leading
+	leadingRequest := newWatchRequest[[]domain.MinutePoint]()
+	leadingLastStartedAt := time.Time{}
+	leading := math.NaN()
+	applyIndexLeading := func() {
 		if leading <= 0 || math.IsNaN(leading) || math.IsInf(leading, 0) {
 			return
 		}
@@ -584,7 +582,15 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				indices[index].Leading = leading
 			}
 		}
-		leadingRefreshedAt = now
+	}
+	startIndexLeadingFetch := func() {
+		if app.minutes == nil || leadingRequest.running || time.Since(leadingLastStartedAt) < 5*time.Second {
+			return
+		}
+		leadingLastStartedAt = time.Now()
+		leadingRequest.start(ctx, 8*time.Second, func(requestCtx context.Context) ([]domain.MinutePoint, error) {
+			return app.minutes.FetchMinutePoints(requestCtx, "sh000001")
+		})
 	}
 	refreshed := time.Time{}
 	message := ""
@@ -596,7 +602,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	groupChooser := watchGroupChooser{}
 	groupAssignment := watchGroupAssignment{}
 	marketRanking := watchMarketRanking{}
-	marketRankingEpoch := uint64(0)
+	rankingRequest := newWatchRequest[[]domain.MarketRankingItem]()
 	fundMonitor := watchFundMonitor{}
 	fundMonitorEpoch := uint64(0)
 	boardFunds := watchBoardFunds{}
@@ -854,62 +860,24 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	}
 	render(true)
 
-	fetch := func() error {
-		quotes, fetchError := app.quotes.Fetch(ctx, requestSymbols)
-		if fetchError == nil {
-			stocks, marketIndices := splitMarketQuotes(quotes, symbols)
-			if len(stocks) == 0 && len(symbols) > 0 {
-				fetchError = fmt.Errorf("未解析到自选股行情")
-			} else {
-				if err := app.decorateQuotes(stocks, pinyins); err != nil {
-					return err
-				}
-				current = mergeBoardAssetQuotes(stocks, symbols, boardAssets, options.Pinyin)
-				if len(marketIndices) > 0 {
-					indices = marketIndices
-					refreshIndexLeading()
-				}
-				message = ""
-				refreshed = time.Now()
-			}
-		}
-		if fetchError != nil {
-			if errors.Is(fetchError, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-				return context.Canceled
-			}
-			message = fetchError.Error()
-		}
-		render(true)
-		return nil
-	}
-	openMarketRanking := func(kind domain.MarketRankingKind) {
-		if app.rankings == nil {
-			setNotice("个股榜单暂不可用")
-			render(true)
+	quoteRequest := newWatchRequest[[]domain.Quote]()
+	var requestedSymbols []string
+	quoteRefreshPending := false
+	startQuoteFetch := func(force bool) {
+		if quoteRequest.running && slices.Equal(requestedSymbols, requestSymbols) {
+			// A break-boundary refresh must still run after the in-flight poll.
+			quoteRefreshPending = quoteRefreshPending || force
 			return
 		}
-		setNotice("正在加载个股榜单…")
-		render(true)
-		rankingContext, cancelRanking := context.WithTimeout(ctx, 6*time.Second)
-		items, rankingError := app.rankings.FetchMarketRanking(rankingContext, kind, 20)
-		cancelRanking()
-		if rankingError != nil {
-			setNotice("榜单加载失败: " + rankingError.Error())
-			render(true)
-			return
-		}
-		marketRankingEpoch++
-		marketRanking.begin(kind, items)
-		setNotice("")
-		renderer.ResetViewport()
-		render(true)
+		quoteRefreshPending = false
+		requestedSymbols = slices.Clone(requestSymbols)
+		request := slices.Clone(requestSymbols)
+		quoteRequest.start(ctx, 8*time.Second, func(requestCtx context.Context) ([]domain.Quote, error) {
+			return app.quotes.Fetch(requestCtx, request)
+		})
+		startIndexLeadingFetch()
 	}
-	if err := fetch(); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
-	}
+	startQuoteFetch(true)
 
 	openGroupChooser := func() error {
 		groups, warnings, loadError := storage.LoadWatchlistGroups(app.paths.WatchlistFile)
@@ -953,9 +921,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		requestSymbols = quoteRequestSymbols(symbols)
 		viewState.Detail = false
 		viewState.Selected = 0
-		if fetchError := fetch(); fetchError != nil {
-			return fetchError
-		}
+		current = reorderQuotes(current, symbols)
+		startQuoteFetch(true)
 		for index, symbol := range symbols {
 			if symbol == previousSymbol {
 				viewState.Selected = index
@@ -998,12 +965,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		symbol string
 		signal domain.TechnicalSignal
 		err    error
-	}
-	type marketRankingResult struct {
-		kind  domain.MarketRankingKind
-		epoch uint64
-		items []domain.MarketRankingItem
-		err   error
 	}
 	type fundMonitorResult struct {
 		epoch     uint64
@@ -1076,7 +1037,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	boardResults := make(chan boardResult, 8)
 	dragonTigerResults := make(chan dragonTigerResult, 8)
 	technicalResults := make(chan technicalResult, 8)
-	marketRankingResults := make(chan marketRankingResult, 1)
 	fundMonitorResults := make(chan fundMonitorResult, 4)
 	industryFlowResults := make(chan industryFlowResult, 4)
 	boardFundDashboardResults := make(chan boardFundDashboardResult, 1)
@@ -1099,7 +1059,6 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 	dragonTigerRefreshed := make(map[string]time.Time)
 	technicalRunning := make(map[string]bool)
 	technicalRefreshed := make(map[string]time.Time)
-	marketRankingRunning := false
 	fundMonitorRunning := false
 	fundMonitorRequestID := uint64(0)
 	activeFundMonitorRequestID := uint64(0)
@@ -1285,21 +1244,26 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 		}()
 	}
 	startMarketRankingFetch := func(force bool) {
-		if app.rankings == nil || !marketRanking.active || marketRankingRunning || (!force && !session.Poll) {
+		if app.rankings == nil || !marketRanking.active || rankingRequest.running || (!force && !session.Poll) {
 			return
 		}
-		marketRankingRunning = true
 		kind := marketRanking.kind
-		epoch := marketRankingEpoch
-		go func() {
-			requestContext, cancel := context.WithTimeout(ctx, 6*time.Second)
-			items, fetchError := app.rankings.FetchMarketRanking(requestContext, kind, 20)
-			cancel()
-			select {
-			case marketRankingResults <- marketRankingResult{kind: kind, epoch: epoch, items: items, err: fetchError}:
-			case <-ctx.Done():
-			}
-		}()
+		rankingRequest.start(ctx, 6*time.Second, func(requestCtx context.Context) ([]domain.MarketRankingItem, error) {
+			return app.rankings.FetchMarketRanking(requestCtx, kind, 20)
+		})
+	}
+	openMarketRanking := func(kind domain.MarketRankingKind) {
+		if app.rankings == nil {
+			setNotice("个股榜单暂不可用")
+			render(true)
+			return
+		}
+		rankingRequest.cancel()
+		marketRanking.beginLoading(kind)
+		setNotice("")
+		startMarketRankingFetch(true)
+		renderer.ResetViewport()
+		render(true)
 	}
 	cancelFundMonitorFetches := func() {
 		if cancelFundMonitorRequest != nil {
@@ -1925,9 +1889,8 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 			command.reset()
 			if addError == nil && len(added) > 0 && added[0] {
-				if err := fetch(); err != nil && !errors.Is(err, context.Canceled) {
-					setNotice("已添加，但刷新失败: " + err.Error())
-				}
+				current = reorderQuotes(current, symbols)
+				startQuoteFetch(true)
 				if fundMonitor.rankingKind == "" {
 					prewarmFundMonitor()
 				}
@@ -1982,27 +1945,14 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				opened = true
 				setNotice("")
 			} else {
-				quotes, quoteError := app.quotes.Fetch(ctx, quoteRequestSymbols([]string{symbol}))
-				stocks, marketIndices := splitMarketQuotes(quotes, []string{symbol})
-				if quoteError != nil || len(stocks) == 0 {
-					if quoteError == nil {
-						quoteError = fmt.Errorf("未解析到股票行情")
-					}
-					setNotice("查看失败: " + quoteError.Error())
-				} else if decorateError := app.decorateQuotes(stocks, pinyins); decorateError != nil {
-					setNotice("查看失败: " + decorateError.Error())
-				} else {
-					symbols = append(symbols, symbol)
-					current = append(current, stocks[0])
-					requestSymbols = quoteRequestSymbols(symbols)
-					if len(marketIndices) > 0 {
-						indices = marketIndices
-					}
-					temporarySymbol = symbol
-					viewState.Selected, viewState.Detail = len(symbols)-1, true
-					opened = true
-					setNotice("")
-				}
+				symbols = append(symbols, symbol)
+				current = reorderQuotes(current, symbols)
+				requestSymbols = quoteRequestSymbols(symbols)
+				temporarySymbol = symbol
+				viewState.Selected, viewState.Detail = len(symbols)-1, true
+				opened = true
+				setNotice("")
+				startQuoteFetch(true)
 			}
 			command.reset()
 			startFlowFetch()
@@ -2109,6 +2059,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				reportHistory.close()
 				boardFunds.close()
 				fundMonitor.viewing = false
+				rankingRequest.cancel()
 				marketRanking.reset()
 				openStrategyLab(symbol, name, source, sourceSymbols, sourceNames)
 				continue
@@ -2430,7 +2381,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					return nil
 				}
 				if event.Key == terminalKeyBack {
-					marketRankingEpoch++
+					rankingRequest.cancel()
 					marketRanking.reset()
 					setNotice("")
 					renderer.ResetViewport()
@@ -2742,9 +2693,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 							if viewState.Detail {
 								viewState.Detail = false
 							}
-							if err := fetch(); err != nil && !errors.Is(err, context.Canceled) {
-								setNotice("刷新失败: " + err.Error())
-							}
+							startQuoteFetch(true)
 							if fundMonitor.rankingKind == "" {
 								prewarmFundMonitor()
 							}
@@ -3035,6 +2984,49 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			} else if viewState.Detail && event.Key != terminalKeyEnter && event.Key != terminalKeyBack {
 				navigateRenderer(renderer, event.Key)
 			}
+		case result := <-quoteRequest.results:
+			if !quoteRequest.finish(result) {
+				continue
+			}
+			if !slices.Equal(requestedSymbols, requestSymbols) {
+				startQuoteFetch(true)
+				continue
+			}
+			if result.err == nil {
+				stocks, marketIndices := splitMarketQuotes(result.value, symbols)
+				if len(stocks) == 0 && len(stockAssetSymbols(symbols)) > 0 {
+					result.err = fmt.Errorf("未解析到自选股行情")
+				} else if err := app.decorateQuotes(stocks, pinyins); err != nil {
+					result.err = err
+				} else {
+					current = mergeBoardAssetQuotes(stocks, symbols, boardAssets, options.Pinyin)
+					if len(marketIndices) > 0 {
+						indices = marketIndices
+					}
+					applyIndexLeading()
+					message = ""
+					refreshed = time.Now()
+				}
+			}
+			if result.err != nil {
+				message = result.err.Error()
+			}
+			if quoteRefreshPending {
+				startQuoteFetch(true)
+			}
+			render(true)
+		case result := <-leadingRequest.results:
+			if !leadingRequest.finish(result) {
+				continue
+			}
+			if result.err == nil && len(result.value) > 0 {
+				latest := result.value[len(result.value)-1].Leading
+				if latest > 0 && !math.IsNaN(latest) && !math.IsInf(latest, 0) {
+					leading = latest
+					applyIndexLeading()
+					render(true)
+				}
+			}
 		case result := <-flowResults:
 			flowRunning = false
 			if len(result.flows) > 0 {
@@ -3210,17 +3202,16 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 			}
 			loadStrategyLabHistory()
 			render(true)
-		case result := <-marketRankingResults:
-			marketRankingRunning = false
-			if !marketRanking.active || result.epoch != marketRankingEpoch || result.kind != marketRanking.kind {
+		case result := <-rankingRequest.results:
+			if !rankingRequest.finish(result) || !marketRanking.active {
 				continue
 			}
 			if result.err != nil {
 				marketRanking.failRefresh(result.err)
 			} else {
-				marketRanking.refresh(result.items)
-				if fundMonitor.active && fundMonitor.rankingKind == result.kind {
-					fundMonitor.syncSymbols(marketRankingSymbols(result.items))
+				marketRanking.refresh(result.value)
+				if fundMonitor.active && fundMonitor.rankingKind == marketRanking.kind {
+					fundMonitor.syncSymbols(marketRankingSymbols(result.value))
 				}
 			}
 			if !viewState.Detail {
@@ -3301,12 +3292,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 					startMarketRankingFetch(true)
 					startFundMonitorFetch(true)
 					startIndustryFlowFetch(true)
-					if err := fetch(); err != nil {
-						if errors.Is(err, context.Canceled) {
-							return nil
-						}
-						return err
-					}
+					startQuoteFetch(true)
 					startFlowFetch()
 					startAmountFetch()
 					startBoardAssetFetch(true)
@@ -3328,12 +3314,7 @@ func (app *App) watchLoop(ctx context.Context, symbols []string, options watchOp
 				continue
 			}
 			startMarketRankingFetch(false)
-			if err := fetch(); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return nil
-				}
-				return err
-			}
+			startQuoteFetch(false)
 		case <-globalMarketTicker.C:
 			if globalMarkets.viewing {
 				startGlobalMarketFetch()

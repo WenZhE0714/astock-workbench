@@ -2,12 +2,14 @@ package market
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
@@ -99,5 +101,111 @@ func TestTHSRankingRejectsBlockedWrongOrderAndRepeatedPage(t *testing.T) {
 	})}}
 	if _, err := client.FetchMarketRanking(context.Background(), domain.MarketRankingGainers, 2); err == nil || !strings.Contains(err.Error(), "页码") {
 		t.Fatalf("repeated page was accepted: %v", err)
+	}
+}
+
+func TestTHSRankingRetriesTemporaryFailures(t *testing.T) {
+	valid := thsRankingHTML(1, 1, thsRankingRow("600001", "甲", "1", "2", "3", "1亿"))
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"missing table", http.StatusOK, "<html>temporarily unavailable</html>"},
+		{"wrong order", http.StatusOK, thsRankingHTML(1, 1, thsRankingRow("600001", "甲", "1", "1", "3", "1亿"), thsRankingRow("000001", "乙", "2", "2", "3", "1亿"))},
+		{"server error", http.StatusServiceUnavailable, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := THSMarketRankingClient{BaseURL: "https://ths.test/{page}", HTTPClient: &http.Client{Transport: rankingRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				status, body := http.StatusOK, valid
+				if calls == 1 {
+					status, body = test.status, test.body
+				}
+				return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}}
+			items, err := client.FetchMarketRanking(context.Background(), domain.MarketRankingRapidRise, 1)
+			if err != nil || calls != 2 || len(items) != 1 || items[0].Speed != 2 {
+				t.Fatalf("retry failed: calls=%d items=%+v err=%v", calls, items, err)
+			}
+		})
+	}
+}
+
+func TestTHSRankingRetryRestartsWholeSnapshot(t *testing.T) {
+	paths := []string{}
+	bodies := []string{
+		thsRankingHTML(1, 2, thsRankingRow("600001", "旧快照", "1", "2", "3", "1亿")),
+		thsRankingHTML(2, 2, thsRankingRow("000001", "跨页排序变化", "1", "3", "3", "1亿")),
+		thsRankingHTML(1, 2, thsRankingRow("600002", "新快照甲", "1", "4", "3", "1亿")),
+		thsRankingHTML(2, 2, thsRankingRow("000002", "新快照乙", "1", "3", "3", "1亿")),
+	}
+	client := THSMarketRankingClient{BaseURL: "https://ths.test/{page}", HTTPClient: &http.Client{Transport: rankingRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.Path)
+		if len(paths) > len(bodies) {
+			t.Fatal("unexpected extra retry")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(bodies[len(paths)-1]))}, nil
+	})}}
+	items, err := client.FetchMarketRanking(context.Background(), domain.MarketRankingRapidRise, 2)
+	if err != nil || strings.Join(paths, ",") != "/1,/2,/1,/2" || len(items) != 2 || items[0].Symbol != "sh600002" || items[1].Symbol != "sz000002" {
+		t.Fatalf("retry mixed snapshots: paths=%v items=%+v err=%v", paths, items, err)
+	}
+}
+
+func TestTHSRankingRetryIsBounded(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable, http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			calls := 0
+			client := THSMarketRankingClient{BaseURL: "https://ths.test/{page}", HTTPClient: &http.Client{Transport: rankingRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Body: io.NopCloser(strings.NewReader("<html>unavailable</html>"))}, nil
+			})}}
+			items, err := client.FetchMarketRanking(context.Background(), domain.MarketRankingRapidRise, 1)
+			wantCalls := 1
+			if status == http.StatusOK || status >= 500 {
+				wantCalls = 2
+			}
+			if err == nil || len(items) != 0 || calls != wantCalls {
+				t.Fatalf("retry limit not respected: calls=%d want=%d items=%+v err=%v", calls, wantCalls, items, err)
+			}
+			if status == http.StatusOK && !errors.Is(err, errTHSRankingSnapshot) {
+				t.Fatalf("snapshot failure lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestTHSRankingReservesRetryTimeAndHonorsCancellation(t *testing.T) {
+	for _, cancelParent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel=%t", cancelParent), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			calls := 0
+			client := THSMarketRankingClient{BaseURL: "https://ths.test/{page}", HTTPClient: &http.Client{Transport: rankingRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					if cancelParent {
+						cancel()
+					}
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				}
+				if r.Context().Err() != nil {
+					t.Fatal("retry has no time left")
+				}
+				body := thsRankingHTML(1, 1, thsRankingRow("600001", "甲", "1", "2", "3", "1亿"))
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}}
+			items, err := client.FetchMarketRanking(ctx, domain.MarketRankingRapidRise, 1)
+			if cancelParent {
+				if !errors.Is(err, context.Canceled) || calls != 1 || len(items) != 0 {
+					t.Fatalf("cancellation ignored: calls=%d items=%+v err=%v", calls, items, err)
+				}
+			} else if err != nil || calls != 2 || len(items) != 1 {
+				t.Fatalf("retry deadline exhausted: calls=%d items=%+v err=%v", calls, items, err)
+			}
+		})
 	}
 }

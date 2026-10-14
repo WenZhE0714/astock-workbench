@@ -93,12 +93,21 @@ func parsePrice(value string) (float64, bool) {
 	return result, err == nil && !math.IsNaN(result) && !math.IsInf(result, 0)
 }
 
-func displayPrice(value string) string {
+func quotePriceDecimals(symbol string) int {
+	symbol = strings.ToLower(strings.TrimSpace(symbol))
+	// Exchange-traded funds and convertible bonds are quoted in 0.001 yuan.
+	if strings.HasPrefix(symbol, "sh5") || strings.HasPrefix(symbol, "sz15") || strings.HasPrefix(symbol, "sz16") || market.AssetKindOf(symbol) == domain.AssetKindConvertibleBond {
+		return 3
+	}
+	return 2
+}
+
+func displayPrice(value, symbol string) string {
 	price, ok := parsePrice(strings.TrimSpace(value))
 	if !ok {
 		return value
 	}
-	return fmt.Sprintf("%.2f", price)
+	return strconv.FormatFloat(price, 'f', quotePriceDecimals(symbol), 64)
 }
 
 func priceDelta(value, previousClose string) float64 {
@@ -197,13 +206,13 @@ func priceRail(item domain.Quote, width int, color bool) []string {
 	yellow, yellowOK := parsePrice(yellowValue)
 	label := style("日内", "90", color)
 	if !lowOK || !highOK || !currentOK {
-		return []string{fmt.Sprintf("%s  %s — %s", label, item.Low, item.High)}
+		return []string{fmt.Sprintf("%s  %s — %s", label, displayPrice(item.Low, item.Symbol), displayPrice(item.High, item.Symbol))}
 	}
-	prefix := label + "  " + item.Low + "  "
-	suffix := "  " + item.High
+	prefix := label + "  " + displayPrice(item.Low, item.Symbol) + "  "
+	suffix := "  " + displayPrice(item.High, item.Symbol)
 	railWidth := width - displayWidth(prefix) - displayWidth(suffix) - 2
 	if railWidth < 8 {
-		return []string{fmt.Sprintf("%s  %s  ← %s →  %s", label, displayPrice(item.Low), displayPrice(item.Current), displayPrice(item.High))}
+		return []string{fmt.Sprintf("%s  %s  ← %s →  %s", label, displayPrice(item.Low, item.Symbol), displayPrice(item.Current, item.Symbol), displayPrice(item.High, item.Symbol))}
 	}
 	if railWidth > 34 {
 		railWidth = 34
@@ -892,16 +901,16 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 
 	change := "--  --"
 	if !math.IsNaN(item.Delta) && !math.IsNaN(item.Percent) {
-		change = fmt.Sprintf("%+.2f  %+.2f%%", item.Delta, item.Percent)
+		change = fmt.Sprintf("%+.*f  %+.2f%%", quotePriceDecimals(item.Symbol), item.Delta, item.Percent)
 	}
-	priceLine := style("白线现价", "90", color) + "  " + style(displayPrice(item.Current), trendCode(item.Delta, true), color) +
+	priceLine := style("白线现价", "90", color) + "  " + style(displayPrice(item.Current, item.Symbol), trendCode(item.Delta, true), color) +
 		"   " + style(change, trendCode(item.Delta, false), color)
 	bid := firstLevel(item.Bids)
 	ask := firstLevel(item.Asks)
-	bidLine := style("买一", "1;31", color) + "  " + trendValue(bid.Price, priceDelta(bid.Price, item.PreviousClose), color) + " × " + orderVolume(bid.Volume)
-	askLine := style("卖一", "1;32", color) + "  " + trendValue(ask.Price, priceDelta(ask.Price, item.PreviousClose), color) + " × " + orderVolume(ask.Volume)
+	bidLine := style("买一", "1;31", color) + "  " + trendValue(displayPrice(bid.Price, item.Symbol), priceDelta(bid.Price, item.PreviousClose), color) + " × " + orderVolume(bid.Volume)
+	askLine := style("卖一", "1;32", color) + "  " + trendValue(displayPrice(ask.Price, item.Symbol), priceDelta(ask.Price, item.PreviousClose), color) + " × " + orderVolume(ask.Volume)
 	lines = append(lines, sideBySide(priceLine, bidLine, innerWidth)...)
-	referenceLine := style("昨收", "90", color) + " " + item.PreviousClose + "   " + style("今开", "90", color) + " " + item.Open
+	referenceLine := style("昨收", "90", color) + " " + displayPrice(item.PreviousClose, item.Symbol) + "   " + style("今开", "90", color) + " " + displayPrice(item.Open, item.Symbol)
 	lines = append(lines, sideBySide(referenceLine, askLine, innerWidth)...)
 	lines = append(lines, priceRail(item, innerWidth, color)...)
 	lines = append(lines, "\x00separator")
@@ -921,13 +930,13 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 		{Label: "换手", Value: withUnit(item.Turnover, "%")},
 		{Label: "振幅", Value: withUnit(item.Amplitude, "%")},
 		{Label: "量比", Value: item.VolumeRatio},
-		{Label: yellowLabel, Value: yellowValue},
+		{Label: yellowLabel, Value: displayPrice(yellowValue, item.Symbol)},
 		{Label: "PE(TTM)", Value: item.PETTM},
 		{Label: "PB", Value: item.PB},
 		{Label: "总市值", Value: humanMarketCap(item.MarketCap)},
 		{Label: "流通值", Value: humanMarketCap(item.FloatMarketCap)},
-		{Label: "涨停", Value: trendValue(item.LimitUp, 1, color)},
-		{Label: "跌停", Value: trendValue(item.LimitDown, -1, color)},
+		{Label: "涨停", Value: trendValue(displayPrice(item.LimitUp, item.Symbol), 1, color)},
+		{Label: "跌停", Value: trendValue(displayPrice(item.LimitDown, item.Symbol), -1, color)},
 	}
 	if flow != nil {
 		flowValue := directionalFundFlow(flow)
@@ -988,9 +997,9 @@ func dashboardCard(item domain.Quote, flow *domain.FundFlow, boards []domain.Boa
 				askLevel = item.Asks[index]
 			}
 			left := style(fmt.Sprintf("买%d", bidLevel.Level), "31", color) + "  " +
-				trendValue(bidLevel.Price, priceDelta(bidLevel.Price, item.PreviousClose), color) + " × " + orderVolume(bidLevel.Volume)
+				trendValue(displayPrice(bidLevel.Price, item.Symbol), priceDelta(bidLevel.Price, item.PreviousClose), color) + " × " + orderVolume(bidLevel.Volume)
 			right := style(fmt.Sprintf("卖%d", askLevel.Level), "32", color) + "  " +
-				trendValue(askLevel.Price, priceDelta(askLevel.Price, item.PreviousClose), color) + " × " + orderVolume(askLevel.Volume)
+				trendValue(displayPrice(askLevel.Price, item.Symbol), priceDelta(askLevel.Price, item.PreviousClose), color) + " × " + orderVolume(askLevel.Volume)
 			lines = append(lines, sideBySide(left, right, innerWidth)...)
 		}
 	}

@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,8 @@ import (
 
 const THSMarketRankingSource = "同花顺公开榜单"
 const thsMarketRankingURL = "https://q.10jqka.com.cn/index/index/board/all/field/{metric}/order/{order}/page/{page}/ajax/1/"
+
+var errTHSRankingSnapshot = errors.New("同花顺榜单快照无效")
 
 var thsRankingPagePattern = regexp.MustCompile(`(?is)<span\b[^>]*class=["']page_info["'][^>]*>\s*(\d+)\s*/\s*(\d+)\s*</span>`)
 
@@ -51,16 +54,16 @@ func parseTHSMarketRankingPage(raw string, kind domain.MarketRankingKind) (thsMa
 	pagination := thsRankingPagePattern.FindStringSubmatch(raw)
 	body := thsIndustryBodyPattern.FindStringSubmatch(raw)
 	if len(pagination) != 3 || len(body) != 2 {
-		return page, fmt.Errorf("同花顺榜单缺少表格或分页数据")
+		return page, fmt.Errorf("%w: 缺少表格或分页数据", errTHSRankingSnapshot)
 	}
 	page.page, _ = strconv.Atoi(pagination[1])
 	page.pages, _ = strconv.Atoi(pagination[2])
 	if page.page < 1 || page.pages < page.page {
-		return page, fmt.Errorf("同花顺榜单分页无效")
+		return page, fmt.Errorf("%w: 分页无效", errTHSRankingSnapshot)
 	}
 	rows := thsIndustryRowPattern.FindAllStringSubmatch(body[1], -1)
 	if len(rows) == 0 {
-		return page, fmt.Errorf("同花顺榜单为空")
+		return page, fmt.Errorf("%w: 榜单为空", errTHSRankingSnapshot)
 	}
 	for _, row := range rows {
 		cells := thsIndustryCellPattern.FindAllStringSubmatch(row[1], -1)
@@ -92,19 +95,47 @@ func parseTHSMarketRankingPage(raw string, kind domain.MarketRankingKind) (thsMa
 		page.items = append(page.items, item)
 	}
 	if !validRankingOrder(page.items, kind) {
-		return page, fmt.Errorf("同花顺榜单排序与请求不符")
+		return page, fmt.Errorf("%w: 排序与请求不符", errTHSRankingSnapshot)
 	}
 	return page, nil
 }
 
 func (client THSMarketRankingClient) FetchMarketRanking(ctx context.Context, kind domain.MarketRankingKind, limit int) ([]domain.MarketRankingItem, error) {
+	if _, _, err := thsRankingSort(kind); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	var lastError error
+	for attempt := 0; attempt < 2; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		attemptCtx, cancelAttempt := fallbackContext(ctx, 2-attempt, 3*time.Second)
+		items, err := client.fetchRankingAttempt(attemptCtx, kind, limit)
+		cancelAttempt()
+		if err == nil {
+			return items, nil
+		}
+		lastError = err
+		if !errors.Is(err, errTHSRankingSnapshot) && !errors.Is(err, context.DeadlineExceeded) && !transientHTTPReadError(err) {
+			var status *httpStatusError
+			if !errors.As(err, &status) || status.code < 500 {
+				break
+			}
+		}
+	}
+	return nil, lastError
+}
+
+// A retry starts again at page one so rows from different attempts cannot be
+// combined into a market-wide ranking that never existed.
+func (client THSMarketRankingClient) fetchRankingAttempt(ctx context.Context, kind domain.MarketRankingKind, limit int) ([]domain.MarketRankingItem, error) {
 	metric, order, err := thsRankingSort(kind)
 	if err != nil {
 		return nil, err
 	}
 	limit = normalizedRankingLimit(limit)
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-	defer cancel()
 	base := firstNonEmpty(client.BaseURL, os.Getenv("ASTOCK_THS_MARKET_RANK_API_URL"), thsMarketRankingURL)
 	items := make([]domain.MarketRankingItem, 0, limit)
 	seen := make(map[string]bool)
@@ -130,7 +161,7 @@ func (client THSMarketRankingClient) FetchMarketRanking(ctx context.Context, kin
 			return nil, err
 		}
 		if page.page != pageNumber {
-			return nil, fmt.Errorf("同花顺榜单返回重复或错误页码 %d（请求%d）", page.page, pageNumber)
+			return nil, fmt.Errorf("%w: 重复或错误页码 %d（请求%d）", errTHSRankingSnapshot, page.page, pageNumber)
 		}
 		for _, item := range page.items {
 			if !seen[item.Symbol] {
@@ -139,7 +170,7 @@ func (client THSMarketRankingClient) FetchMarketRanking(ctx context.Context, kin
 			}
 		}
 		if !validRankingOrder(items, kind) {
-			return nil, fmt.Errorf("同花顺跨页榜单排序变化，请重试")
+			return nil, fmt.Errorf("%w: 跨页排序变化", errTHSRankingSnapshot)
 		}
 		if len(items) >= limit {
 			return items[:limit], nil
@@ -148,5 +179,5 @@ func (client THSMarketRankingClient) FetchMarketRanking(ctx context.Context, kin
 			break
 		}
 	}
-	return nil, fmt.Errorf("同花顺沪深A股榜单仅返回%d/%d条有效数据", len(items), limit)
+	return nil, fmt.Errorf("%w: 沪深A股仅返回%d/%d条有效数据", errTHSRankingSnapshot, len(items), limit)
 }

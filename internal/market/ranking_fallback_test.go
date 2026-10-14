@@ -3,6 +3,10 @@ package market
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,5 +77,60 @@ func TestRankingFallbackRejectsUnknownKindAndPropagatesCancellation(t *testing.T
 	cancel()
 	if _, err := client.FetchMarketRanking(ctx, domain.MarketRankingGainers, 20); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
+	}
+}
+
+func TestRankingFailureNamesSourceAndOmitsRequestURL(t *testing.T) {
+	err := fmt.Errorf("request failed: %w", &url.Error{Op: "Get", URL: "https://ranking.test/?fields=" + strings.Repeat("f22,", 100), Err: io.EOF})
+	for _, test := range []struct {
+		source MarketRankingClient
+		name   string
+	}{
+		{EastmoneyClient{}, "东方财富"},
+		{&EastmoneyClient{}, "东方财富"},
+		{THSMarketRankingClient{}, "同花顺"},
+		{&THSMarketRankingClient{}, "同花顺"},
+	} {
+		if got := rankingFailure(test.source, 0, err); got != test.name+": EOF" {
+			t.Fatalf("verbose or unnamed error: %s", got)
+		}
+	}
+}
+
+func TestRankingFallbackReportsEachFailureOnSeparateLine(t *testing.T) {
+	primary := rankingFunc(func(context.Context, domain.MarketRankingKind, int) ([]domain.MarketRankingItem, error) {
+		return nil, &url.Error{Op: "Get", URL: "https://ranking.test/?fields=f22", Err: io.EOF}
+	})
+	backup := rankingFunc(func(context.Context, domain.MarketRankingKind, int) ([]domain.MarketRankingItem, error) {
+		return nil, fmt.Errorf("%w: 排序与请求不符", errTHSRankingSnapshot)
+	})
+	_, err := NewFallbackMarketRankingClient(primary, backup).FetchMarketRanking(context.Background(), domain.MarketRankingRapidRise, 20)
+	want := "榜单数据源均不可用:\n数据源1: EOF\n数据源2: 同花顺榜单快照无效: 排序与请求不符"
+	if err == nil || err.Error() != want {
+		t.Fatalf("source failures lost: %v", err)
+	}
+}
+
+func TestRankingFallbackKeepsFailuresWhenCanceled(t *testing.T) {
+	for _, cancelAt := range []int{0, 1} {
+		t.Run(fmt.Sprintf("source=%d", cancelAt), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			source := rankingFunc(func(context.Context, domain.MarketRankingKind, int) ([]domain.MarketRankingItem, error) {
+				if calls == cancelAt {
+					cancel()
+				}
+				calls++
+				return nil, io.EOF
+			})
+			_, err := NewFallbackMarketRankingClient(source, source).FetchMarketRanking(ctx, domain.MarketRankingRapidRise, 20)
+			if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "数据源1: EOF") || calls != cancelAt+1 {
+				t.Fatalf("cancellation or failures lost: calls=%d err=%v", calls, err)
+			}
+			if cancelAt == 1 && !strings.Contains(err.Error(), "数据源2: EOF") {
+				t.Fatalf("last failure lost: %v", err)
+			}
+		})
 	}
 }

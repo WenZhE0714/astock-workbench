@@ -2,9 +2,83 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+type recordingTerminalWriter struct {
+	bytes.Buffer
+	writes int
+}
+
+func (writer *recordingTerminalWriter) WriteString(value string) (int, error) {
+	writer.writes++
+	return writer.Buffer.WriteString(value)
+}
+
+func TestTerminalRendererOnlyWritesChangedRows(t *testing.T) {
+	output := &recordingTerminalWriter{}
+	renderer := NewRenderer(output, true)
+	renderer.Render("one\ntwo\nthree", 80, 5)
+	output.Reset()
+	output.writes = 0
+	renderer.Render("one\nTWO\nthree", 80, 5)
+	if output.String() != "\x1b[2;1H\x1b[2KTWO" || output.writes != 1 {
+		t.Fatalf("unchanged rows were repainted: writes=%d output=%q", output.writes, output.String())
+	}
+	output.Reset()
+	renderer.Render("one\nTWO", 80, 5)
+	if output.String() != "\x1b[3;1H\x1b[2K" {
+		t.Fatalf("removed row was not cleared: %q", output.String())
+	}
+	output.Reset()
+	renderer.Render("one\nTWO", 80, 5)
+	if output.Len() != 0 {
+		t.Fatal("identical frame produced output")
+	}
+}
+
+func TestTerminalRendererInvalidatesViewportAfterResizeAndReset(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, true)
+	frame := "one\ntwo\nthree\nfour"
+	renderer.Render(frame, 80, 3)
+	renderer.Navigate(NavigateEnd)
+	output.Reset()
+	renderer.ResetViewport()
+	renderer.Render(frame, 80, 3)
+	if !strings.Contains(output.String(), "\x1b[1;1H\x1b[2Kone") {
+		t.Fatalf("reset left the old viewport on screen: %q", output.String())
+	}
+	output.Reset()
+	renderer.Render(frame, 40, 3)
+	if strings.Count(output.String(), "\x1b[2K") != 3 {
+		t.Fatalf("resize must invalidate all visible rows: %q", output.String())
+	}
+}
+
+func TestTerminalRendererBatchesLargeFrameUpdates(t *testing.T) {
+	output := &recordingTerminalWriter{}
+	renderer := NewRenderer(output, true)
+	lines := make([]string, 40)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("stock %02d price 10.00", index)
+	}
+	renderer.Render(strings.Join(lines, "\n"), 120, 40)
+	fullBytes := output.Len()
+	output.Reset()
+	output.writes = 0
+	lines[5], lines[25] = "stock 05 price 10.01", "stock 25 price 10.02"
+	renderer.Render(strings.Join(lines, "\n"), 120, 40)
+	if output.writes != 1 || strings.Count(output.String(), "\x1b[2K") != 2 {
+		t.Fatalf("update was not batched: writes=%d output=%q", output.writes, output.String())
+	}
+	if output.Len()*10 >= fullBytes {
+		t.Fatalf("two-row update was unexpectedly large: %d vs full %d", output.Len(), fullBytes)
+	}
+	t.Logf("40-row frame: initial %d bytes, two-row update %d bytes in one write", fullBytes, output.Len())
+}
 
 func TestTerminalRendererKeepsAllDrawingInsideScreen(t *testing.T) {
 	var output bytes.Buffer

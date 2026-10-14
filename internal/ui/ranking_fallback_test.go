@@ -31,3 +31,23 @@ func TestRankingFallbackSourceFitsViewportAndKeepsSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestRankingFailuresRemainVisibleInLiveStatus(t *testing.T) {
+	status := "榜单加载失败: 榜单数据源均不可用:\n东方财富: EOF\n同花顺: HTTP 503 Service Unavailable"
+	for _, width := range []int{60, 79, 120} {
+		frame := BuildLiveFrame(LiveData{Status: status}, ViewOptions{}, width, 24)
+		for _, expected := range []string{"东方财富: EOF", "同花顺: HTTP 503 Service Unavailable"} {
+			if !strings.Contains(frame, expected) {
+				t.Fatalf("missing failure %q at width %d:\n%s", expected, width, frame)
+			}
+		}
+		if strings.Count(frame, "\n")+1 > 24 {
+			t.Fatalf("failure status exceeds terminal height:\n%s", frame)
+		}
+		for _, line := range strings.Split(frame, "\n") {
+			if displayWidth(line) > width {
+				t.Fatalf("failure status exceeds width %d: %s", width, line)
+			}
+		}
+	}
+}

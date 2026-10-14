@@ -54,22 +54,24 @@ def quote_item(item):
     for level in range(1, 6):
         bids.append({
             "level": level,
-            "price": "%.2f" % finite(item.get("bid%d" % level), 0.0),
+            "price": str(finite(item.get("bid%d" % level), 0.0)),
             "volume": "%.0f" % finite(item.get("bid_vol%d" % level), 0.0),
         })
         asks.append({
             "level": level,
-            "price": "%.2f" % finite(item.get("ask%d" % level), 0.0),
+            "price": str(finite(item.get("ask%d" % level), 0.0)),
             "volume": "%.0f" % finite(item.get("ask_vol%d" % level), 0.0),
         })
     return {
         "symbol": ("sh" if int(item.get("market", 0)) == 1 else "sz") + str(item.get("code", "")),
         "code": str(item.get("code", "")),
-        "current": "%.2f" % price,
-        "previous_close": "%.2f" % previous,
-        "open": "%.2f" % finite(item.get("open"), 0.0),
-        "high": "%.2f" % finite(item.get("high"), 0.0),
-        "low": "%.2f" % finite(item.get("low"), 0.0),
+        # Preserve source precision; the presentation layer applies the tick
+        # precision for stocks, ETFs and other instruments.
+        "current": str(price),
+        "previous_close": str(previous),
+        "open": str(finite(item.get("open"), 0.0)),
+        "high": str(finite(item.get("high"), 0.0)),
+        "low": str(finite(item.get("low"), 0.0)),
         "quote_time": quote_time,
         "delta": delta,
         "percent": percent,
