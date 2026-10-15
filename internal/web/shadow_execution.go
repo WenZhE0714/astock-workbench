@@ -154,6 +154,10 @@ func (s *Server) handleShadowExecution(writer http.ResponseWriter, request *http
 				}
 			}
 		}
+		if err := s.captureShadowDailyReviews(s.currentTime()); err != nil {
+			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "账户已同步，但每日复盘归档失败: " + err.Error()})
+			return
+		}
 		response, err := s.shadowExecutionResponse(request.Context(), selectedProfile, allCached, anyPreserved, anyPreserveReason)
 		if err != nil {
 			writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取影子执行结果失败: " + err.Error()})

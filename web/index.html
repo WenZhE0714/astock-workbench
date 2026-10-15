@@ -625,7 +625,8 @@
 				<div class="shadow-profile-note" v-if="shadowSelectedProfile.trial_hash"><span v-text="'对照起点 ' + formatDateTime(shadowSelectedProfile.config.trading_start_at)"></span><span v-if="shadowSelectedProfile.return_difference != null" v-text="'较同起点基线 ' + number(shadowSelectedProfile.return_difference, 2) + ' 个百分点'"></span><em v-if="!shadowSelectedProfile.completed_trades">待积累平仓样本</em></div>
 				<div class="shadow-profile-note" v-if="shadowSelectedProfile.available && !shadowSelectedProfile.ledger_issues?.length"><span>账本校验通过</span><span v-if="shadowSelectedProfile.ledger_revision" v-text="'账本修订 ' + shadowSelectedProfile.ledger_revision"></span></div>
               </div>
-              <div class="shadow-profile-compare" v-if="realtimeSection === 'shadow' && shadowProfiles.length">
+              <div class="shadow-detail-tabs dashboard-segment" v-if="realtimeSection === 'shadow'" role="group" aria-label="影子账户视图"><button type="button" :aria-pressed="shadowDetailView === 'ledger'" @click="shadowDetailView = 'ledger'">账户概览</button><button type="button" :aria-pressed="shadowDetailView === 'daily'" @click="shadowDetailView = 'daily'">每日复盘</button></div>
+              <div class="shadow-profile-compare" v-if="realtimeSection === 'shadow' && shadowProfiles.length && shadowDetailView === 'ledger'">
                 <div class="shadow-profile-compare-head"><span>账户对比</span><small v-text="shadowGroup === 'trials' ? '同一起点 · 每账户100万元 · 规则冻结' : '历史累计账本 · 独立配置、现金和 T+1 账本'"></small></div>
                 <div class="shadow-profile-grid" :class="{'shadow-trial-grid': shadowGroup === 'trials'}">
                   <button type="button" v-for="profile in shadowVisibleProfiles" :key="'compare-' + profile.id" class="shadow-profile-card" :class="{active: profile.id === shadowProfileID}" @click="selectShadowProfile(profile.id)">
@@ -636,15 +637,16 @@
                 </div>
               </div>
               <div class="strategy-error" v-if="realtimeSection === 'validation' && realtimeOutcomeError" v-text="realtimeOutcomeError"></div>
+              <shadow-daily-review-view v-if="realtimeSection === 'shadow' && shadowProfiles.length && shadowDetailView === 'daily'" :profiles="shadowVisibleProfiles" :selected-profile="shadowProfileID" :selection="shadowDailySelection" :refresh-key="shadowCheckedAt" @selection="shadowDailySelection = $event" @open-profile="openShadowDailyAccount"></shadow-daily-review-view>
               <div class="strategy-error" v-if="realtimeSection === 'shadow' && shadowError" v-text="shadowError"></div>
 			  <div class="result-warnings" v-if="realtimeSection === 'shadow' && shadowSelectedProfile.ledger_issues?.length"><strong>账本校验未通过</strong><span v-for="issue in shadowSelectedProfile.ledger_issues" :key="issue.code + issue.event_id" v-text="(issue.event_id ? issue.event_id + '：' : '') + issue.message"></span></div>
               <div class="result-warnings" v-if="realtimeSection === 'shadow' && shadowPreserveReason"><strong>同步保护</strong><span v-text="shadowPreserveReason"></span></div>
               <div class="strategy-empty-inline realtime-outcome-empty" v-if="realtimeSection === 'validation' && !realtimeOutcomeReport && !realtimeOutcomeLoading">尚无成熟结果；运行扫描后点击“更新评估”开始积累信号验证样本。</div>
-              <div class="shadow-profile-empty" v-if="realtimeSection === 'shadow' && !shadowReport && !shadowLoading"><span>EMPTY LEDGER</span><strong v-text="shadowSelectedProfile.name + '尚未建立账本'"></strong><p v-text="shadowSelectedProfile.description || '该账户会使用独立参数、现金、持仓和 T+1 流水。'"></p><small v-text="shadowEmptyHint()"></small></div>
+              <div class="shadow-profile-empty" v-if="realtimeSection === 'shadow' && shadowDetailView === 'ledger' && !shadowReport && !shadowLoading"><span>EMPTY LEDGER</span><strong v-text="shadowSelectedProfile.name + '尚未建立账本'"></strong><p v-text="shadowSelectedProfile.description || '该账户会使用独立参数、现金、持仓和 T+1 流水。'"></p><small v-text="shadowEmptyHint()"></small></div>
               <div class="strategy-loading-state realtime-outcome-loading" v-if="realtimeSection === 'validation' && realtimeOutcomeLoading && !realtimeOutcomeReport"><span></span><strong>正在补齐验证窗口</strong><small>只读取信号日之后的交易日，不改写原始信号</small></div>
               <div class="realtime-refresh-status" v-if="realtimeSection === 'validation' && realtimeOutcomeLoading">正在更新信号验证，当前结果保持可见</div>
               <div class="realtime-refresh-status" v-if="realtimeSection === 'shadow' && shadowLoading" v-text="shadowSyncStatusText()"></div>
-              <template v-if="(realtimeSection === 'validation' && realtimeOutcomeReport) || (realtimeSection === 'shadow' && shadowReport)">
+              <template v-if="(realtimeSection === 'validation' && realtimeOutcomeReport) || (realtimeSection === 'shadow' && shadowReport && shadowDetailView === 'ledger')">
                 <template v-if="realtimeSection === 'validation'">
                 <div class="realtime-outcome-metrics">
                   <div><span>成熟 / 总数</span><strong v-text="(realtimeOutcomeSummary.ready || 0) + ' / ' + (realtimeOutcomeSummary.total || 0)"></strong><small v-text="'覆盖 ' + number(realtimeOutcomeSummary.coverage_percent, 1) + '%'"></small></div>

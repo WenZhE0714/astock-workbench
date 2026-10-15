@@ -249,6 +249,11 @@ type Server struct {
 	shadowEvaluator           shadowAnalyzer
 	shadowArchive             shadowArchive
 	shadowProfiles            map[string]shadowExecutionProfile
+	shadowDailyStore          *storage.ShadowDailyReviewStore
+	shadowDailyScans          *storage.RealtimeSignalStore
+	shadowDailyMu             sync.Mutex
+	shadowDailyCache          map[string]shadowDailyScanCache
+	shadowDailyError          string
 	aiChatService             AIChatService
 	aiConfigService           AIConfigService
 	tradePlans                tradePlanArchive
@@ -1084,6 +1089,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/strategy/candidates", s.handleStrategyCandidates)
 	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
 	mux.HandleFunc("/api/strategy/shadow", s.handleShadowExecution)
+	mux.HandleFunc("/api/strategy/shadow-daily", s.handleShadowDailyReview)
 	mux.HandleFunc("/api/strategy/automation", s.handleAutomationStatus)
 	mux.HandleFunc("/api/assistant/context", s.handleAssistantContext)
 	mux.HandleFunc("/api/assistant/alerts", s.handleAssistantAlerts)
@@ -1506,6 +1512,9 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 					shadowPreserveReason = profile.Name + "：" + preserveReason
 				}
 			}
+		}
+		if err := s.captureShadowDailyReviews(s.currentTime()); err != nil {
+			appendCycleError("保存每日影子复盘失败", err)
 		}
 		if !shadowFailed {
 			s.automationMu.Lock()

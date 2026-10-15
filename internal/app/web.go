@@ -134,6 +134,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		),
 		web.WithAdaptiveShadowExecution(storage.NewShadowStore(app.paths.ShadowAdaptiveFile)),
 		web.WithMonsterShadowExecution(storage.NewShadowStore(app.paths.ShadowMonsterFile)),
+		web.WithShadowDailyReviews(storage.NewShadowDailyReviewStore(filepath.Join(filepath.Dir(app.paths.ShadowReportFile), "daily-reviews")), storage.NewRealtimeSignalStore(app.paths.RealtimeSignalsDir)),
 		web.WithAutomaticStrategyResearch(func(ctx context.Context, symbols []string, end time.Time) (web.AutomaticResearchResult, error) {
 			id, message, ran, err := app.runAutomaticContinuousOptimization(ctx, symbols, end)
 			return web.AutomaticResearchResult{Ran: ran, ExperimentID: id, Message: message}, err

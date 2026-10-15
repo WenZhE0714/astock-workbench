@@ -11,6 +11,7 @@ import { LocalAlertCenter } from "./local-alert-center.js"
 import { ReviewCalendarView } from "./review-calendar-view.js"
 import { ChartTimeframesView } from "./chart-timeframes-view.js"
 import { PatternValidationView } from "./pattern-validation-view.js"
+import { ShadowDailyReviewView } from "./shadow-daily-review-view.js"
 import "./pattern-validation.css"
 import "./chart-timeframes.css"
 import "./review-calendar.css"
@@ -18,6 +19,7 @@ import "./plan-decision.css"
 import "./local-alerts.css"
 import "./style.css"
 import "./shadow-trials.css"
+import "./shadow-daily-review.css"
 import "./dashboard.css"
 import "./chart-analysis.css"
 import "./plan-experiment.css"
@@ -101,7 +103,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView },
   data() {
     return {
       query: defaultSymbol,
@@ -214,6 +216,8 @@ createApp({
       shadowReport: null,
       shadowProfiles: [],
       shadowGroup: "baseline",
+      shadowDetailView: initialView.get('shadow') === 'daily' ? 'daily' : 'ledger',
+      shadowDailySelection: {},
       shadowProfileID: "balanced",
       shadowRequestID: 0,
       shadowCheckedAt: 0,
@@ -1116,6 +1120,7 @@ createApp({
       }
     },
     openCalendarShadow(item) {
+      this.shadowDetailView = 'ledger'
       const profile = item.profile || "balanced"
       this.shadowRequestID++
       this.shadowProfileID = profile
@@ -1964,6 +1969,10 @@ createApp({
       this.shadowGroup = group
       const first = this.shadowVisibleProfiles[0]
       if (first) this.selectShadowProfile(first.id)
+    },
+    openShadowDailyAccount(id) {
+      this.shadowDetailView = 'ledger'
+      this.selectShadowProfile(id)
     },
     switchRealtimeSection(section) {
       if (!['candidates', 'lifecycle', 'shadow', 'validation'].includes(section)) return

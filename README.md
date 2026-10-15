@@ -114,6 +114,7 @@ TradingAgents-Astock 做多智能体策略研究，并为模拟盘、回测和�
 `GET /api/review-calendar?month=2026-10&source=manual` 读取人工复盘；使用 `source=shadow&profile=balanced` 可查看对应影子账户。
 
 影子账本支持 `astock shadow audit` 完整性校验和带原始备份的校正迁移；`astock shadow trials --apply` 可冻结六个同起点对照账户，独立验证不加仓、5%入场延伸上限与仅盘中入场。操作和验证边界见 [影子账本校验与策略对照](docs/shadow-optimization.md)。
+“影子账户 → 每日复盘”按日期展示扫描观测、入场资格、实际成交、费用、已实现盈亏及同组基线差额，零交易时区分资格拦截、执行拦截和档案缺失。历史权益只使用实际留存快照，支持 JSON 导出，详见 [每日对照复盘](docs/shadow-daily-review.md)。
 日历支持日期明细、类型和股票筛选、返回原计划补充复盘，以及打开对应影子账本；切换工作区后返回会保留当前月份、账户和选中日期。
 
 ## 实时量化辅助选股
