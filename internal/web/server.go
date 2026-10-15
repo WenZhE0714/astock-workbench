@@ -22,6 +22,7 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/notify"
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
@@ -250,6 +251,7 @@ type Server struct {
 	shadowEvaluator           shadowAnalyzer
 	shadowArchive             shadowArchive
 	shadowProfiles            map[string]shadowExecutionProfile
+	nativeNotifications       *notify.Dispatcher
 	shadowDailyStore          *storage.ShadowDailyReviewStore
 	shadowDailyScans          *storage.RealtimeSignalStore
 	shadowDailyMu             sync.Mutex
@@ -1124,6 +1126,11 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	server := &http.Server{Addr: address, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	automationCtx, cancelAutomation := context.WithCancel(ctx)
 	defer cancelAutomation()
+	if s.nativeNotifications != nil {
+		notificationsDone := make(chan struct{})
+		go func() { defer close(notificationsDone); s.nativeNotifications.Run(automationCtx) }()
+		defer func() { cancelAutomation(); <-notificationsDone }()
+	}
 	s.automationMu.Lock()
 	s.automationCtx = automationCtx
 	s.automationMu.Unlock()
@@ -1398,6 +1405,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 					s.realtimeCache = result
 					latestSnapshot = result
 					s.realtimeMu.Unlock()
+					s.notifyRealtimeCandidates(result)
 					s.setAutomationTask(automationTaskScan, "success", fmt.Sprintf("已生成%d个信号", len(result.Signals)), now, nil)
 				}
 			}

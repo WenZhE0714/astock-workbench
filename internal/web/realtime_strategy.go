@@ -456,6 +456,7 @@ func (s *Server) runRealtimeStrategy(writer http.ResponseWriter, request *http.R
 	s.realtimeMu.Lock()
 	s.realtimeCache = result
 	s.realtimeMu.Unlock()
+	s.notifyRealtimeCandidates(result)
 	writeJSON(writer, http.StatusOK, s.realtimeSessionPayload(result, session, false))
 }
 

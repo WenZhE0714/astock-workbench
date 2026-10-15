@@ -18,14 +18,15 @@ import (
 const launchdLabel = "com.github.wenzhe.astock-workbench.web"
 
 type launchdServiceConfig struct {
-	Listen       string
-	Source       string
-	Symbol       string
-	DataHome     string
-	ConfigHome   string
-	CacheHome    string
-	CalendarFile string
-	DryRun       bool
+	Listen           string
+	Source           string
+	Symbol           string
+	DataHome         string
+	ConfigHome       string
+	CacheHome        string
+	CalendarFile     string
+	MacNotifications bool
+	DryRun           bool
 }
 
 // runService manages an optional macOS launchd wrapper for the read-only Web
@@ -42,6 +43,7 @@ func (app *App) runService(arguments []string) error {
 	cacheHome := set.String("cache-home", filepath.Dir(app.paths.CacheDir), "固定 XDG_CACHE_HOME")
 	calendarFile := set.String("calendar", os.Getenv("ASTOCK_TRADING_CALENDAR_FILE"), "固定交易日历文件")
 	dryRun := set.Bool("dry-run", false, "仅输出 launchd 配置，不安装服务")
+	macNotifications := set.Bool("mac-notifications", false, "开启 macOS 候选触发和模拟买卖通知")
 	if len(arguments) == 0 {
 		return fmt.Errorf("用法: astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]")
 	}
@@ -58,6 +60,7 @@ func (app *App) runService(arguments []string) error {
 	config := launchdServiceConfig{Listen: strings.TrimSpace(*listen), Source: strings.TrimSpace(*source), Symbol: strings.TrimSpace(*symbol)}
 	config.DataHome, config.ConfigHome, config.CacheHome = *dataHome, *configHome, *cacheHome
 	config.CalendarFile, config.DryRun = *calendarFile, *dryRun
+	config.MacNotifications = *macNotifications
 	if *dryRun && action != "install" {
 		return fmt.Errorf("--dry-run 仅支持 service install")
 	}
@@ -117,6 +120,9 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 		return err
 	}
 	arguments := []string{executable, "web", "--listen", config.Listen}
+	if config.MacNotifications {
+		arguments = append(arguments, "--mac-notifications")
+	}
 	if config.Source != "" {
 		arguments = append(arguments, "--source", config.Source)
 	}

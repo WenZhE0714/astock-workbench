@@ -526,6 +526,9 @@ func (s *Server) syncShadowProfileSignals(ctx context.Context, request *http.Req
 			if err := profile.Archive.Save(report); err != nil {
 				return false, false, "", fmt.Errorf("保存账户失败: %w", err)
 			}
+			if !shadowRebuildRequested(request) {
+				s.notifyShadowOrders(profile, previous, report)
+			}
 			return false, false, "", nil
 		}
 		reason := "账户连续性保护：本次同步未覆盖持仓，" + transitionErr.Error()
@@ -534,6 +537,9 @@ func (s *Server) syncShadowProfileSignals(ctx context.Context, request *http.Req
 	}
 	if err := profile.Archive.Save(report); err != nil {
 		return false, false, "", fmt.Errorf("保存账户失败: %w", err)
+	}
+	if !shadowRebuildRequested(request) {
+		s.notifyShadowOrders(profile, previous, report)
 	}
 	return false, false, "", nil
 }

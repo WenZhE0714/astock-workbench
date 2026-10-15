@@ -235,6 +235,9 @@ make build
 
 监控中心的“提醒记录”保存最近300条本地记录。首次载入只建立历史基线；新增事件保留未读状态，同计划同类桌面提醒有5分钟冷却，支持标为已读、已处理和清除已处理记录。
 桌面通知需要用户主动授权，并要求浏览器页面保持打开；关闭页面后服务端监控仍可运行，重新打开时会从接口近期事件中补录记录，不补弹超过5分钟的旧通知。浏览器数据按站点隔离，清除浏览器存储会清除本地提醒状态。
+
+Mac 可另行启用不依赖浏览器的原生通知：`astock web --mac-notifications`，提醒实时候选触发与影子账户模拟买卖。使用 `astock web --test-mac-notification` 验证系统通知权限；触发规则、去重和后台运行方式见 [Mac 原生通知](docs/mac-notifications.md)。
+
 `GET /api/chart-analysis?symbol=600519&through=2026-09-18` 与 `GET/POST /api/trade-plans`。
 每个已保存计划可填写执行状态、纪律、实际进出价/时间、标签、退出原因和备注。复盘以追加修订的方式保存在
 `~/.local/share/astock-workbench/trade-plan-reviews/<symbol>/<id>.json`，历史版本不会被后续编辑覆盖；

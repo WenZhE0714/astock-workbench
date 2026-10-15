@@ -34,7 +34,7 @@ func TestLaunchdDryRunFreezesDataRootsWithoutInstalling(t *testing.T) {
 	root := t.TempDir()
 	var output bytes.Buffer
 	app := &App{out: &output, errOut: io.Discard}
-	err := app.installLaunchdService(launchdServiceConfig{Listen: "127.0.0.1:18828", Source: "http", DataHome: filepath.Join(root, "data & research"), ConfigHome: filepath.Join(root, "config"), CacheHome: filepath.Join(root, "cache"), CalendarFile: filepath.Join(root, "calendar.json"), DryRun: true})
+	err := app.installLaunchdService(launchdServiceConfig{Listen: "127.0.0.1:18828", Source: "http", DataHome: filepath.Join(root, "data & research"), ConfigHome: filepath.Join(root, "config"), CacheHome: filepath.Join(root, "cache"), CalendarFile: filepath.Join(root, "calendar.json"), MacNotifications: true, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestLaunchdDryRunFreezesDataRootsWithoutInstalling(t *testing.T) {
 			t.Fatalf("invalid service XML: %v", err)
 		}
 	}
-	for _, value := range []string{"EnvironmentVariables", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "ASTOCK_TRADING_CALENDAR_FILE", "data &amp; research", "127.0.0.1:18828"} {
+	for _, value := range []string{"EnvironmentVariables", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "ASTOCK_TRADING_CALENDAR_FILE", "data &amp; research", "127.0.0.1:18828", "--mac-notifications"} {
 		if !strings.Contains(output.String(), value) {
 			t.Fatalf("missing durable configuration: %s", value)
 		}

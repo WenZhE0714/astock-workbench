@@ -4,12 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/notify"
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
@@ -36,11 +39,25 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 	listen := set.String("listen", "127.0.0.1:8765", "Web 监听地址")
 	defaultSymbol := set.String("symbol", "", "首次打开的股票；默认使用自选第一只")
 	source := set.String("source", "", "行情源：http、tdx 或 ths")
+	macNotifications := set.Bool("mac-notifications", false, "通过 macOS 通知中心提醒候选触发和模拟买卖")
+	testMacNotification := set.Bool("test-mac-notification", false, "发送一条 Mac 测试通知后退出")
 	if err := set.Parse(arguments); err != nil {
 		return err
 	}
 	if set.NArg() > 1 {
 		return fmt.Errorf("用法: astock web [--listen 地址] [--symbol 代码或名称] [--source http|tdx|ths]")
+	}
+	if (*macNotifications || *testMacNotification) && runtime.GOOS != "darwin" {
+		return fmt.Errorf("Mac 通知仅支持 macOS")
+	}
+	if *testMacNotification {
+		testCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := (notify.MacSender{}).Send(testCtx, notify.Message{Title: "ASTOCK · 通知测试", Subtitle: "Mac 原生通知", Body: "候选触发与模拟买卖提醒将显示在这里。这是一条测试消息。"}); err != nil {
+			return err
+		}
+		fmt.Fprintln(app.out, "测试消息已提交给 macOS；若未见横幅，请在系统设置 → 通知 → 脚本编辑器中允许通知，并检查专注模式。")
+		return nil
 	}
 	if err := app.configureMarketSource(*source); err != nil {
 		return err
@@ -142,6 +159,15 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAutomationState(storage.NewAutomationStore(app.paths.AutomationStateFile)),
 	}
 	trialRoot := filepath.Join(filepath.Dir(app.paths.ShadowReportFile), "trials")
+	if *macNotifications {
+		store := storage.NewNativeNotificationStore(filepath.Join(app.paths.DataDir, "notifications", "mac.json"))
+		dispatcher, err := notify.NewDispatcher(notify.MacSender{}, store, log.New(app.errOut, "", log.LstdFlags))
+		if err != nil {
+			return err
+		}
+		serverOptions = append(serverOptions, web.WithNativeNotifications(dispatcher))
+		fmt.Fprintln(app.out, "Mac 通知已开启：候选触发、模拟买入和模拟卖出；无需浏览器保持打开。")
+	}
 	trials, err := storage.LoadShadowTrials(trialRoot)
 	if err != nil {
 		return fmt.Errorf("读取影子对照配置失败: %w", err)
