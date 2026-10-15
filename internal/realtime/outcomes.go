@@ -117,15 +117,25 @@ func (e *OutcomeEvaluator) Evaluate(ctx context.Context, signals []Signal, optio
 	for _, signal := range selected {
 		bySymbol[signal.Symbol] = append(bySymbol[signal.Symbol], signal)
 	}
-	barMap, warnings := e.fetchHistories(ctx, bySymbol)
+	warnings := []string{}
 	benchmarkBars := []domain.DailyBar(nil)
 	if e.benchmark != nil {
-		bars, err := e.benchmark.FetchDailyBars(ctx, e.benchmarkSymbol)
+		benchmarkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		bars, err := fetchOutcomeDailyBars(benchmarkCtx, e.benchmark, e.benchmarkSymbol)
+		cancel()
 		if err != nil {
 			warnings = append(warnings, "沪深300结果基准不可用: "+err.Error())
 		} else {
 			benchmarkBars = normalizedOutcomeBars(bars)
 		}
+	}
+	barMap, historyWarnings := e.fetchHistories(ctx, bySymbol)
+	warnings = append(warnings, historyWarnings...)
+	if err := ctx.Err(); err != nil {
+		return OutcomeReport{}, fmt.Errorf("日K采集未完成（%d/%d只证券）: %w", len(barMap), len(bySymbol), err)
+	}
+	if e.benchmark != nil && len(benchmarkBars) == 0 {
+		return OutcomeReport{}, fmt.Errorf("沪深300结果基准不可用，未写入本次评估: %s", strings.Join(warnings, "; "))
 	}
 	dataThrough := latestOutcomeDataDate(benchmarkBars, barMap)
 
@@ -140,19 +150,30 @@ func (e *OutcomeEvaluator) Evaluate(ctx context.Context, signals []Signal, optio
 	if e.store != nil {
 		items, err := e.store.List(0)
 		if err != nil {
-			warnings = append(warnings, "读取既有信号结果失败: "+err.Error())
+			return OutcomeReport{}, fmt.Errorf("读取既有信号结果失败: %w", err)
 		} else {
 			existing = items
 		}
 		changes, merged := mergeOutcomeRevisions(existing, outcomes)
 		if err := e.store.Upsert(changes); err != nil {
-			warnings = append(warnings, "信号结果留痕失败: "+err.Error())
+			return OutcomeReport{}, fmt.Errorf("信号结果留痕失败: %w", err)
 		}
 		outcomes = merged
 	}
 	report := BuildOutcomeReport(outcomes, evaluatedAt, warnings)
 	report.DataThrough = dataThrough
 	return report, nil
+}
+
+type completedOutcomeHistory interface {
+	FetchCompletedDailyBars(context.Context, string) ([]domain.DailyBar, error)
+}
+
+func fetchOutcomeDailyBars(ctx context.Context, client HistoryClient, symbol string) ([]domain.DailyBar, error) {
+	if completed, ok := client.(completedOutcomeHistory); ok {
+		return completed.FetchCompletedDailyBars(ctx, symbol)
+	}
+	return client.FetchDailyBars(ctx, symbol)
 }
 
 func latestOutcomeDataDate(benchmark []domain.DailyBar, histories map[string][]domain.DailyBar) string {
@@ -213,7 +234,7 @@ func (e *OutcomeEvaluator) fetchHistories(ctx context.Context, bySymbol map[stri
 				return
 			}
 			defer func() { <-limit }()
-			bars, err := e.history.FetchDailyBars(ctx, symbol)
+			bars, err := fetchOutcomeDailyBars(ctx, e.history, symbol)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -294,36 +315,56 @@ func normalizedOutcomeBars(input []domain.DailyBar) []domain.DailyBar {
 	return unique
 }
 
-func representativeSignals(input []Signal, limit int) []Signal {
-	items := append([]Signal(nil), input...)
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].AsOf.Equal(items[j].AsOf) {
-			if items[i].Score == items[j].Score {
-				return items[i].ID > items[j].ID
-			}
-			return items[i].Score > items[j].Score
-		}
-		return items[i].AsOf.After(items[j].AsOf)
-	})
-	seen := make(map[string]bool)
-	result := make([]Signal, 0, len(items))
-	for _, item := range items {
-		if strings.TrimSpace(item.Symbol) == "" {
-			continue
-		}
+// OutcomeSignalCollector bounds memory by security and signal day, rather than
+// by every repeated intraday observation in the archive.
+type OutcomeSignalCollector struct{ items map[string]Signal }
+
+func (c *OutcomeSignalCollector) Add(input []Signal) {
+	if c.items == nil {
+		c.items = map[string]Signal{}
+	}
+	for _, item := range input {
 		date := signalDate(item)
-		key := item.Symbol + "|" + date
-		if date == "" || seen[key] {
+		if strings.TrimSpace(item.Symbol) == "" || date == "" {
 			continue
 		}
-		seen[key] = true
-		result = append(result, item)
-		if limit > 0 && len(result) >= limit {
-			break
+		key := item.Symbol + "|" + date
+		previous, found := c.items[key]
+		if !found || outcomeSignalNewer(item, previous) {
+			c.items[key] = item
 		}
 	}
-	sort.SliceStable(result, func(i, j int) bool { return result[i].AsOf.Before(result[j].AsOf) })
-	return result
+}
+
+func outcomeSignalNewer(a, b Signal) bool {
+	if a.AsOf.Equal(b.AsOf) {
+		if a.Score == b.Score {
+			return a.ID > b.ID
+		}
+		return a.Score > b.Score
+	}
+	return a.AsOf.After(b.AsOf)
+}
+
+func (c *OutcomeSignalCollector) Signals(limit int) []Signal {
+	items := make([]Signal, 0, len(c.items))
+	for _, item := range c.items {
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return outcomeSignalNewer(items[i], items[j])
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].AsOf.Before(items[j].AsOf) })
+	return items
+}
+
+func representativeSignals(input []Signal, limit int) []Signal {
+	var collector OutcomeSignalCollector
+	collector.Add(input)
+	return collector.Signals(limit)
 }
 
 func signalDate(signal Signal) string {

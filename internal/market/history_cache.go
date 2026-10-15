@@ -175,6 +175,27 @@ func (client *CachedDailyHistoryClient) FetchDailyBars(ctx context.Context, symb
 	return nil, fmt.Errorf("在线日K: %v；本地缓存: %v", primaryError, cacheError)
 }
 
+// Outcome retries may reuse a completed same-day snapshot. Intraday cache
+// entries still take the online path, even when they contain today's date.
+func (client *CachedDailyHistoryClient) FetchCompletedDailyBars(ctx context.Context, symbol string) ([]domain.DailyBar, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if client == nil {
+		return nil, fmt.Errorf("日K数据源未初始化")
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := client.now().In(location)
+	closeAt := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, location)
+	if !now.Before(closeAt) {
+		bars, fetchedAt, err := client.loadWithTimestamp(symbol)
+		if err == nil && !fetchedAt.Before(closeAt) && len(bars) > 0 && bars[len(bars)-1].Date == now.Format(time.DateOnly) {
+			return bars, nil
+		}
+	}
+	return client.FetchDailyBars(ctx, symbol)
+}
+
 func sortedDailyBars(bars []domain.DailyBar) []domain.DailyBar {
 	result := append([]domain.DailyBar(nil), bars...)
 	sort.SliceStable(result, func(left, right int) bool {

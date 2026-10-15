@@ -27,6 +27,7 @@ export const ShadowDailyReviewView = {
     money(value) { return this.number(value, 2) },
     tone(value) { return value == null ? '' : value > 0 ? 'sd-gain' : value < 0 ? 'sd-loss' : '' },
     time(value) { return value ? new Date(value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '--' },
+    checkStatus(value) { return {passed: '通过', pending: '待完成', warning: '需关注', failed: '未通过'}[value] || '--' },
     count(row, key) { return this.report?.source.available ? this.number(row.scans[key]) : '--' },
     step(delta) { const next = this.dates[this.dateIndex + delta]; if (next) this.date = next },
     basis(row) { return {'archived-daily': '当日留存规则', 'current-ledger': '当前账本规则', 'current-rule-recheck': '按当前规则复核历史信号'}[row.config_basis] || '' },
@@ -75,6 +76,10 @@ export const ShadowDailyReviewView = {
     <p v-if="loading && !report" class="sd-empty">正在读取当日档案</p>
     <template v-if="report">
       <div class="sd-source"><span>{{ report.date }} · {{ rows.length }}个账户</span><span>原始扫描记录 {{ report.source.available ? number(report.source.records) : '--' }}</span><span v-if="runtimeTask">当前调度：{{ runtimeTask.detail }}</span><span v-if="loading">更新中</span></div>
+      <div v-if="report.check" class="sd-check" aria-label="每日自动检查" :data-check-status="report.check.status">
+        <div class="sd-check-heading"><strong>每日检查：{{ checkStatus(report.check.status) }}</strong><span>账户验收：{{ checkStatus(report.check.account_status) }}</span><span>全部账户封存 {{ report.check.sealed_accounts }} / {{ report.check.accounts }}</span><span>有成交账户 {{ report.check.traded_accounts }}</span><span v-if="report.check.not_started">未到起点 {{ report.check.not_started }}</span><small>{{ time(report.check.checked_at) }}</small></div>
+        <ul v-if="report.check.issues.length"><li v-for="(issue, index) in report.check.issues" :key="index" :data-check-code="issue.code">{{ issue.message }}</li></ul>
+      </div>
       <div class="sd-warnings" v-if="report.warnings.length || report.archive_error"><p v-for="warning in report.warnings" :key="warning">{{ warning }}</p><p v-if="report.archive_error">归档异常：{{ report.archive_error }}</p></div>
       <div class="sd-table" role="table" aria-label="每日账户对照">
         <div class="sd-row sd-heading" role="row"><span>账户</span><span>扫描 / 信号观测</span><span>资格通过 / 证券</span><span>成交笔数</span><span>费用（元）</span><span>已实现净盈亏（元）</span><span>较基线已实现差额</span><span></span></div>

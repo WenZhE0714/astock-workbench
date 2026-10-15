@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,6 +53,36 @@ func TestRealtimeDayReadIsBoundedAndReportsIncompleteData(t *testing.T) {
 	cancel()
 	if _, err := store.WalkDay(ctx, "2026-10-15", func(realtime.ScanResult) {}); err == nil {
 		t.Fatal("cancellation ignored")
+	}
+}
+
+func TestDailyCheckStoreKeepsLatestObservation(t *testing.T) {
+	root := t.TempDir()
+	store := NewShadowDailyReviewStore(root)
+	at := time.Date(2026, 10, 15, 16, 10, 0, 0, shadowReviewLocation)
+	check := paper.ShadowDailyCheck{Date: "2026-10-15", CheckedAt: at, Status: "passed"}
+	if err := store.SaveCheck(check); err != nil {
+		t.Fatal(err)
+	}
+	check.CheckedAt, check.Status = at.Add(-time.Minute), "pending"
+	if err := store.SaveCheck(check); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "checks", "2026-10-15.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved paper.ShadowDailyCheck
+	if err := json.Unmarshal(data, &saved); err != nil || saved.Status != "passed" {
+		t.Fatal("older check overwrote latest result")
+	}
+	check.Date = "../bad"
+	if err := store.SaveCheck(check); err == nil {
+		t.Fatal("invalid check date accepted")
+	}
+	dates, err := store.Dates()
+	if err != nil || len(dates) != 0 {
+		t.Fatal("checks folder mistaken for snapshot date")
 	}
 }
 

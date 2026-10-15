@@ -31,12 +31,14 @@ type AutomationState struct {
 // orders and balances stay in their own stores; this map only explains what
 // the scheduler attempted and whether the attempt was useful.
 type AutomationTaskState struct {
-	Status        string    `json:"status,omitempty"`
-	Detail        string    `json:"detail,omitempty"`
-	LastAttemptAt time.Time `json:"last_attempt_at,omitempty"`
-	LastSuccessAt time.Time `json:"last_success_at,omitempty"`
-	NextRunAt     time.Time `json:"next_run_at,omitempty"`
-	LastError     string    `json:"last_error,omitempty"`
+	Status           string    `json:"status,omitempty"`
+	Detail           string    `json:"detail,omitempty"`
+	LastAttemptAt    time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt    time.Time `json:"last_success_at,omitempty"`
+	NextRunAt        time.Time `json:"next_run_at,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+	LastResultDetail string    `json:"last_result_detail,omitempty"`
+	Warnings         []string  `json:"warnings,omitempty"`
 }
 
 type AutomationStore struct{ file string }

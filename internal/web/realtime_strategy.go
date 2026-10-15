@@ -151,20 +151,46 @@ func (s *Server) writeRealtimeOutcomes(writer http.ResponseWriter, request *http
 		writeJSON(writer, http.StatusServiceUnavailable, errorResponse{Error: "实时信号归档未初始化"})
 		return
 	}
-	signals, err := s.realtimeArchive.List(limit)
+	if !s.outcomeMu.TryLock() {
+		writeJSON(writer, http.StatusConflict, errorResponse{Error: "已有信号验证正在运行"})
+		return
+	}
+	defer s.outcomeMu.Unlock()
+	if fullArchive {
+		s.setAutomationTask(automationTaskOutcomes, "running", "正在手动重试完整信号验证", s.currentTime(), nil)
+		defer s.persistAutomationState()
+	}
+	signals, err := s.readOutcomeSignals(request.Context(), limit)
 	if err != nil {
+		if fullArchive {
+			s.setAutomationTask(automationTaskOutcomes, "error", "读取信号验证失败", s.currentTime(), err)
+		}
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取实时信号失败: " + err.Error()})
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), realtimeOutcomeTimeout)
-	defer cancel()
-	report, err := s.realtimeOutcomes.Evaluate(ctx, signals, realtimeOutcomeOptions(request))
+	report, err := s.evaluateOutcomeSignals(request.Context(), signals, realtimeOutcomeOptions(request))
 	if err != nil {
+		if fullArchive {
+			s.setAutomationTask(automationTaskOutcomes, "error", "更新信号验证失败", s.currentTime(), err)
+		}
 		writeJSON(writer, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
 	if fullArchive {
-		s.applyRealtimeCalibration(report)
+		s.recordOutcomeResult(report)
+		now := s.currentTime()
+		session := s.marketSession(request.Context(), now)
+		local := now.In(realtimeWebLocation)
+		if session.TradingDay && outcomeReportCoversTradingDate(report, session.TradingDate) && (local.Hour() > 15 || local.Hour() == 15 && local.Minute() >= 30) {
+			s.applyRealtimeCalibration(report)
+			s.automationMu.Lock()
+			s.automationLastOutcome = now
+			s.automationMu.Unlock()
+			s.setAutomationTask(automationTaskOutcomes, "success", "手动完整验证已完成，数据截至"+report.DataThrough, now, nil)
+			s.setAutomationTaskNextRun(automationTaskOutcomes, nextAutomaticOutcomeValidation(session, local))
+		} else {
+			s.setAutomationTask(automationTaskOutcomes, "warning", "手动验证未达到当日收盘条件，数据截至"+report.DataThrough, now, nil)
+		}
 	}
 	writeJSON(writer, http.StatusOK, realtimeStrategyResponse{Report: &report})
 }

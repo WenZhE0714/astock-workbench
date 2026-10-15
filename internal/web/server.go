@@ -246,6 +246,7 @@ type Server struct {
 	realtimeScanner           realtimeScanner
 	realtimeArchive           realtimeSignalArchive
 	realtimeOutcomes          realtimeOutcomeAnalyzer
+	outcomeMu                 sync.Mutex
 	shadowEvaluator           shadowAnalyzer
 	shadowArchive             shadowArchive
 	shadowProfiles            map[string]shadowExecutionProfile
@@ -1049,6 +1050,7 @@ func (s *Server) setAutomationTask(key, status, detail string, attemptedAt time.
 	}
 	if err != nil {
 		task.LastError = err.Error()
+		task.LastResultDetail = err.Error()
 	} else if status == "success" {
 		task.LastError = ""
 		task.LastSuccessAt = s.currentTime()
@@ -1302,7 +1304,11 @@ func automaticOutcomeValidationPlan(now time.Time, session realtime.MarketSessio
 	if task.LastAttemptAt.IsZero() || lastAttempt.Before(retry) {
 		return automaticOutcomePlan{Run: true, RetryAttempt: true, NextRunAt: nextPrimary}
 	}
-	return automaticOutcomePlan{NextRunAt: nextPrimary, Detail: "今日验证窗口已结束，等待下个交易日"}
+	detail := "今日验证窗口已结束，等待下个交易日"
+	if task.LastResultDetail != "" {
+		detail += "；" + task.LastResultDetail
+	}
+	return automaticOutcomePlan{NextRunAt: nextPrimary, Detail: detail}
 }
 
 func nextAutomaticOutcomeValidation(session realtime.MarketSession, now time.Time) time.Time {
@@ -1417,16 +1423,19 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 	s.setAutomationTaskNextRun(automationTaskOutcomes, outcomePlan.NextRunAt)
 	if s.realtimeOutcomes == nil {
 		s.setAutomationTask(automationTaskOutcomes, "paused", "信号验证服务未配置", now, nil)
+	} else if !s.outcomeMu.TryLock() {
+		s.setAutomationTask(automationTaskOutcomes, "busy", "已有信号验证正在运行", time.Time{}, nil)
 	} else if !outcomePlan.Run {
 		s.setAutomationTask(automationTaskOutcomes, "waiting", outcomePlan.Detail, now, nil)
+		s.outcomeMu.Unlock()
 	} else {
 		s.setAutomationTask(automationTaskOutcomes, "running", "正在更新信号验证结果", now, nil)
-		outcomeCtx, cancelOutcomes := context.WithTimeout(cycleCtx, realtimeOutcomeTimeout)
+		outcomeCtx, cancelOutcomes := context.WithCancel(cycleCtx)
 		// Read the complete append-only signal archive. Passing a negative limit
 		// explicitly requests full-archive mode; truncating this to the newest
 		// 2000 rows leaves older 5/10-day horizons pending forever when the
 		// scanner emits a large universe every 30 seconds.
-		if signals, err := s.realtimeArchive.List(-1); err != nil {
+		if signals, err := s.readOutcomeSignals(outcomeCtx, -1); err != nil {
 			appendCycleError("读取信号验证失败", err)
 			s.setAutomationTask(automationTaskOutcomes, "error", "读取信号验证失败", now, err)
 		} else if len(signals) == 0 {
@@ -1436,7 +1445,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			next := nextAutomaticOutcomeValidation(session, now.In(realtimeWebLocation))
 			s.setAutomationTaskNextRun(automationTaskOutcomes, next)
 			s.setAutomationTask(automationTaskOutcomes, "success", "当前没有待验证信号", now, nil)
-		} else if report, err := s.realtimeOutcomes.Evaluate(outcomeCtx, signals, realtime.OutcomeOptions{SignalLimit: -1}); err != nil {
+		} else if report, err := s.evaluateOutcomeSignals(outcomeCtx, signals, realtime.OutcomeOptions{SignalLimit: -1}); err != nil {
 			appendCycleError("更新信号验证失败", err)
 			s.setAutomationTask(automationTaskOutcomes, "error", "更新信号验证失败", now, err)
 		} else if outcomeReportCoversTradingDate(report, session.TradingDate) {
@@ -1447,7 +1456,9 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			next := nextAutomaticOutcomeValidation(session, now.In(realtimeWebLocation))
 			s.setAutomationTaskNextRun(automationTaskOutcomes, next)
 			s.setAutomationTask(automationTaskOutcomes, "success", fmt.Sprintf("已验证%d个信号，数据截至%s", len(signals), report.DataThrough), now, nil)
+			s.recordOutcomeResult(report)
 		} else {
+			s.recordOutcomeResult(report)
 			dataThrough := report.DataThrough
 			if dataThrough == "" {
 				dataThrough = "尚未返回有效交易日"
@@ -1459,6 +1470,7 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 			}
 		}
 		cancelOutcomes()
+		s.outcomeMu.Unlock()
 	}
 
 	currentShadowSnapshot := s.hasCurrentSessionSnapshot(latestSnapshot, session)
@@ -1539,6 +1551,14 @@ func (s *Server) runAutomationCycleStarted(ctx context.Context) {
 		s.setAutomationTask(automationTaskShadow, "paused", "影子账户服务未配置", now, nil)
 	}
 
+	if local := s.currentTime().In(realtimeWebLocation); session.TradingDay && session.TradingDate == local.Format(time.DateOnly) && (local.Hour() > 15 || local.Hour() == 15 && local.Minute() >= 30) {
+		if err := s.saveShadowDailyCheck(cycleCtx, local); err != nil {
+			appendCycleError("保存每日检查失败", err)
+			s.shadowDailyMu.Lock()
+			s.shadowDailyError = err.Error()
+			s.shadowDailyMu.Unlock()
+		}
+	}
 	s.automationMu.Lock()
 	if len(cycleErrors) > 0 {
 		messages := make([]string, 0, len(cycleErrors))

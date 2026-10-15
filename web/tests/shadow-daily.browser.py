@@ -22,6 +22,7 @@ with sync_playwright() as p:
         page.goto(args.url + '/?view=realtime&realtime=shadow&shadow=daily', wait_until='networkidle')
         panel = page.get_by_role('region', name='每日对照复盘')
         expect(panel).to_be_visible()
+        expect(panel.get_by_label('每日自动检查')).to_be_visible()
         today = page.request.get(args.url + '/api/strategy/shadow-daily').json()['today']
         field = page.get_by_label('影子复盘日期', exact=True)
         expect(field).to_have_value(today)
@@ -33,6 +34,7 @@ with sync_playwright() as p:
         missing = (date.fromisoformat(today) - timedelta(days=2)).isoformat()
         field.fill(missing)
         expect(panel.locator('.sd-warnings')).to_contain_text('没有扫描档案')
+        expect(panel.locator('[data-check-code="scan-archive-missing"]')).to_be_visible()
         expect(panel.locator('[data-zero-trade-reason]')).to_contain_text('未留存扫描档案')
         yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
         field.fill(yesterday)
@@ -54,6 +56,8 @@ with sync_playwright() as p:
         payload = json.loads(target.read_text())
         assert payload['date'] == today and len(payload['rows']) == 7
         assert payload['source']['records'] == 3
+        assert payload['check']['status'] != 'passed'
+        assert payload['check']['checked_at']
         for width in [1440, 900, 390, 320]:
             page.set_viewport_size({'width': width, 'height': 1000 if width > 600 else 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width

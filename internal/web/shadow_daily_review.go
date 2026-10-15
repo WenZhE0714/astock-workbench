@@ -21,21 +21,23 @@ type shadowDailyScanCache struct {
 }
 
 type shadowDailyRow struct {
-	ID                 string                       `json:"id"`
-	Name               string                       `json:"name"`
-	BaselineID         string                       `json:"baseline_id,omitempty"`
-	TrialHash          string                       `json:"trial_hash,omitempty"`
-	ConfigHash         string                       `json:"config_hash"`
-	LedgerRevision     int                          `json:"ledger_revision"`
-	ConfigBasis        string                       `json:"config_basis"`
-	Policy             string                       `json:"policy"`
-	Scans              paper.ShadowScanReview       `json:"scans"`
-	Ledger             *paper.ShadowDailyReview     `json:"ledger"`
-	LedgerIssues       []paper.LedgerIssue          `json:"ledger_issues"`
-	Snapshot           *storage.ShadowDailySnapshot `json:"snapshot"`
-	ZeroTradeReason    string                       `json:"zero_trade_reason,omitempty"`
-	RealizedDifference *float64                     `json:"realized_difference,omitempty"`
-	ReturnDifference   *float64                     `json:"return_difference,omitempty"`
+	ID                  string                       `json:"id"`
+	Name                string                       `json:"name"`
+	BaselineID          string                       `json:"baseline_id,omitempty"`
+	TrialHash           string                       `json:"trial_hash,omitempty"`
+	ConfigHash          string                       `json:"config_hash"`
+	LedgerRevision      int                          `json:"ledger_revision"`
+	ConfigBasis         string                       `json:"config_basis"`
+	TradingStartAt      time.Time                    `json:"trading_start_at,omitzero"`
+	FrozenConfigMatches *bool                        `json:"frozen_config_matches,omitempty"`
+	Policy              string                       `json:"policy"`
+	Scans               paper.ShadowScanReview       `json:"scans"`
+	Ledger              *paper.ShadowDailyReview     `json:"ledger"`
+	LedgerIssues        []paper.LedgerIssue          `json:"ledger_issues"`
+	Snapshot            *storage.ShadowDailySnapshot `json:"snapshot"`
+	ZeroTradeReason     string                       `json:"zero_trade_reason,omitempty"`
+	RealizedDifference  *float64                     `json:"realized_difference,omitempty"`
+	ReturnDifference    *float64                     `json:"return_difference,omitempty"`
 }
 
 type shadowDailyResponse struct {
@@ -48,6 +50,7 @@ type shadowDailyResponse struct {
 	Warnings     []string                `json:"warnings"`
 	ArchiveError string                  `json:"archive_error,omitempty"`
 	Runtime      AutomationStatus        `json:"runtime"`
+	Check        paper.ShadowDailyCheck  `json:"check"`
 }
 
 func WithShadowDailyReviews(store *storage.ShadowDailyReviewStore, scans *storage.RealtimeSignalStore) ServerOption {
@@ -191,8 +194,13 @@ func (s *Server) buildShadowDailyResponse(ctx context.Context, date string, now 
 			cfg, row.ConfigBasis = report.Config, "current-ledger"
 		}
 		configs[id], row.ConfigHash = cfg, paper.ConfigFingerprint(cfg)
+		row.TradingStartAt = profile.Config.TradingStartAt
 		row.LedgerRevision = report.LedgerRevision
 		comparisonValid[id] = row.ConfigHash == paper.ConfigFingerprint(profile.Config) && paper.ConfigFingerprint(report.Config) == paper.ConfigFingerprint(profile.Config)
+		if row.TrialHash != "" {
+			matches := comparisonValid[id]
+			row.FrozenConfigMatches = &matches
+		}
 		if row.TrialHash != "" && report.AsOf != "" && !comparisonValid[id] {
 			response.Warnings = append(response.Warnings, profile.Name+"的账本或当日规则与冻结配置不一致，暂停收益比较")
 		}
@@ -265,6 +273,7 @@ func (s *Server) buildShadowDailyResponse(ctx context.Context, date string, now 
 	s.shadowDailyMu.Lock()
 	response.ArchiveError = s.shadowDailyError
 	s.shadowDailyMu.Unlock()
+	response.Check = checkShadowDaily(response)
 	return response, nil
 }
 
