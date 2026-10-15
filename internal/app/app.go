@@ -181,6 +181,8 @@ func (app *App) Run(ctx context.Context, arguments []string) error {
 		return app.runService(rest)
 	case "forward":
 		return app.runForward(rest)
+	case "shadow":
+		return app.runShadowOperations(rest)
 	case "version", "-V", "--version":
 		fmt.Fprintf(app.out, "%s %s\n", programName, version)
 		return nil
@@ -219,6 +221,7 @@ const usageText = `A 股实时行情与策略研究工作台
 	astock service [install | uninstall | status] [--listen 地址] [--source http|tdx|ths] [--symbol 代码]
 	astock forward audit [--id 任务ID]
 	astock forward import --from 数据目录 [--apply]
+	astock shadow [audit | repair | trials] [--profile 账户] [--calendar 日K缓存] [--apply]
 	astock backtest run [选项] 股票代码或名称 ...
   astock backtest optimize [选项] 股票代码或名称 ...
   astock backtest continuous [选项] 股票代码或名称 ...

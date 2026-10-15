@@ -70,6 +70,9 @@ func (store *ShadowStore) loadUnlocked() (paper.Report, error) {
 }
 
 func shadowReportCanReplace(existing, incoming paper.Report) bool {
+	if incoming.LedgerRevision < existing.LedgerRevision {
+		return false
+	}
 	if existing.AsOf == "" && len(existing.Orders) == 0 && len(existing.Positions) == 0 && len(existing.Trades) == 0 {
 		return true
 	}

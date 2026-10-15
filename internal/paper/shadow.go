@@ -23,17 +23,21 @@ type HistoryClient interface {
 }
 
 type Config struct {
-	InitialCash               float64 `json:"initial_cash"`
-	MinimumScore              float64 `json:"minimum_score"`
-	MaxPositionPercent        float64 `json:"max_position_percent"`
-	MaxIndustryPercent        float64 `json:"max_industry_percent"`
-	MaxPortfolioPercent       float64 `json:"max_portfolio_percent"`
-	CashReservePercent        float64 `json:"cash_reserve_percent"`
-	MaxDailyDeploymentPercent float64 `json:"max_daily_deployment_percent"`
-	InitialEntryPercent       float64 `json:"initial_entry_percent"`
-	MaxEntryTranches          int     `json:"max_entry_tranches"`
-	AdditionScoreStep         float64 `json:"addition_score_step"`
-	MaxOpenPositions          int     `json:"max_open_positions"`
+	DisableSignalAdditions    bool      `json:"disable_signal_additions,omitempty"`
+	MaxEntryExtensionPercent  float64   `json:"max_entry_extension_percent,omitempty"`
+	IntradayEntriesOnly       bool      `json:"intraday_entries_only,omitempty"`
+	TradingStartAt            time.Time `json:"trading_start_at,omitzero"`
+	InitialCash               float64   `json:"initial_cash"`
+	MinimumScore              float64   `json:"minimum_score"`
+	MaxPositionPercent        float64   `json:"max_position_percent"`
+	MaxIndustryPercent        float64   `json:"max_industry_percent"`
+	MaxPortfolioPercent       float64   `json:"max_portfolio_percent"`
+	CashReservePercent        float64   `json:"cash_reserve_percent"`
+	MaxDailyDeploymentPercent float64   `json:"max_daily_deployment_percent"`
+	InitialEntryPercent       float64   `json:"initial_entry_percent"`
+	MaxEntryTranches          int       `json:"max_entry_tranches"`
+	AdditionScoreStep         float64   `json:"addition_score_step"`
+	MaxOpenPositions          int       `json:"max_open_positions"`
 	// UnlimitedOpenPositions removes the arbitrary count gate. Capital,
 	// portfolio, industry and risk budgets still limit actual entries.
 	UnlimitedOpenPositions  bool    `json:"unlimited_open_positions,omitempty"`
@@ -252,6 +256,7 @@ type PositionQuote struct {
 }
 
 type Report struct {
+	LedgerRevision           int                      `json:"ledger_revision,omitempty"`
 	EngineVersion            string                   `json:"engine_version,omitempty"`
 	ConfigFingerprint        string                   `json:"config_fingerprint,omitempty"`
 	SignalLimit              int                      `json:"signal_limit,omitempty"`
@@ -353,7 +358,7 @@ type ShadowDecision struct {
 }
 
 const (
-	ShadowEngineVersion = "tplus1-v11"
+	ShadowEngineVersion = "tplus1-v12"
 	CheckpointOpen      = "open"
 	CheckpointClose     = "close"
 	ExecutionModeDaily  = "daily-checkpoint"
@@ -1124,6 +1129,9 @@ func samePositionBasis(left, right ShadowOpenPosition) bool {
 
 func normalizePositionLots(position ShadowOpenPosition, orders []ShadowOrder, cfg Config, calendarDates, symbolDates []string) []shadowLot {
 	if len(position.Lots) == 0 {
+		if position.Quantity <= 0 {
+			return nil
+		}
 		entry := ShadowOrder{ID: position.SignalID + "-buy", Symbol: position.Symbol, Name: position.Name, Industry: position.Industry, Side: "buy", SignalDate: position.SignalDate, AttemptDate: position.EntryDate, Quantity: position.Quantity, Price: position.EntryPrice, RawPrice: position.EntryPrice, Amount: position.EntryAmount, Status: OrderFilled, ExecutionTime: position.EntryTime, SignalScore: position.SignalScore, TriggerPrice: position.TriggerPrice, InvalidationPrice: position.InvalidationPrice, SignalReasons: append([]string(nil), position.SignalReasons...)}
 		if existing, found := matchingFilledOrder(orders, position); found {
 			entry = existing
@@ -1152,6 +1160,9 @@ func normalizePositionLots(position ShadowOpenPosition, orders []ShadowOrder, cf
 	}
 	lots := make([]shadowLot, 0, len(position.Lots))
 	for _, lot := range position.Lots {
+		if lot.Quantity <= 0 {
+			continue
+		}
 		entry := ShadowOrder{ID: lot.OrderID, Symbol: position.Symbol, Name: position.Name, Industry: lot.Industry, Side: "buy", SignalDate: lot.SignalDate, AttemptDate: lot.EntryDate, Quantity: lot.Quantity, Price: lot.EntryPrice, RawPrice: lot.EntryPrice, Amount: lot.EntryAmount, Status: OrderFilled, ExecutionTime: lot.EntryTime, SignalScore: lot.SignalScore, TriggerPrice: lot.TriggerPrice, InvalidationPrice: lot.InvalidationPrice, SignalReasons: append([]string(nil), lot.SignalReasons...)}
 		if entry.Industry == "" {
 			entry.Industry = position.Industry
@@ -1389,6 +1400,7 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		return Report{}, fmt.Errorf("影子执行评估器未初始化")
 	}
 	cfg := canonicalConfig(options.Config)
+	signals = signalsSinceTradingStart(signals, cfg)
 	now := e.now
 	if options.Now != nil {
 		now = options.Now
@@ -1437,6 +1449,9 @@ func (e *Evaluator) Advance(ctx context.Context, previous Report, signals []real
 		}
 	}
 	for _, position := range previous.Positions {
+		if position.Quantity <= 0 && !hasPositivePositionLot(position) {
+			continue
+		}
 		bars, err := e.history.FetchDailyBars(ctx, position.Symbol)
 		if err != nil || len(bars) == 0 {
 			report.Warnings = append(report.Warnings, position.Symbol+" 持仓日K不可用，保留原持仓")
@@ -1610,6 +1625,7 @@ func (e *Evaluator) AdvanceRealtime(ctx context.Context, previous Report, signal
 		return previous, fmt.Errorf("盘中快速推进未启用实时行情")
 	}
 	cfg := canonicalConfig(options.Config)
+	signals = signalsSinceTradingStart(signals, cfg)
 	currentNow := options.RealtimeAt
 	if currentNow.IsZero() {
 		now := e.now
@@ -2054,6 +2070,10 @@ func simulateFromCheckpoint(report Report, plans []shadowPlan, cfg Config, cash 
 			bar := plan.bars[plan.entryIndex]
 			position, exists := active[plan.signal.Symbol]
 			if !exists && !shadowSignalEntryEligible(plan.signal, cfg) {
+				continue
+			}
+			if cfg.IntradayEntriesOnly {
+				appendShadowDecision(&report, plan.signal, date, "wait", "对照规则仅允许盘中事件入场", positionQuantity(position), 0)
 				continue
 			}
 			if !exists && rotatedOutToday[plan.signal.Symbol] {
@@ -2618,6 +2638,18 @@ func industryInvestedCost(active map[string]shadowPosition, industry string) flo
 
 func entryBudget(cfg Config, signal realtime.Signal, rawPrice, cash, deployedToday float64, active map[string]shadowPosition, position shadowPosition, exists bool) (float64, float64, string) {
 	targetPercent := targetPositionPercentAtPrice(signal, rawPrice, cfg)
+	if exists && cfg.DisableSignalAdditions {
+		return 0, targetPercent, "对照规则禁止普通信号加仓"
+	}
+	if cfg.MaxEntryExtensionPercent > 0 {
+		if !finite(signal.TriggerPrice) || signal.TriggerPrice <= 0 {
+			return 0, targetPercent, "缺少入场参考价，延伸上限无法核验"
+		}
+		extension := (rawPrice/signal.TriggerPrice - 1) * 100
+		if extension > cfg.MaxEntryExtensionPercent+1e-9 {
+			return 0, targetPercent, fmt.Sprintf("入场价高于参考价 %.2f%%，超过对照上限 %.2f%%", extension, cfg.MaxEntryExtensionPercent)
+		}
+	}
 	return entryBudgetForTarget(cfg, signal, rawPrice, cash, deployedToday, active, position, exists, targetPercent)
 }
 
@@ -2679,10 +2711,8 @@ func tradeForLot(lot shadowLot, sell ShadowOrder, exitClose float64, exitDate st
 	}
 	netProfit := sell.Amount - fee - lot.entryCost
 	executable := safeReturnPercent(netProfit, lot.entryCost)
-	holdingDays := 0
-	if lot.plan.entryIndex >= 0 && exitIndex >= lot.plan.entryIndex {
-		holdingDays = exitIndex - lot.plan.entryIndex + 1
-	}
+	// The exit index can belong to another provider's history window.
+	holdingDays := realtimeHoldingDays(barDates(lot.plan.bars), lot.entry.AttemptDate, exitDate)
 	industry := sell.Industry
 	if industry == "" {
 		industry = lot.entry.Industry
@@ -3062,6 +3092,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 		return Report{}, fmt.Errorf("影子执行评估器未初始化")
 	}
 	cfg := canonicalConfig(options.Config)
+	signals = signalsSinceTradingStart(signals, cfg)
 	now := e.now
 	if options.Now != nil {
 		now = options.Now
@@ -3080,7 +3111,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, signals []realtime.Signal, opt
 		calendarDates = nil
 	}
 	checkpoint := TradingCheckpointAt(currentNow, calendarDates)
-	report := Report{EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, options.Limit), SignalLimit: options.Limit, CheckpointPhase: checkpoint.Phase, ExecutionMode: ExecutionModeDaily, GeneratedAt: currentNow, AsOf: checkpoint.Date, Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash}
+	report := Report{EngineVersion: ShadowEngineVersion, ConfigFingerprint: OptionsFingerprint(cfg, options.Limit), SignalLimit: options.Limit, CheckpointPhase: checkpoint.Phase, ExecutionMode: ExecutionModeDaily, GeneratedAt: currentNow, AsOf: checkpoint.Date, Config: cfg, SignalCount: len(signals), InitialCash: cfg.InitialCash, RemainingCash: cfg.InitialCash, TotalEquity: cfg.InitialCash}
 	applyReportCalibrationMetadata(&report, signals)
 	if len(selected) == 0 {
 		return report, nil
@@ -3371,6 +3402,9 @@ func monsterSignalState(radar realtime.MonsterRadar) realtime.SignalState {
 }
 
 func shadowSignalEntryEligible(signal realtime.Signal, cfg Config) bool {
+	if !cfg.TradingStartAt.IsZero() && (signal.AsOf.IsZero() || signal.AsOf.Before(cfg.TradingStartAt)) {
+		return false
+	}
 	minimumScore := cfg.MinimumScore
 	if cfg.UseMonsterRadar {
 		return signal.Monster.Eligible && shadowSignalScoreForConfig(signal, cfg) >= minimumScore

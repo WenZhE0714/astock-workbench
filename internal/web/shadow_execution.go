@@ -26,25 +26,30 @@ const (
 var shadowProfileOrder = []string{shadowProfileBalanced, shadowProfileConservative, shadowProfileAggressive, shadowProfileMonster, shadowProfileAdaptive}
 
 type shadowProfileSummary struct {
-	ID                 string       `json:"id"`
-	Name               string       `json:"name"`
-	Strategy           string       `json:"strategy"`
-	Description        string       `json:"description"`
-	Config             paper.Config `json:"config"`
-	Available          bool         `json:"available"`
-	AsOf               string       `json:"as_of,omitempty"`
-	CheckpointPhase    string       `json:"checkpoint_phase,omitempty"`
-	EngineVersion      string       `json:"engine_version,omitempty"`
-	TotalEquity        float64      `json:"total_equity"`
-	TotalProfit        float64      `json:"total_profit"`
-	TotalReturnPercent float64      `json:"total_return_percent"`
-	RemainingCash      float64      `json:"remaining_cash"`
-	TotalMarketValue   float64      `json:"total_market_value"`
-	InvestedPercent    float64      `json:"invested_percent"`
-	OpenPositions      int          `json:"open_positions"`
-	FilledEntries      int          `json:"filled_entries"`
-	CompletedTrades    int          `json:"completed_trades"`
-	OrderCount         int          `json:"order_count"`
+	BaselineID         string              `json:"baseline_id,omitempty"`
+	TrialHash          string              `json:"trial_hash,omitempty"`
+	ReturnDifference   *float64            `json:"return_difference,omitempty"`
+	LedgerRevision     int                 `json:"ledger_revision,omitempty"`
+	LedgerIssues       []paper.LedgerIssue `json:"ledger_issues"`
+	ID                 string              `json:"id"`
+	Name               string              `json:"name"`
+	Strategy           string              `json:"strategy"`
+	Description        string              `json:"description"`
+	Config             paper.Config        `json:"config"`
+	Available          bool                `json:"available"`
+	AsOf               string              `json:"as_of,omitempty"`
+	CheckpointPhase    string              `json:"checkpoint_phase,omitempty"`
+	EngineVersion      string              `json:"engine_version,omitempty"`
+	TotalEquity        float64             `json:"total_equity"`
+	TotalProfit        float64             `json:"total_profit"`
+	TotalReturnPercent float64             `json:"total_return_percent"`
+	RemainingCash      float64             `json:"remaining_cash"`
+	TotalMarketValue   float64             `json:"total_market_value"`
+	InvestedPercent    float64             `json:"invested_percent"`
+	OpenPositions      int                 `json:"open_positions"`
+	FilledEntries      int                 `json:"filled_entries"`
+	CompletedTrades    int                 `json:"completed_trades"`
+	OrderCount         int                 `json:"order_count"`
 }
 
 type shadowResponse struct {
@@ -566,6 +571,13 @@ func (s *Server) shadowExecutionResponse(ctx context.Context, selectedID string,
 	for _, id := range s.orderedShadowProfileIDs() {
 		profile := s.shadowProfiles[id]
 		summary := makeShadowProfileSummary(profile, reports[id])
+		if profile.BaselineID != "" {
+			baseline, found := reports[profile.BaselineID]
+			if found && baseline.AsOf == reports[id].AsOf && baseline.Config.TradingStartAt.Equal(profile.Config.TradingStartAt) {
+				difference := reports[id].TotalReturnPercent - baseline.TotalReturnPercent
+				summary.ReturnDifference = &difference
+			}
+		}
 		summaries = append(summaries, summary)
 		if id == selectedID {
 			selected := summary
@@ -591,6 +603,8 @@ func makeShadowProfileSummary(profile shadowExecutionProfile, report paper.Repor
 	}
 	available := !report.GeneratedAt.IsZero() || report.AsOf != "" || report.ConfigFingerprint != "" || len(report.Orders) > 0 || len(report.Positions) > 0 || len(report.Trades) > 0
 	return shadowProfileSummary{
+		BaselineID: profile.BaselineID, TrialHash: profile.TrialHash,
+		LedgerRevision: report.LedgerRevision, LedgerIssues: paper.AuditShadowLedger(report),
 		ID: profile.ID, Name: profile.Name, Strategy: profile.Strategy, Description: profile.Description,
 		Config: config, Available: available, AsOf: report.AsOf, CheckpointPhase: report.CheckpointPhase,
 		EngineVersion: report.EngineVersion, TotalEquity: report.TotalEquity, TotalProfit: report.TotalProfit,

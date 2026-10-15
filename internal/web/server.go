@@ -167,6 +167,8 @@ type shadowArchive interface {
 }
 
 type shadowExecutionProfile struct {
+	BaselineID  string
+	TrialHash   string
 	ID          string
 	Name        string
 	Strategy    string

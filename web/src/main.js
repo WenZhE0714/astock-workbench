@@ -17,6 +17,7 @@ import "./review-calendar.css"
 import "./plan-decision.css"
 import "./local-alerts.css"
 import "./style.css"
+import "./shadow-trials.css"
 import "./dashboard.css"
 import "./chart-analysis.css"
 import "./plan-experiment.css"
@@ -212,6 +213,7 @@ createApp({
       shadowPreserveReason: "",
       shadowReport: null,
       shadowProfiles: [],
+      shadowGroup: "baseline",
       shadowProfileID: "balanced",
       shadowRequestID: 0,
       shadowCheckedAt: 0,
@@ -741,6 +743,8 @@ createApp({
       const horizons = Array.isArray(this.realtimePortfolioAnalysis.horizons) ? this.realtimePortfolioAnalysis.horizons : []
       return horizons.find(item => Number(item.horizon) === Number(this.realtimeOutcomeHorizon)) || horizons[0] || {}
     },
+    shadowVisibleProfiles() { return this.shadowProfiles.filter(item => Boolean(item.trial_hash) === (this.shadowGroup === 'trials')) },
+    shadowHasTrials() { return this.shadowProfiles.some(item => item.trial_hash) },
     shadowTrades() { return this.shadowReport && Array.isArray(this.shadowReport.trades) ? this.shadowReport.trades : [] },
     shadowPositions() {
       const positions = this.shadowReport && Array.isArray(this.shadowReport.positions) ? this.shadowReport.positions : []
@@ -1943,6 +1947,7 @@ createApp({
     selectShadowProfile(id) {
       if (!id || id === this.shadowProfileID || this.shadowLoading) return
       if (!this.shadowProfiles.some(item => item && item.id === id)) return
+      this.shadowGroup = this.shadowProfiles.find(item => item.id === id)?.trial_hash ? 'trials' : 'baseline'
       const scrollY = window.scrollY
       this.shadowProfileID = id
       this.shadowOrderSymbol = ""
@@ -1953,6 +1958,12 @@ createApp({
       this.loadShadowReport(id).then(() => {
         window.requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: "auto" }))
       })
+    },
+    selectShadowGroup(group) {
+      if (this.shadowLoading) return
+      this.shadowGroup = group
+      const first = this.shadowVisibleProfiles[0]
+      if (first) this.selectShadowProfile(first.id)
     },
     switchRealtimeSection(section) {
       if (!['candidates', 'lifecycle', 'shadow', 'validation'].includes(section)) return

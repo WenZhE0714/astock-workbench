@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -138,6 +139,14 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 			return web.AutomaticResearchResult{Ran: ran, ExperimentID: id, Message: message}, err
 		}),
 		web.WithAutomationState(storage.NewAutomationStore(app.paths.AutomationStateFile)),
+	}
+	trialRoot := filepath.Join(filepath.Dir(app.paths.ShadowReportFile), "trials")
+	trials, err := storage.LoadShadowTrials(trialRoot)
+	if err != nil {
+		return fmt.Errorf("读取影子对照配置失败: %w", err)
+	}
+	if len(trials.Trials) > 0 {
+		serverOptions = append(serverOptions, web.WithShadowTrials(trials, trialRoot))
 	}
 	if calendarPath := strings.TrimSpace(os.Getenv("ASTOCK_TRADING_CALENDAR_FILE")); calendarPath != "" {
 		provider := market.NewFileTradingCalendar(calendarPath)

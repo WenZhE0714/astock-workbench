@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.13daef66.js"></script>
-  <link rel="stylesheet" href="/assets/index.cee102ad.css">
+  <script type="module" crossorigin src="/assets/index.017433e1.js"></script>
+  <link rel="stylesheet" href="/assets/index.de3deee4.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -616,18 +616,21 @@
                 <div><span class="section-kicker" v-text="realtimeSection === 'shadow' ? 'SHADOW ACCOUNT / LIVE PAPER' : 'FORWARD VALIDATION / QLIB STYLE'"></span><h2 v-text="realtimeSection === 'shadow' ? '影子账户' : '信号验证'"></h2><p class="realtime-panel-note" v-if="realtimeSection === 'shadow'" v-text="shadowReport ? '检查点 ' + (shadowReport.as_of || '--') + ' · ' + (shadowReport.checkpoint_phase === 'open' ? '盘中实时事件' : '收盘估值') + (shadowReport.last_realtime_at ? ' · 最新行情 ' + formatDateTime(shadowReport.last_realtime_at) : '') + ' · 仅模拟，不连接券商' : '盘中按已到达行情模拟事件；收盘后只做估值和日线结算'"></p><p class="realtime-panel-note" v-else-if="realtimeOutcomeReport" v-text="'结果生成 ' + (realtimeOutcomeReport.as_of || '--') + (realtimeOutcomeReport.data_through ? ' · 日K截至 ' + realtimeOutcomeReport.data_through : '') + ' · 只统计信号日之后的交易日'"></p></div>
                 <div class="realtime-performance-actions"><div class="horizon-control" v-if="realtimeSection === 'validation'" role="tablist" aria-label="信号验证窗口"><button type="button" v-for="horizon in (realtimeOutcomeReport && realtimeOutcomeReport.horizons || [1, 3, 5, 10])" :key="horizon" role="tab" :aria-selected="Number(realtimeOutcomeHorizon) === Number(horizon)" :class="{active: Number(realtimeOutcomeHorizon) === Number(horizon)}" @click="realtimeOutcomeHorizon = Number(horizon)" v-text="outcomeHorizonLabel(horizon)"></button></div><button type="button" class="text-action" v-if="realtimeSection === 'validation'" :disabled="realtimeOutcomeLoading" @click="refreshRealtimeOutcomes" v-text="realtimeOutcomeLoading ? '更新中…' : '更新评估'"></button><button type="button" class="text-action" v-if="realtimeSection === 'shadow'" :disabled="shadowLoading" @click="refreshShadowReport" v-text="shadowSyncButtonText()"></button></div>
               </div>
-              <div class="shadow-profile-control" v-if="realtimeSection === 'shadow'">
+              <div class="shadow-profile-control" :class="{'has-trials': shadowHasTrials}" v-if="realtimeSection === 'shadow'">
+				<div v-if="shadowHasTrials" class="dashboard-segment" role="group" aria-label="影子账户分组"><button type="button" :aria-pressed="shadowGroup === 'baseline'" :disabled="shadowLoading" @click="selectShadowGroup('baseline')">原账户</button><button type="button" :aria-pressed="shadowGroup === 'trials'" :disabled="shadowLoading" @click="selectShadowGroup('trials')">优化对照</button></div>
                 <div class="shadow-profile-tabs" role="tablist" aria-label="影子账户切换">
-                  <button type="button" v-for="profile in shadowProfiles" :key="profile.id" role="tab" :aria-selected="profile.id === shadowProfileID" :class="{active: profile.id === shadowProfileID}" @click="selectShadowProfile(profile.id)">
+                  <button type="button" v-for="profile in shadowVisibleProfiles" :key="profile.id" role="tab" :aria-selected="profile.id === shadowProfileID" :class="{active: profile.id === shadowProfileID}" @click="selectShadowProfile(profile.id)">
                     <strong v-text="profile.name"></strong><small v-text="profile.strategy || '独立纸面账本'"></small>
                   </button>
                 </div>
                 <div class="shadow-profile-note"><b v-text="shadowSelectedProfile.name"></b><span v-text="shadowSelectedProfile.description || '每个账户独立推进，不共享持仓与成交。'"></span><em>仅模拟 · 不接券商</em></div>
+				<div class="shadow-profile-note" v-if="shadowSelectedProfile.trial_hash"><span v-text="'对照起点 ' + formatDateTime(shadowSelectedProfile.config.trading_start_at)"></span><span v-if="shadowSelectedProfile.return_difference != null" v-text="'较同起点基线 ' + number(shadowSelectedProfile.return_difference, 2) + ' 个百分点'"></span><em v-if="!shadowSelectedProfile.completed_trades">待积累平仓样本</em></div>
+				<div class="shadow-profile-note" v-if="shadowSelectedProfile.available && !shadowSelectedProfile.ledger_issues?.length"><span>账本校验通过</span><span v-if="shadowSelectedProfile.ledger_revision" v-text="'账本修订 ' + shadowSelectedProfile.ledger_revision"></span></div>
               </div>
               <div class="shadow-profile-compare" v-if="realtimeSection === 'shadow' && shadowProfiles.length">
-                <div class="shadow-profile-compare-head"><span>账户对比</span><small v-text="'同一批归档信号 · ' + shadowAccountSetLabel() + ' · 独立配置、现金和 T+1 账本'"></small></div>
-                <div class="shadow-profile-grid">
-                  <button type="button" v-for="profile in shadowProfiles" :key="'compare-' + profile.id" class="shadow-profile-card" :class="{active: profile.id === shadowProfileID}" @click="selectShadowProfile(profile.id)">
+                <div class="shadow-profile-compare-head"><span>账户对比</span><small v-text="shadowGroup === 'trials' ? '同一起点 · 每账户100万元 · 规则冻结' : '历史累计账本 · 独立配置、现金和 T+1 账本'"></small></div>
+                <div class="shadow-profile-grid" :class="{'shadow-trial-grid': shadowGroup === 'trials'}">
+                  <button type="button" v-for="profile in shadowVisibleProfiles" :key="'compare-' + profile.id" class="shadow-profile-card" :class="{active: profile.id === shadowProfileID}" @click="selectShadowProfile(profile.id)">
                     <span class="shadow-profile-card-head"><strong v-text="profile.name"></strong><small v-text="profile.available ? (profile.as_of || '--') + ' · ' + (profile.checkpoint_phase === 'open' ? '开盘' : '收盘') : '尚未同步'"></small></span>
                     <span class="shadow-profile-card-strategy" v-text="profile.strategy || '--'"></span>
                     <span class="shadow-profile-card-metrics"><i><small>总资产</small><b v-text="profile.available ? currency(profile.total_equity) : '--'"></b></i><i><small>累计收益 / 收益率</small><b :class="shadowProfileMetricClass(profile.total_profit)" v-text="profile.available ? currency(profile.total_profit) + ' · ' + percentText(profile.total_return_percent) : '--'"></b></i><i><small>可用现金</small><b v-text="profile.available ? currency(profile.remaining_cash) : '--'"></b></i><i><small>持仓市值</small><b v-text="profile.available ? currency(profile.total_market_value) : '--'"></b></i><i><small>仓位 / 持仓</small><b v-text="profile.available ? number(profile.invested_percent, 1) + '% · ' + (profile.open_positions || 0) + '个' : '--'"></b></i><i><small>订单 / 已平仓</small><b v-text="profile.available ? (profile.order_count || 0) + ' / ' + (profile.completed_trades || 0) : '--'"></b></i></span>
@@ -636,6 +639,7 @@
               </div>
               <div class="strategy-error" v-if="realtimeSection === 'validation' && realtimeOutcomeError" v-text="realtimeOutcomeError"></div>
               <div class="strategy-error" v-if="realtimeSection === 'shadow' && shadowError" v-text="shadowError"></div>
+			  <div class="result-warnings" v-if="realtimeSection === 'shadow' && shadowSelectedProfile.ledger_issues?.length"><strong>账本校验未通过</strong><span v-for="issue in shadowSelectedProfile.ledger_issues" :key="issue.code + issue.event_id" v-text="(issue.event_id ? issue.event_id + '：' : '') + issue.message"></span></div>
               <div class="result-warnings" v-if="realtimeSection === 'shadow' && shadowPreserveReason"><strong>同步保护</strong><span v-text="shadowPreserveReason"></span></div>
               <div class="strategy-empty-inline realtime-outcome-empty" v-if="realtimeSection === 'validation' && !realtimeOutcomeReport && !realtimeOutcomeLoading">尚无成熟结果；运行扫描后点击“更新评估”开始积累信号验证样本。</div>
               <div class="shadow-profile-empty" v-if="realtimeSection === 'shadow' && !shadowReport && !shadowLoading"><span>EMPTY LEDGER</span><strong v-text="shadowSelectedProfile.name + '尚未建立账本'"></strong><p v-text="shadowSelectedProfile.description || '该账户会使用独立参数、现金、持仓和 T+1 流水。'"></p><small v-text="shadowEmptyHint()"></small></div>
