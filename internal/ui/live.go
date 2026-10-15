@@ -312,9 +312,6 @@ func fundFlowSourceOverview(flows map[string]domain.FundFlow, moyu bool) string 
 	}
 	sources := make([]string, 0, len(seen))
 	for source := range seen {
-		if source == market.THSFundFlowSource {
-			source = "*" + source
-		}
 		sources = append(sources, source)
 	}
 	sort.Strings(sources)
@@ -355,7 +352,7 @@ func fundSpeedSourceOverview(flows map[string]domain.FundFlow, moyu bool) string
 	}
 	sources := make([]string, 0, len(seen))
 	for source := range seen {
-		sources = append(sources, "*"+source)
+		sources = append(sources, source)
 	}
 	sort.Strings(sources)
 	label := "涨速来源  "

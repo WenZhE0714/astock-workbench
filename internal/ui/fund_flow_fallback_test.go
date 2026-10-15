@@ -42,12 +42,12 @@ func TestFundFlowFallbackFramesShowPartialCoverageAndSource(t *testing.T) {
 	}
 }
 
-func TestFundFlowFallbackRadarIdentifiesProvider(t *testing.T) {
+func TestFundFlowFallbackRadarShowsPlainAmount(t *testing.T) {
 	items := []domain.FundMovement{{Symbol: "sz300364", Name: "中文在线", Source: market.THSFundFlowSource, MainNet: 4e8, State: "采样中", Delta1Minute: math.NaN()}}
 	for _, width := range []int{60, 79, 120} {
 		frame := buildFundMonitorTable(items, 0, width, false, false)
-		if !strings.Contains(frame, "+4.00亿*") {
-			t.Fatalf("radar lost source: %s", frame)
+		if !strings.Contains(frame, "+4.00亿") || strings.Contains(frame, "*") {
+			t.Fatalf("radar should show the amount without a source marker: %s", frame)
 		}
 		for _, line := range strings.Split(frame, "\n") {
 			if displayWidth(line) > width {
@@ -68,13 +68,16 @@ func TestFundSnapshotShowsIndicesAndMinuteSpeedWithDataTime(t *testing.T) {
 	data := LiveData{Quotes: []domain.Quote{quote}, Flows: flows}
 	for _, width := range []int{79, 120} {
 		frame := BuildLiveFrame(data, ViewOptions{}, width, 24)
-		for _, expected := range []string{"+0.25%*", "同花顺分时1分钟", "指数数据 2026-10-12 15:00", "↓ 1.00亿"} {
+		for _, expected := range []string{"+0.25%", "同花顺大单净额", "同花顺分时1分钟", "指数数据 2026-10-12 15:00", "↓ 1.00亿"} {
 			if !strings.Contains(frame, expected) {
 				t.Fatalf("missing %q:\n%s", expected, frame)
 			}
 		}
 		if strings.Contains(frame, "指数资金暂不可用") {
 			t.Fatal("covered indices still reported unavailable")
+		}
+		if strings.Contains(frame, "*") {
+			t.Fatalf("source markers should not appear in the frame: %s", frame)
 		}
 		for _, line := range strings.Split(frame, "\n") {
 			if displayWidth(line) > width {
