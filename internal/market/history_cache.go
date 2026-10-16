@@ -47,6 +47,12 @@ func NewCachedDailyHistoryClient(primary DailyHistoryClient, dir string) *Cached
 	return &CachedDailyHistoryClient{primary: primary, dir: dir, now: time.Now}
 }
 
+// NewFrozenDailyHistoryClient evaluates cache freshness at the recorded
+// snapshot time so an offline replay does not change as wall time advances.
+func NewFrozenDailyHistoryClient(dir string, capturedAt time.Time) *CachedDailyHistoryClient {
+	return &CachedDailyHistoryClient{dir: dir, now: func() time.Time { return capturedAt }}
+}
+
 func (client *CachedDailyHistoryClient) cachePath(symbol string) string {
 	return filepath.Join(client.dir, symbol+".json")
 }

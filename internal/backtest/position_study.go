@@ -174,6 +174,9 @@ func summarizePositionWindows(windows []PositionStudyWindow, request ContinuousO
 		if !m.BenchmarkAvailable {
 			summary.Reasons = append(summary.Reasons, window.ID+"缺少基准")
 		}
+		if hasMissingEntryBenchmark(run) {
+			summary.Reasons = append(summary.Reasons, window.ID+"开仓过滤存在基准数据缺口")
+		}
 		for _, symbol := range request.BaseRequest.Tickers {
 			if run.DataCoverage[symbol].CoverageRatio < .8 {
 				summary.Reasons = append(summary.Reasons, window.ID+" "+symbol+"数据覆盖不足80%")

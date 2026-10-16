@@ -31,4 +31,12 @@ func TestOfflineHistoryReadsWithoutNetworkOrMutation(t *testing.T) {
 	if _, err := client.ReadCachedDailyBarsRange(context.Background(), "sh600000", start, end, backtest.AdjustmentNone); err == nil || primary.calls != 0 {
 		t.Fatal("missing cache triggered network or passed")
 	}
+	frozen := NewFrozenDailyHistoryClient(client.dir, now)
+	now = now.AddDate(0, 0, 30)
+	if _, err := client.ReadCachedDailyBarsRange(context.Background(), "sh600519", start, end, backtest.AdjustmentNone); err == nil {
+		t.Fatal("normal cache did not expire")
+	}
+	if _, err := frozen.ReadCachedDailyBarsRange(context.Background(), "sh600519", start, end, backtest.AdjustmentNone); err != nil {
+		t.Fatalf("frozen replay depended on wall time: %v", err)
+	}
 }

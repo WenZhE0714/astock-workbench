@@ -112,8 +112,10 @@ func (app *App) runBacktest(ctx context.Context, arguments []string) error {
 		return app.runBacktestContinuousShow(arguments[1:])
 	case "position-study":
 		return app.runBacktestPositionStudy(ctx, arguments[1:])
+	case "regime-study":
+		return app.runBacktestRegimeStudy(ctx, arguments[1:])
 	default:
-		return fmt.Errorf("用法: astock backtest [status | run | list | show | trades | trade | optimize | optimize-list | optimize-show | continuous | continuous-list | continuous-show | position-study]")
+		return fmt.Errorf("用法: astock backtest [status | run | list | show | trades | trade | optimize | optimize-list | optimize-show | continuous | continuous-list | continuous-show | position-study | regime-study]")
 	}
 }
 

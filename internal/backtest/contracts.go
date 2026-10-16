@@ -102,6 +102,7 @@ type Request struct {
 	SlippageBPS       float64             `json:"slippage_bps"`
 	Adjustment        PriceAdjustment     `json:"adjustment"`
 	Benchmark         string              `json:"benchmark,omitempty"`
+	EntryMarketFilter string              `json:"entry_market_filter,omitempty"`
 	NoFutureData      bool                `json:"no_future_data"`
 	PointInTimePool   bool                `json:"point_in_time_pool"`
 	LiquidateAtEnd    bool                `json:"liquidate_at_end"`
@@ -249,6 +250,7 @@ type Result struct {
 	DataSources     map[string]string       `json:"data_sources"`
 	DataCoverage    map[string]DataCoverage `json:"data_coverage,omitempty"`
 	Warnings        []string                `json:"warnings,omitempty"`
+	BlockedEntries  []EntryMarketBlock      `json:"blocked_entries,omitempty"`
 	Directory       string                  `json:"-"`
 	ReportPath      string                  `json:"-"`
 }

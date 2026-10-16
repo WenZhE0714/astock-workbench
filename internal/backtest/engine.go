@@ -68,6 +68,12 @@ func validateRequest(request Request) error {
 	if request.Strategy != "technical-breakout" {
 		return fmt.Errorf("当前仅支持策略 technical-breakout")
 	}
+	if request.EntryMarketFilter != "" && request.EntryMarketFilter != EntryMarketNonBear {
+		return fmt.Errorf("未知开仓市场过滤规则")
+	}
+	if request.EntryMarketFilter != "" && request.Benchmark == "" {
+		return fmt.Errorf("开仓市场过滤需要基准")
+	}
 	p := request.Technical
 	if !ValidEntryMode(p.EffectiveEntryMode()) || p.FastMA < 2 || p.SlowMA <= p.FastMA || p.BreakoutDays < 2 || p.VolumeRatioMin <= 0 ||
 		p.StopLoss <= 0 || p.TakeProfit <= 0 || p.MaxHoldingDays < 1 || p.MaxPosition <= 0 || p.MaxPosition > 1 {
@@ -603,8 +609,20 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 	trades := make([]Trade, 0)
 	equity := make([]EquityPoint, 0, len(dates))
 	turnover, totalFees, peak := 0.0, 0.0, request.InitialCash
+	var benchmarkReturn float64
+	var benchmarkAvailable bool
+	var benchmarkWarning string
+	var benchmarkEquity []BenchmarkPoint
+	var benchmarkBars []domain.DailyBar
+	blockedEntries := []EntryMarketBlock{}
+	if request.EntryMarketFilter != "" {
+		benchmarkReturn, benchmarkAvailable, benchmarkWarning, benchmarkEquity, benchmarkBars = benchmarkMetrics(ctx, engine, request)
+		if !benchmarkAvailable {
+			return Result{}, fmt.Errorf("开仓市场过滤不可用: %s", benchmarkWarning)
+		}
+	}
 
-	for _, date := range dates {
+	for dayIndex, date := range dates {
 		// Establish a point-in-time portfolio value at the open before any fill.
 		// This prevents one symbol's same-day close from leaking into another
 		// symbol's opening position-size calculation.
@@ -631,6 +649,22 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 			bar := state.bars[index]
 			if state.pending != nil {
 				pending := state.pending
+				if pending.side == "buy" && state.position == nil && request.EntryMarketFilter != "" {
+					previousSession := ""
+					if dayIndex > 0 {
+						previousSession = dates[dayIndex-1]
+					}
+					allowed, regime, benchmarkDate := entryMarketDecision(benchmarkBars, date, previousSession)
+					if !allowed {
+						reason := "熊市暂停新开仓"
+						if regime == marketregime.Insufficient {
+							reason = "基准数据不足，暂停新开仓"
+						}
+						blockedEntries = append(blockedEntries, EntryMarketBlock{Symbol: symbol, SignalDate: pending.signal.Date, AttemptDate: date, BenchmarkDate: benchmarkDate, Regime: regime, Reason: reason})
+						state.pending = nil
+						continue
+					}
+				}
 				if onePriceBar(bar) {
 					// A one-price daily bar is treated as non-executable. Keep the
 					// pending order for the next trading day and make no fill.
@@ -775,7 +809,9 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 			UnrealizedProfit: profit, ReturnPercent: profit / position.entryCost * 100,
 		})
 	}
-	benchmarkReturn, benchmarkAvailable, benchmarkWarning, benchmarkEquity, benchmarkBars := benchmarkMetrics(ctx, engine, request)
+	if request.EntryMarketFilter == "" {
+		benchmarkReturn, benchmarkAvailable, benchmarkWarning, benchmarkEquity, benchmarkBars = benchmarkMetrics(ctx, engine, request)
+	}
 	if benchmarkWarning != "" {
 		warnings = append(warnings, benchmarkWarning)
 	}
@@ -785,6 +821,6 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 	return Result{
 		RunID: generatedAt.Format("20060102T150405"), GeneratedAt: generatedAt, Request: request,
 		Metrics: metrics, Trades: trades, OpenPositions: openPositions, Equity: equity, BenchmarkEquity: benchmarkEquity,
-		MarketRegimes: regimes, DataSources: sources, DataCoverage: coverage, Warnings: warnings,
+		MarketRegimes: regimes, DataSources: sources, DataCoverage: coverage, Warnings: warnings, BlockedEntries: blockedEntries,
 	}, nil
 }

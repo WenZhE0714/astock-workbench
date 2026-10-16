@@ -22,6 +22,18 @@ type offlineStudyProvider struct {
 	cache, recent *market.CachedDailyHistoryClient
 }
 
+type positionStudyPlan struct {
+	Source    backtest.ContinuousOptimizationResult `json:"source"`
+	Candidate string                                `json:"candidate"`
+	Caps      []float64                             `json:"caps"`
+	Files     map[string]string                     `json:"cache_file_sha256"`
+	CreatedAt time.Time                             `json:"created_at"`
+}
+
+func newOfflineStudyProvider(root string, capturedAt time.Time) offlineStudyProvider {
+	return offlineStudyProvider{cache: market.NewFrozenDailyHistoryClient(filepath.Join(root, "daily-history-execution"), capturedAt), recent: market.NewFrozenDailyHistoryClient(filepath.Join(root, "daily-history-scan"), capturedAt)}
+}
+
 func (p offlineStudyProvider) FetchDailyBarsRange(ctx context.Context, symbol string, start, end time.Time, adjustment backtest.PriceAdjustment) ([]domain.DailyBar, error) {
 	bars, err := p.cache.ReadCachedDailyBarsRange(ctx, symbol, start, end, adjustment)
 	if err == nil || ctx.Err() != nil || p.recent == nil {
@@ -84,17 +96,11 @@ func (app *App) runBacktestPositionStudy(ctx context.Context, args []string) err
 			files[filepath.Join(sourceName, file)] = hash
 		}
 	}
-	plan := struct {
-		Source    backtest.ContinuousOptimizationResult `json:"source"`
-		Candidate string                                `json:"candidate"`
-		Caps      []float64                             `json:"caps"`
-		Files     map[string]string                     `json:"cache_file_sha256"`
-		CreatedAt time.Time                             `json:"created_at"`
-	}{source, flags.Arg(1), caps, files, time.Now()}
+	plan := positionStudyPlan{source, flags.Arg(1), caps, files, time.Now()}
 	if err := writeStudyJSON(filepath.Join(dir, "plan.json"), plan); err != nil {
 		return err
 	}
-	provider := offlineStudyProvider{cache: market.NewCachedDailyHistoryClient(nil, filepath.Join(frozen, "daily-history-execution")), recent: market.NewCachedDailyHistoryClient(nil, filepath.Join(frozen, "daily-history-scan"))}
+	provider := newOfflineStudyProvider(frozen, plan.CreatedAt)
 	engine := backtest.NewDailyEngine(backtest.NewCachingDailyBarProvider(provider))
 	result, err := backtest.RunPositionStudy(ctx, engine, source, flags.Arg(1), caps, func(message string) { fmt.Fprintln(app.errOut, message) })
 	if saveErr := writeStudyJSON(filepath.Join(dir, "result.json"), result); saveErr != nil {
