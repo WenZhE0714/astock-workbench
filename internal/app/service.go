@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -18,6 +20,10 @@ import (
 const launchdLabel = "com.github.wenzhe.astock-workbench.web"
 
 type launchdServiceConfig struct {
+	Name             string
+	HTTPProxy        string
+	HTTPSProxy       string
+	NoProxy          string
 	Listen           string
 	Source           string
 	Symbol           string
@@ -35,6 +41,10 @@ type launchdServiceConfig struct {
 func (app *App) runService(arguments []string) error {
 	set := flag.NewFlagSet("service", flag.ContinueOnError)
 	set.SetOutput(app.errOut)
+	name := set.String("name", "", "独立服务名称，留空管理原默认服务")
+	httpProxy := set.String("http-proxy", os.Getenv("HTTP_PROXY"), "固定 HTTP_PROXY")
+	httpsProxy := set.String("https-proxy", os.Getenv("HTTPS_PROXY"), "固定 HTTPS_PROXY")
+	noProxy := set.String("no-proxy", os.Getenv("NO_PROXY"), "固定 NO_PROXY")
 	listen := set.String("listen", "127.0.0.1:8765", "Web 监听地址")
 	source := set.String("source", "", "行情源：http、tdx 或 ths")
 	symbol := set.String("symbol", "", "首次打开的股票")
@@ -61,6 +71,11 @@ func (app *App) runService(arguments []string) error {
 	config.DataHome, config.ConfigHome, config.CacheHome = *dataHome, *configHome, *cacheHome
 	config.CalendarFile, config.DryRun = *calendarFile, *dryRun
 	config.MacNotifications = *macNotifications
+	config.Name, config.HTTPProxy, config.HTTPSProxy, config.NoProxy = *name, *httpProxy, *httpsProxy, *noProxy
+	label, err := launchdServiceLabel(config.Name)
+	if err != nil {
+		return err
+	}
 	if *dryRun && action != "install" {
 		return fmt.Errorf("--dry-run 仅支持 service install")
 	}
@@ -68,23 +83,37 @@ func (app *App) runService(arguments []string) error {
 	case "install":
 		return app.installLaunchdService(config)
 	case "uninstall", "remove", "rm":
-		return app.uninstallLaunchdService()
+		return app.uninstallLaunchdService(label)
 	case "status":
-		return app.launchdServiceStatus()
+		return app.launchdServiceStatus(label)
 	default:
 		return fmt.Errorf("未知服务操作 %q；可选 install、uninstall 或 status", action)
 	}
 }
 
-func (app *App) launchdServicePath() (string, error) {
+func launchdServiceLabel(name string) (string, error) {
+	if name == "" {
+		return launchdLabel, nil
+	}
+	if !regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`).MatchString(name) {
+		return "", fmt.Errorf("服务名称须为小写字母开头的字母、数字或连字符，最多48字符")
+	}
+	return launchdLabel + "." + name, nil
+}
+
+func (app *App) launchdServicePath(label string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist"), nil
+	return filepath.Join(home, "Library", "LaunchAgents", label+".plist"), nil
 }
 
 func (app *App) installLaunchdService(config launchdServiceConfig) error {
+	label, err := launchdServiceLabel(config.Name)
+	if err != nil {
+		return err
+	}
 	if config.Listen == "" {
 		return errors.New("Web 监听地址不能为空")
 	}
@@ -97,6 +126,19 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 		return fmt.Errorf("行情源须为 http、tdx 或 ths")
 	}
 	environment := map[string]string{}
+	for key, value := range map[string]string{"HTTP_PROXY": config.HTTPProxy, "HTTPS_PROXY": config.HTTPSProxy} {
+		if value == "" {
+			continue
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "socks5" && parsed.Scheme != "socks5h") {
+			return fmt.Errorf("%s 必须是有效代理地址", key)
+		}
+		environment[key] = value
+	}
+	if config.NoProxy != "" {
+		environment["NO_PROXY"] = config.NoProxy
+	}
 	for key, value := range map[string]string{"XDG_DATA_HOME": config.DataHome, "XDG_CONFIG_HOME": config.ConfigHome, "XDG_CACHE_HOME": config.CacheHome, "ASTOCK_TRADING_CALENDAR_FILE": config.CalendarFile} {
 		if value == "" {
 			continue
@@ -115,7 +157,7 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 	if err != nil {
 		return fmt.Errorf("解析 astock 可执行文件路径失败: %w", err)
 	}
-	path, err := app.launchdServicePath()
+	path, err := app.launchdServicePath(label)
 	if err != nil {
 		return err
 	}
@@ -134,7 +176,11 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 		return err
 	}
 	logDir := filepath.Join(home, "Library", "Logs", "astock-workbench")
-	plist, err := renderLaunchdPlist(arguments, filepath.Join(home, "Library", "Logs", "astock-workbench", "web.out.log"), filepath.Join(logDir, "web.err.log"), environment)
+	logName := "web"
+	if config.Name != "" {
+		logName += "-" + config.Name
+	}
+	plist, err := renderLaunchdPlist(label, arguments, filepath.Join(logDir, logName+".out.log"), filepath.Join(logDir, logName+".err.log"), environment)
 	if err != nil {
 		return err
 	}
@@ -158,7 +204,7 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 	// Reinstalling the same label is common after a binary update. Boot out the
 	// old definition first so bootstrap does not depend on launchctl's wording
 	// for an "already loaded" error.
-	_, _ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).CombinedOutput()
+	_, _ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+label).CombinedOutput()
 	if output, loadErr := exec.Command("launchctl", "bootstrap", "gui/"+uid, path).CombinedOutput(); loadErr != nil {
 		return fmt.Errorf("配置已写入 %s，但 launchd 加载失败: %v (%s)", path, loadErr, strings.TrimSpace(string(output)))
 	}
@@ -167,8 +213,8 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 	return nil
 }
 
-func (app *App) uninstallLaunchdService() error {
-	path, err := app.launchdServicePath()
+func (app *App) uninstallLaunchdService(label string) error {
+	path, err := app.launchdServicePath(label)
 	if err != nil {
 		return err
 	}
@@ -176,7 +222,7 @@ func (app *App) uninstallLaunchdService() error {
 	if err != nil {
 		return err
 	}
-	_, _ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).CombinedOutput()
+	_, _ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+label).CombinedOutput()
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("删除 launchd 配置失败: %w", err)
 	}
@@ -184,8 +230,8 @@ func (app *App) uninstallLaunchdService() error {
 	return nil
 }
 
-func (app *App) launchdServiceStatus() error {
-	path, err := app.launchdServicePath()
+func (app *App) launchdServiceStatus(label string) error {
+	path, err := app.launchdServicePath(label)
 	if err != nil {
 		return err
 	}
@@ -199,7 +245,7 @@ func (app *App) launchdServiceStatus() error {
 	if err != nil {
 		return err
 	}
-	output, statusErr := exec.Command("launchctl", "print", "gui/"+uid+"/"+launchdLabel).CombinedOutput()
+	output, statusErr := exec.Command("launchctl", "print", "gui/"+uid+"/"+label).CombinedOutput()
 	if statusErr != nil {
 		fmt.Fprintf(app.out, "ASTOCK Web 配置已安装但当前未加载: %s\n", path)
 		return nil
@@ -220,7 +266,7 @@ func launchdUserID() (string, error) {
 	return value, nil
 }
 
-func renderLaunchdPlist(arguments []string, stdoutPath, stderrPath string, environments ...map[string]string) ([]byte, error) {
+func renderLaunchdPlist(label string, arguments []string, stdoutPath, stderrPath string, environments ...map[string]string) ([]byte, error) {
 	if len(arguments) == 0 {
 		return nil, errors.New("launchd 参数不能为空")
 	}
@@ -239,7 +285,7 @@ func renderLaunchdPlist(arguments []string, stdoutPath, stderrPath string, envir
 		builder.WriteString("</string>\n")
 	}
 	writeKey("Label")
-	writeString(launchdLabel)
+	writeString(label)
 	writeKey("ProgramArguments")
 	builder.WriteString("<array>\n")
 	for _, argument := range arguments {

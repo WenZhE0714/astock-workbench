@@ -12,6 +12,8 @@ import { ReviewCalendarView } from "./review-calendar-view.js"
 import { ChartTimeframesView } from "./chart-timeframes-view.js"
 import { PatternValidationView } from "./pattern-validation-view.js"
 import { ShadowDailyReviewView } from "./shadow-daily-review-view.js"
+import { ShadowComparisonView } from "./shadow-comparison-view.js"
+import "./shadow-comparison.css"
 import "./pattern-validation.css"
 import "./chart-timeframes.css"
 import "./review-calendar.css"
@@ -103,7 +105,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView },
   data() {
     return {
       query: defaultSymbol,
@@ -215,10 +217,11 @@ createApp({
       shadowPreserveReason: "",
       shadowReport: null,
       shadowProfiles: [],
-      shadowGroup: "baseline",
-      shadowDetailView: initialView.get('shadow') === 'daily' ? 'daily' : 'ledger',
+      shadowGroup: initialView.get('shadow') === 'comparison' ? 'trials' : 'baseline',
+      shadowDetailView: ['daily', 'comparison'].includes(initialView.get('shadow')) ? initialView.get('shadow') : 'ledger',
       shadowDailySelection: {},
-      shadowProfileID: "balanced",
+      shadowComparisonSelection: {},
+      shadowProfileID: initialView.get('shadow') === 'comparison' ? 'trial-balanced' : 'balanced',
       shadowRequestID: 0,
       shadowCheckedAt: 0,
       shadowOrderSymbol: "",
@@ -1966,6 +1969,7 @@ createApp({
     },
     selectShadowGroup(group) {
       if (this.shadowLoading) return
+      if (group === 'baseline' && this.shadowDetailView === 'comparison') this.shadowDetailView = 'ledger'
       this.shadowGroup = group
       const first = this.shadowVisibleProfiles[0]
       if (first) this.selectShadowProfile(first.id)
@@ -1973,6 +1977,10 @@ createApp({
     openShadowDailyAccount(id) {
       this.shadowDetailView = 'ledger'
       this.selectShadowProfile(id)
+    },
+    openShadowComparison() {
+      this.selectShadowGroup('trials')
+      this.shadowDetailView = 'comparison'
     },
     switchRealtimeSection(section) {
       if (!['candidates', 'lifecycle', 'shadow', 'validation'].includes(section)) return

@@ -10,7 +10,7 @@ import (
 )
 
 func TestRenderLaunchdPlistEscapesArgumentsAndKeepsReadOnlyWebCommand(t *testing.T) {
-	data, err := renderLaunchdPlist([]string{"/tmp/astock", "web", "--listen", "127.0.0.1:8765", "--symbol", "600519&x"}, "/tmp/out.log", "/tmp/err.log")
+	data, err := renderLaunchdPlist(launchdLabel, []string{"/tmp/astock", "web", "--listen", "127.0.0.1:8765", "--symbol", "600519&x"}, "/tmp/out.log", "/tmp/err.log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,29 @@ func TestLaunchdDryRunFreezesDataRootsWithoutInstalling(t *testing.T) {
 }
 
 func TestRenderLaunchdPlistRejectsEmptyArguments(t *testing.T) {
-	if _, err := renderLaunchdPlist(nil, "", ""); err == nil {
+	if _, err := renderLaunchdPlist(launchdLabel, nil, "", ""); err == nil {
 		t.Fatal("empty launchd arguments should fail")
+	}
+}
+
+func TestNamedLaunchdServiceFreezesProxyAndPreservesNotifications(t *testing.T) {
+	var output bytes.Buffer
+	app := &App{out: &output, errOut: io.Discard}
+	err := app.installLaunchdService(launchdServiceConfig{Name: "shadow-8788", Listen: "127.0.0.1:8788", HTTPProxy: "http://127.0.0.1:7897", HTTPSProxy: "http://127.0.0.1:7897", NoProxy: "127.0.0.1,localhost", MacNotifications: true, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{launchdLabel + ".shadow-8788", "HTTP_PROXY", "HTTPS_PROXY", "http://127.0.0.1:7897", "NO_PROXY", "127.0.0.1,localhost", "web-shadow-8788.out.log", "--mac-notifications"} {
+		if !strings.Contains(output.String(), value) {
+			t.Fatalf("missing %s", value)
+		}
+	}
+	for _, name := range []string{"../web", "name/other", "-bad", "A", strings.Repeat("a", 49)} {
+		if _, err := launchdServiceLabel(name); err == nil {
+			t.Fatalf("invalid service name accepted: %s", name)
+		}
+	}
+	if err := app.installLaunchdService(launchdServiceConfig{Name: "shadow", Listen: "127.0.0.1:8788", HTTPSProxy: "invalid", DryRun: true}); err == nil {
+		t.Fatal("invalid proxy accepted")
 	}
 }

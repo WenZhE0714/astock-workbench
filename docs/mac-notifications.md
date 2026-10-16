@@ -17,7 +17,7 @@
 可选的登录自动启动服务也支持此参数：
 
 ```sh
-./dist/astock service install --listen 127.0.0.1:8788 --mac-notifications
+./dist/astock service install --name shadow-8788 --listen 127.0.0.1:8788 --mac-notifications
 ```
 
-安装服务会替换同名 ASTOCK LaunchAgent。已有其他端口的自动服务时，先核对原配置；不要为测试覆盖正在运行的其他实例。共享同一数据目录的多个实例应只在其中一个实例启用通知。
+安装服务会替换同名 ASTOCK LaunchAgent。使用独立的 `--name` 可与其他端口的服务共存，固定代理及数据目录的示例见 [8788 独立常驻服务](shadow-service.md)。共享同一数据目录的多个实例应只在其中一个实例启用通知。
