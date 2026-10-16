@@ -23,6 +23,34 @@ type historyRangeSnapshot struct {
 
 type historyDateSpan struct{ start, end time.Time }
 
+// ReadCachedDailyBarsRange is an offline research read. It never refreshes or
+// writes the cache; callers must freeze the source files before comparing runs.
+func (client *CachedDailyHistoryClient) ReadCachedDailyBarsRange(ctx context.Context, symbol string, start, end time.Time, adjustment backtest.PriceAdjustment) ([]domain.DailyBar, error) {
+	if client == nil || !historyCacheSymbol.MatchString(symbol) || adjustment != backtest.AdjustmentNone || start.IsZero() || end.IsZero() || start.After(end) {
+		return nil, fmt.Errorf("离线日K请求无效")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	snapshots, err := client.loadRangeSnapshots(symbol)
+	if err != nil {
+		return nil, err
+	}
+	if bars, fetchedAt, err := client.loadWithTimestamp(symbol); err == nil && len(bars) > 0 {
+		snapshots = append(snapshots, historyRangeSnapshot{Start: bars[0].Date, End: bars[len(bars)-1].Date, dailyHistoryCachePayload: dailyHistoryCachePayload{FetchedAt: fetchedAt, Bars: encodeCachedBars(bars)}})
+	}
+	bars := mergeHistorySnapshots(snapshots, start, end)
+	bars, err = validatedRangeBars(symbol, bars, start.Format(time.DateOnly), end.Format(time.DateOnly))
+	if err != nil {
+		return nil, err
+	}
+	covered, ok := dailyBarsCoverRange(bars, start, end)
+	if !ok {
+		return nil, fmt.Errorf("%s 离线缓存未覆盖 %s 至 %s（%d根日K）", symbol, start.Format(time.DateOnly), end.Format(time.DateOnly), len(bars))
+	}
+	return covered, ctx.Err()
+}
+
 var historyCacheSymbol = regexp.MustCompile(`^(sh|sz|bj)[0-9]{6}$`)
 
 func completedHistoryDate(now time.Time) string {
