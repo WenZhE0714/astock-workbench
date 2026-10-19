@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -121,6 +122,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithPlanExperiment(storage.NewPlanExperimentStore(app.paths.PlanExperimentFile)),
 		web.WithMarketAmount(app.amounts),
 		web.WithIndustryFlows(app.industryFlows),
+		web.WithBoardWorkbench(storage.NewBoardSnapshotStore(filepath.Join(app.paths.DataDir, "board-snapshots")), market.EastmoneyClient{}),
 		web.WithSentimentSignals(market.NewTHSSignalClientFromEnv()),
 		web.WithLimitStats(market.EastmoneyClient{}),
 		web.WithMarketRankings(app.rankings),
@@ -160,9 +162,25 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAutomationState(storage.NewAutomationStore(app.paths.AutomationStateFile)),
 	}
 	trialRoot := filepath.Join(filepath.Dir(app.paths.ShadowReportFile), "trials")
+	notificationRecords := storage.NewNativeNotificationStore(filepath.Join(app.paths.DataDir, "notifications", "mac.json"))
+	notificationReviews := storage.NewNotificationReviewStore(filepath.Join(app.paths.DataDir, "notifications", "reviews.json"))
+	serverOptions = append(serverOptions, web.WithNotificationCenter(notificationRecords, notificationReviews))
 	if *macNotifications {
-		store := storage.NewNativeNotificationStore(filepath.Join(app.paths.DataDir, "notifications", "mac.json"))
-		dispatcher, err := notify.NewDispatcher(notify.MacSender{}, store, log.New(app.errOut, "", log.LstdFlags))
+		host, port, err := net.SplitHostPort(*listen)
+		if err != nil {
+			return err
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		sender := notify.MacSender{BaseURL: "http://" + net.JoinHostPort(host, port), Allowed: func(message notify.Message) (bool, error) {
+			state, err := notificationReviews.Load()
+			if err != nil {
+				return false, err
+			}
+			return !state.Symbols[message.Symbol].MutedUntil.After(time.Now()), nil
+		}}
+		dispatcher, err := notify.NewDispatcher(sender, notificationRecords, log.New(app.errOut, "", log.LstdFlags))
 		if err != nil {
 			return err
 		}

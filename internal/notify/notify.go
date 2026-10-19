@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -9,12 +10,17 @@ import (
 
 const MaxAge = 5 * time.Minute
 
+var ErrMuted = errors.New("当天已静音")
+
 type Message struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
 	Subtitle string    `json:"subtitle"`
 	Body     string    `json:"body"`
 	At       time.Time `json:"at"`
+	Symbol   string    `json:"symbol,omitempty"`
+	Profile  string    `json:"profile,omitempty"`
+	Kind     string    `json:"kind,omitempty"`
 }
 
 type Record struct {
@@ -98,7 +104,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 func (d *Dispatcher) deliver(ctx context.Context, message Message) {
 	now := d.now()
 	previous, exists := d.state.Records[message.ID]
-	if exists && (previous.Status == "submitted" || previous.Status == "expired" || previous.Attempts >= 3) {
+	if exists && (previous.Status == "submitted" || previous.Status == "expired" || previous.Status == "muted" || previous.Attempts >= 3) {
 		return
 	}
 	if exists {
@@ -132,7 +138,9 @@ func (d *Dispatcher) deliver(ctx context.Context, message Message) {
 	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	err := d.sender.Send(sendCtx, previous.Message)
 	cancel()
-	if err != nil {
+	if errors.Is(err, ErrMuted) {
+		previous.Status, previous.LastError = "muted", ""
+	} else if err != nil {
 		previous.Status, previous.LastError = "failed", err.Error()
 		d.logger.Printf("Mac 通知发送失败 %s: %v", message.ID, err)
 	} else {

@@ -13,6 +13,10 @@ import { ChartTimeframesView } from "./chart-timeframes-view.js"
 import { PatternValidationView } from "./pattern-validation-view.js"
 import { ShadowDailyReviewView } from "./shadow-daily-review-view.js"
 import { ShadowComparisonView } from "./shadow-comparison-view.js"
+import { BoardWorkbench } from "./board-workbench-view.js"
+import { NativeNotificationView } from "./native-notification-view.js"
+import "./native-notifications.css"
+import "./board-workbench.css"
 import "./shadow-comparison.css"
 import "./pattern-validation.css"
 import "./chart-timeframes.css"
@@ -27,7 +31,7 @@ import "./chart-analysis.css"
 import "./plan-experiment.css"
 import "./trade-playbook.css"
 
-const defaultSymbol = document.querySelector('meta[name="astock-default-symbol"]')?.content || "600519"
+const defaultSymbol = new URLSearchParams(window.location.search).get('symbol') || document.querySelector('meta[name="astock-default-symbol"]')?.content || "600519"
 const initialView = new URLSearchParams(window.location.search)
 const morningStart = 9 * 60 + 30
 const morningEnd = 11 * 60 + 30
@@ -105,7 +109,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView },
   data() {
     return {
       query: defaultSymbol,
@@ -117,7 +121,7 @@ createApp({
       patternValidationTarget: null,
       patternValidationReturn: false,
       patternValidationChartError: "",
-      monitorView: ["plans", "experiment", "playbook", "notifications", "calendar"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
+      monitorView: ["plans", "experiment", "playbook", "notifications", "native", "calendar"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
       reviewCalendarMonth: initialView.get("month") || "",
       reviewCalendarRefresh: 0,
       reviewCalendarSelection: null,

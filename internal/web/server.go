@@ -252,6 +252,16 @@ type Server struct {
 	shadowArchive                shadowArchive
 	shadowProfiles               map[string]shadowExecutionProfile
 	nativeNotifications          *notify.Dispatcher
+	notificationRecords          *storage.NativeNotificationStore
+	notificationReviews          *storage.NotificationReviewStore
+	boardSnapshots               *storage.BoardSnapshotStore
+	boardDailyFlows              boardDailyFlowClient
+	boardDailyMu                 sync.Mutex
+	boardDailyCache              map[string]boardDailyCache
+	boardSnapshotCycleMu         sync.Mutex
+	boardSnapshotMu              sync.Mutex
+	boardSnapshotError           string
+	boardSnapshotAt              time.Time
 	shadowDailyStore             *storage.ShadowDailyReviewStore
 	shadowComparisonCalendarFile string
 	shadowDailyScans             *storage.RealtimeSignalStore
@@ -1072,6 +1082,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/indices", s.handleIndices)
 	mux.HandleFunc("/api/sentiment", s.handleSentiment)
 	mux.HandleFunc("/api/boards", s.handleBoards)
+	mux.HandleFunc("/api/board-snapshots", s.handleBoardSnapshots)
+	mux.HandleFunc("/api/board-daily-flows", s.handleBoardDailyFlows)
+	mux.HandleFunc("/api/native-notifications", s.handleNativeNotifications)
 	mux.HandleFunc("/api/rankings", s.handleRankings)
 	mux.HandleFunc("/api/global/markets", s.handleGlobalMarkets)
 	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
@@ -1145,6 +1158,9 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	}()
 	go s.runAutomationLoop(automationCtx)
 	go s.runPlanMonitorLoop(automationCtx)
+	boardDone := make(chan struct{})
+	go func() { defer close(boardDone); s.runBoardSnapshotLoop(automationCtx) }()
+	defer func() { cancelAutomation(); <-boardDone }()
 	forwardDone := make(chan struct{})
 	go func() { defer close(forwardDone); s.runPatternForwardLoop(automationCtx) }()
 	defer func() { cancelAutomation(); <-forwardDone }()

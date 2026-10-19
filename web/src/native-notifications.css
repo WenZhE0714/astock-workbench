@@ -1,0 +1,13 @@
+.native-notifications { min-width:0; letter-spacing:0; }
+.nn-head,.nn-head>div,.nn-toolbar,.nn-record-head,.nn-record-actions,.nn-note { display:flex; align-items:center; gap:10px; }
+.nn-head { justify-content:space-between; padding:14px 0; border-bottom:1px solid var(--line); }
+.native-notifications .nn-head { flex-direction:row; text-align:left; margin:0; background:none; }
+.nn-head>div { flex-wrap:wrap; }.nn-head h2 { margin:0; font-size:16px; }.nn-head span,.nn-toolbar>span { font-size:11px; color:var(--muted); }
+.nn-toolbar { margin:14px 0; flex-wrap:wrap; }.nn-toolbar input { flex:1; min-width:120px; }.nn-toolbar select,.nn-toolbar input,.nn-note textarea { max-width:100%; border:1px solid var(--line); border-radius:4px; color:var(--text); background:var(--bg); padding:7px 9px; font:inherit; font-size:12px; }
+.nn-follows { display:flex; flex-wrap:wrap; gap:7px; align-items:center; padding:6px 0; font-size:11px; }.nn-follows>span { display:flex; gap:5px; align-items:center; border-bottom:1px solid var(--line); }.nn-follows button:not(.icon-button) { border:0; background:none; color:var(--accent); font-size:11px; padding:3px; height:auto; }
+.nn-record { border-bottom:1px solid var(--line); padding:16px 0; }.nn-record.unread { border-left:2px solid var(--accent); padding-left:12px; }.nn-record[data-selected=true] { outline:1px solid var(--accent); outline-offset:4px; }
+.nn-record-head { justify-content:space-between; align-items:flex-start; flex-wrap:wrap; }.nn-record-head>div:first-child { flex:1; min-width:160px; }.nn-record h3 { margin:0 0 4px; font-size:14px; }.nn-record strong { font-size:12px; }.nn-record small { display:block; color:var(--muted); font-size:10px; margin-top:4px; }.nn-record-actions { gap:5px; flex-wrap:wrap; }
+.native-notifications .icon-button { width:30px; height:30px; flex:0 0 30px; border-radius:4px; }.native-notifications .icon-button[aria-pressed=true] { color:var(--warn); border-color:var(--warn); }
+.nn-body { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; margin:12px 0; }.nn-error { font-size:12px; color:var(--up); overflow-wrap:anywhere; }.nn-empty { font-size:12px; padding:24px 0; color:var(--muted); }
+.nn-note { margin-top:12px; align-items:flex-start; }.nn-note textarea { flex:1; min-width:0; resize:vertical; }.nn-account { display:inline-flex; gap:6px; align-items:center; border:0; padding:0; height:auto; font-size:12px; color:var(--accent); background:none; }
+@media(max-width:480px) { .nn-record-actions { width:100%; }.nn-toolbar { gap:7px; }.nn-head>div { gap:6px; }.nn-note textarea { font-size:12px; } }

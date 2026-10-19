@@ -43,6 +43,7 @@ func candidateNotifications(result realtime.ScanResult, now time.Time) []notify.
 			body += "\n" + signal.Reasons[0]
 		}
 		messages = append(messages, notify.Message{
+			Symbol: signal.Symbol, Kind: "candidate",
 			ID: "candidate:" + date + ":" + signal.Symbol, Title: "ASTOCK · 候选触发",
 			Subtitle: signal.Name + " " + signal.Symbol, Body: body, At: signal.AsOf,
 		})
@@ -87,6 +88,7 @@ func shadowOrderNotifications(profileID, name string, previous, report paper.Rep
 			body += "\n" + order.SignalReasons[0]
 		}
 		messages = append(messages, notify.Message{
+			Symbol: order.Symbol, Profile: profileID, Kind: order.Side,
 			ID: "order:" + profileID + ":" + order.ID, Title: "ASTOCK · 模拟" + side,
 			Subtitle: name + " · " + order.Name + " " + order.Symbol, Body: body, At: at,
 		})
