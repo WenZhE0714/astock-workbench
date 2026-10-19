@@ -43,6 +43,35 @@ type strategyCandidateSummary struct {
 	ObservationMetrics *backtest.Metrics             `json:"observation_metrics,omitempty"`
 	RefreshDue         bool                          `json:"refresh_due"`
 	NextAction         string                        `json:"next_action"`
+	CandidateCount     int                           `json:"candidate_count"`
+	PassedCount        int                           `json:"passed_count"`
+	SelectionSummary   string                        `json:"selection_summary"`
+	Diagnostics        []strategyCandidateDiagnostic `json:"diagnostics"`
+}
+
+type strategyCandidateDiagnostic struct {
+	ID                string                       `json:"id"`
+	Agent             string                       `json:"agent"`
+	Parameters        backtest.TechnicalParameters `json:"parameters"`
+	Rejected          bool                         `json:"rejected"`
+	Selected          bool                         `json:"selected"`
+	Reasons           []string                     `json:"reasons"`
+	CompletedFolds    int                          `json:"completed_folds"`
+	ExpectedFolds     int                          `json:"expected_folds"`
+	PositiveFoldRatio *float64                     `json:"positive_fold_ratio"`
+	ValidationTrades  *int                         `json:"validation_trades"`
+	AverageValidation *float64                     `json:"average_validation_return_percent"`
+	WorstDrawdown     *float64                     `json:"worst_validation_drawdown_percent"`
+	Folds             []strategyCandidateFold      `json:"folds"`
+}
+
+type strategyCandidateFold struct {
+	ID       string   `json:"id"`
+	Start    string   `json:"start"`
+	End      string   `json:"end"`
+	Return   *float64 `json:"return_percent"`
+	Drawdown *float64 `json:"drawdown_percent"`
+	Trades   int      `json:"trades"`
 }
 
 type strategyCandidateListResponse struct {
@@ -217,7 +246,42 @@ func (s *Server) strategyCandidateSummary(result backtest.ContinuousOptimization
 		ExperimentID: result.ID, Cycle: result.Cycle, GeneratedAt: result.GeneratedAt, DataCutoff: result.DataCutoff,
 		ResearchStage: result.Stage, Tickers: append([]string(nil), result.Request.BaseRequest.Tickers...),
 		Names: result.Request.BaseRequest.Names, Quality: result.Quality, GateReasons: append([]string(nil), result.GateReasons...),
-		Lifecycle: lifecycle,
+		Lifecycle:      lifecycle,
+		CandidateCount: len(result.Candidates), Diagnostics: []strategyCandidateDiagnostic{},
+	}
+	for _, candidate := range result.Candidates {
+		if !candidate.Rejected {
+			item.PassedCount++
+		}
+		if len(item.Diagnostics) >= 30 {
+			continue
+		}
+		diagnostic := strategyCandidateDiagnostic{
+			ID: candidate.Proposal.ID, Agent: candidate.Proposal.Agent, Parameters: candidate.Proposal.Parameters,
+			Rejected: candidate.Rejected, Selected: result.Selected != nil && result.Selected.Proposal.ID == candidate.Proposal.ID,
+			Reasons: append([]string{}, candidate.Reasons...), CompletedFolds: len(candidate.Folds), ExpectedFolds: len(result.Request.Folds), Folds: []strategyCandidateFold{},
+		}
+		if len(candidate.Folds) > 0 && len(candidate.Folds) == len(result.Request.Folds) {
+			diagnostic.PositiveFoldRatio = finitePointer(candidate.PositiveFoldRatio)
+			trades := candidate.ValidationTrades
+			diagnostic.ValidationTrades = &trades
+			diagnostic.AverageValidation = finitePointer(candidate.AverageValidation)
+			diagnostic.WorstDrawdown = finitePointer(candidate.WorstDrawdown)
+		}
+		for _, fold := range candidate.Folds {
+			diagnostic.Folds = append(diagnostic.Folds, strategyCandidateFold{ID: fold.Fold.ID, Start: fold.Fold.Validate.Start.Format(time.DateOnly), End: fold.Fold.Validate.End.Format(time.DateOnly), Return: finitePointer(fold.Validate.TotalReturn), Drawdown: finitePointer(fold.Validate.MaxDrawdown), Trades: fold.Validate.Trades})
+		}
+		item.Diagnostics = append(item.Diagnostics, diagnostic)
+	}
+	switch {
+	case result.Selected != nil:
+		item.SelectionSummary = "已锁定入选参数 " + result.Selected.Proposal.ID
+	case len(result.Candidates) == 0:
+		item.SelectionSummary = "未锁定：归档中没有已评估的候选"
+	case item.PassedCount == 0:
+		item.SelectionSummary = fmt.Sprintf("未锁定：本轮 %d 组候选均未通过滚动验证", len(result.Candidates))
+	default:
+		item.SelectionSummary = "未锁定：归档中缺少最终入选记录"
 	}
 	if result.Selected != nil {
 		parameters := result.Selected.Proposal.Parameters
@@ -289,8 +353,19 @@ func candidateRefreshDue(lifecycle backtest.CandidateLifecycle, now time.Time) b
 }
 
 func candidateNextAction(result backtest.ContinuousOptimizationResult, lifecycle backtest.CandidateLifecycle) string {
-	if result.Stage != backtest.ContinuousStageShadow || result.Selected == nil {
-		return "修复未通过的历史研究门禁"
+	if result.Selected == nil {
+		if len(result.Candidates) == 0 {
+			return "核对候选生成与评估记录"
+		}
+		for _, candidate := range result.Candidates {
+			if !candidate.Rejected {
+				return "核对原始实验的入选记录"
+			}
+		}
+		return "查看未入选原因，改进策略后另建研究实验"
+	}
+	if result.Stage != backtest.ContinuousStageShadow {
+		return "参数已锁定，历史研究门禁仍未全部通过"
 	}
 	switch lifecycle.Status {
 	case backtest.CandidateLifecycleAwaitingObservation:

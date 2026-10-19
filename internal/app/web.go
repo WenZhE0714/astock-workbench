@@ -42,6 +42,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 	source := set.String("source", "", "行情源：http、tdx 或 ths")
 	macNotifications := set.Bool("mac-notifications", false, "通过 macOS 通知中心提醒候选触发和模拟买卖")
 	testMacNotification := set.Bool("test-mac-notification", false, "发送一条 Mac 测试通知后退出")
+	volumeForwardDir := set.String("volume-forward-dir", os.Getenv("ASTOCK_VOLUME_FORWARD_DIR"), "只读展示已冻结量比前瞻实验的目录")
 	if err := set.Parse(arguments); err != nil {
 		return err
 	}
@@ -162,6 +163,13 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithAutomationState(storage.NewAutomationStore(app.paths.AutomationStateFile)),
 	}
 	trialRoot := filepath.Join(filepath.Dir(app.paths.ShadowReportFile), "trials")
+	if directory := strings.TrimSpace(*volumeForwardDir); directory != "" {
+		absolute, err := filepath.Abs(directory)
+		if err != nil {
+			return err
+		}
+		serverOptions = append(serverOptions, web.WithVolumeForwardStudy(storage.NewVolumeForwardStore(absolute)))
+	}
 	notificationRecords := storage.NewNativeNotificationStore(filepath.Join(app.paths.DataDir, "notifications", "mac.json"))
 	notificationReviews := storage.NewNotificationReviewStore(filepath.Join(app.paths.DataDir, "notifications", "reviews.json"))
 	serverOptions = append(serverOptions, web.WithNotificationCenter(notificationRecords, notificationReviews))

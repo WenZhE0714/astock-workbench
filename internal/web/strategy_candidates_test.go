@@ -3,8 +3,11 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,106 @@ import (
 
 type candidateObservationEngineStub struct {
 	request backtest.Request
+}
+
+func rejectedCandidateFixture() backtest.ContinuousOptimizationResult {
+	parameters := backtest.DefaultTechnicalParameters()
+	folds := make([]backtest.WalkForwardFold, 4)
+	results := make([]backtest.WalkForwardFoldResult, 4)
+	for index := range folds {
+		start := time.Date(2021+index, 7, 20, 0, 0, 0, 0, strategyLocation)
+		folds[index] = backtest.WalkForwardFold{ID: fmt.Sprintf("F%02d", index+1), Validate: backtest.Period{Start: start, End: start.AddDate(1, 0, -1)}}
+		results[index] = backtest.WalkForwardFoldResult{Fold: folds[index], Validate: backtest.Metrics{TotalReturn: float64(index*3 - 4), MaxDrawdown: -8, Trades: 25}}
+	}
+	return backtest.ContinuousOptimizationResult{
+		ID: "AUTO-diagnostics", GeneratedAt: time.Date(2026, 10, 19, 16, 0, 0, 0, strategyLocation), DataCutoff: "2026-10-19", Stage: backtest.ContinuousStageResearch,
+		Request:     backtest.ContinuousOptimizationRequest{Folds: folds, BaseRequest: backtest.Request{Tickers: []string{"sh600000"}, Names: map[string]string{"sh600000": "浦发银行"}}},
+		GateReasons: []string{"所有候选均未通过滚动验证门禁"},
+		Candidates: []backtest.ContinuousCandidateResult{
+			{Proposal: backtest.StrategyProposal{ID: "P009", Agent: "deterministic", Parameters: parameters}, Folds: results, Rejected: true, PositiveFoldRatio: .5, ValidationTrades: 100, AverageValidation: 3, WorstDrawdown: -8, Reasons: []string{"正收益窗口 50% 低于门槛 67%"}},
+			{Proposal: backtest.StrategyProposal{ID: "P008", Agent: "deterministic", Parameters: parameters}, Folds: results, Rejected: true, PositiveFoldRatio: .75, ValidationTrades: 110, AverageValidation: 5, WorstDrawdown: -18.29, Reasons: []string{"最差验证回撤 18.29% 超过门槛 15.00%"}},
+			{Proposal: backtest.StrategyProposal{ID: "P003", Parameters: parameters}, Folds: results[:1], Rejected: true, Reasons: []string{"F02验证失败：数据不足"}},
+		},
+	}
+}
+
+func TestStrategyCandidateDiagnosticsDoNotLockRejectedParameters(t *testing.T) {
+	store := storage.NewContinuousOptimizationStore(t.TempDir())
+	saved, err := store.Save(rejectedCandidateFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(saved.Directory, "summary.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(nil, nil, nil, nil, "", WithStrategyCandidateLifecycle(&candidateObservationEngineStub{}, store))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/api/strategy/candidates", nil))
+	var payload strategyCandidateListResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || response.Code != 200 {
+		t.Fatalf("diagnostics: %s %v", response.Body.String(), err)
+	}
+	item := payload.Items[0]
+	if item.Parameters != nil || item.SelectedID != "" || item.Lifecycle.ExperimentID != "" || item.PassedCount != 0 || item.CandidateCount != 3 {
+		t.Fatalf("rejected candidate promoted: %+v", item)
+	}
+	if len(item.Diagnostics) != 3 || item.Diagnostics[0].Parameters.FastMA == 0 || item.Diagnostics[0].Selected || *item.Diagnostics[0].PositiveFoldRatio != .5 {
+		t.Fatalf("diagnostics incomplete: %+v", item.Diagnostics)
+	}
+	if item.Diagnostics[2].PositiveFoldRatio != nil || item.Diagnostics[2].ValidationTrades != nil {
+		t.Fatal("incomplete evaluation advertised zero metrics")
+	}
+	if !strings.Contains(item.SelectionSummary, "3 组候选均未通过") {
+		t.Fatal(item.SelectionSummary)
+	}
+	post := httptest.NewRecorder()
+	server.Handler().ServeHTTP(post, httptest.NewRequest("POST", "/api/strategy/candidates?id="+saved.ID, strings.NewReader(`{"action":"start-observation"}`)))
+	if post.Code != http.StatusConflict {
+		t.Fatalf("rejected parameters became observable: %d", post.Code)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("diagnostics changed original experiment")
+	}
+}
+
+func TestStrategyCandidateDiagnosticsKeepLockedButBlockedSelection(t *testing.T) {
+	store := storage.NewContinuousOptimizationStore(t.TempDir())
+	result := rejectedCandidateFixture()
+	selected := result.Candidates[0]
+	selected.Rejected = false
+	selected.Reasons = nil
+	result.Selected = &selected
+	result.Candidates[0] = selected
+	result.GateReasons = []string{"最终留出未通过"}
+	if _, err := store.Save(result); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(nil, nil, nil, nil, "", WithStrategyCandidateLifecycle(&candidateObservationEngineStub{}, store))
+	item, err := server.strategyCandidateSummary(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Parameters == nil || item.SelectedID != "P009" || !item.Diagnostics[0].Selected || !strings.Contains(item.NextAction, "参数已锁定") {
+		t.Fatalf("existing selection lost: %+v", item)
+	}
+}
+
+func TestStrategyCandidateDiagnosticsBrowserFixture(t *testing.T) {
+	address := os.Getenv("ASTOCK_CANDIDATE_TEST_ADDR")
+	if address == "" {
+		t.Skip("browser fixture is opt-in")
+	}
+	store := storage.NewContinuousOptimizationStore(t.TempDir())
+	if _, err := store.Save(rejectedCandidateFixture()); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(nil, nil, nil, nil, "600000", WithStrategyCandidateLifecycle(&candidateObservationEngineStub{}, store))
+	if err := http.ListenAndServe(address, server.Handler()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (stub *candidateObservationEngineStub) Run(_ context.Context, request backtest.Request) (backtest.Result, error) {

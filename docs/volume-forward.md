@@ -41,6 +41,17 @@ go build -trimpath -o /path/to/frozen/astock ./cmd/astock
 
 ## 本机配置
 
+Web 研究页可只读连接本实验，显示冻结参数、已验证的离线证据、四条资金路径和前瞻进度：
+
+```sh
+astock web --listen 127.0.0.1:8788 --volume-forward-dir /path/to/forward-directory
+astock service install --name shadow-8788 --listen 127.0.0.1:8788 --volume-forward-dir /path/to/forward-directory
+```
+
+也可设置 `ASTOCK_VOLUME_FORWARD_DIR`。`GET /api/strategy/volume-forward` 重新校验配置、源研究及封存链，`?download=1` 导出摘要；不接受 POST，不采集行情、不执行回测、不修改冻结程序和观察起点。读取不占用采集器写锁。尚无日档时，收益和回撤显示缺失，现金显示已冻结的初始资金。原自动研究候选与本实验分开展示，不把已见历史结果记为真实前瞻收益，也不自动批准晋级。
+
+调度状态超过15分钟未更新或与封存数量不一致时会提示待更新；配置、源研究或日档校验失败会停止展示为有效前瞻。Web 更新不替换本节的实验专用二进制。
+
 - 程序：`~/.local/share/astock-volume-forward-service/bin/astock-v2`。
 - 实验：`~/astock-volume-forward-2026-10-19-v2`。
 - 原目录和原二进制保留为启动历史；修复缺失换手率序列化后，于首个观察日前重新冻结，未迁移任何日档。

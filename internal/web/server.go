@@ -244,6 +244,7 @@ type Server struct {
 	patternForwardRuntime        patternForwardRuntime
 	candidateEngine              backtest.Engine
 	candidateArchive             continuousOptimizationArchive
+	volumeForwardStudy           *storage.VolumeForwardStore
 	realtimeScanner              realtimeScanner
 	realtimeArchive              realtimeSignalArchive
 	realtimeOutcomes             realtimeOutcomeAnalyzer
@@ -1105,6 +1106,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
 	mux.HandleFunc("/api/strategy/candidates", s.handleStrategyCandidates)
+	mux.HandleFunc("/api/strategy/volume-forward", s.handleVolumeForwardStudy)
 	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
 	mux.HandleFunc("/api/strategy/shadow", s.handleShadowExecution)
 	mux.HandleFunc("/api/strategy/shadow-daily", s.handleShadowDailyReview)

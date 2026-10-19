@@ -15,6 +15,10 @@ import { ShadowDailyReviewView } from "./shadow-daily-review-view.js"
 import { ShadowComparisonView } from "./shadow-comparison-view.js"
 import { BoardWorkbench } from "./board-workbench-view.js"
 import { NativeNotificationView } from "./native-notification-view.js"
+import { CandidateDiagnostics } from "./candidate-diagnostics-view.js"
+import { VolumeForwardStudyView } from "./volume-forward-study-view.js"
+import "./volume-forward-study.css"
+import "./candidate-diagnostics.css"
 import "./native-notifications.css"
 import "./board-workbench.css"
 import "./shadow-comparison.css"
@@ -109,7 +113,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView },
   data() {
     return {
       query: defaultSymbol,
@@ -362,6 +366,7 @@ createApp({
       strategyHistoryLoaded: false,
 	  strategyCandidates: [],
 	  strategyCandidatesLoading: false,
+	  volumeForwardHeadline: "",
 	  strategyCandidatesLoaded: false,
 	  strategyCandidateError: "",
 	  strategyCandidateID: "",
@@ -526,6 +531,7 @@ createApp({
     strategyCandidateAssessment() { return this.strategyCandidateLifecycle.assessment || { checks: [] } },
     strategyCandidateObservationMetrics() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.observation_metrics) || {} },
 	strategyLifecycleHeadline() {
+	  if (this.volumeForwardHeadline) return this.volumeForwardHeadline
 	  if (!this.strategyCandidatesLoaded) return "候选生命周期"
 	  if (!this.strategyCandidates.length) return "等待持续优化实验"
 	  return this.candidateStatusLabel(this.strategyCandidateLifecycle.status, this.strategyActiveCandidate.research_stage)
@@ -2179,8 +2185,8 @@ createApp({
 	},
 	candidateParameterText(item) {
 	  const p = item && item.parameters
-	  if (!p) return "没有锁定参数"
-	  return `${this.strategyModeLabel(p.entry_mode)} · MA${p.fast_ma}/${p.slow_ma} · 突破${p.breakout_days}日 · 量比≥${this.number(p.volume_ratio_min, 2)} · 止损${this.number(Number(p.stop_loss) * 100, 0)}% · 止盈${this.number(Number(p.take_profit) * 100, 0)}%`
+	  if (!p) return item?.selection_summary || "未锁定：归档中没有入选参数"
+	  return `${this.strategyModeLabel(p.entry_mode)} · MA${p.fast_ma}/${p.slow_ma} · 突破${p.breakout_days}日 · 量比≥${this.number(p.volume_ratio_min, 2)} · 止损${this.number(Number(p.stop_loss) * 100, 0)}% · 止盈${this.number(Number(p.take_profit) * 100, 0)}% · 最长持有${p.max_holding_days ?? '--'}日`
 	},
 	candidateActionBusy(item) { return Boolean(item && this.strategyCandidateActionLoading === item.experiment_id) },
     async loadStrategyRun(runID) {
@@ -4539,6 +4545,7 @@ createApp({
   },
   mounted() {
     if (this.workspaceMode === "market") this.load(this.requestedSymbol)
+    if (this.workspaceMode === "strategy") this.switchStrategySection(this.strategySection)
     this.loadPlanMonitors()
     if (this.workspaceMode === "monitor" && this.monitorView === "experiment") this.loadPlanExperiment()
     if (this.workspaceMode === "monitor" && this.monitorView === "playbook") this.loadTradePlaybook()
