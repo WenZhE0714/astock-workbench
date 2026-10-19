@@ -28,23 +28,26 @@ type pendingOrder struct {
 }
 
 type positionState struct {
-	symbol      string
-	name        string
-	quantity    int
-	entrySignal SignalSnapshot
-	entry       Fill
-	entryCost   float64
-	holdingDays int
-	maxHigh     float64
-	minLow      float64
+	symbol             string
+	name               string
+	quantity           int
+	entrySignal        SignalSnapshot
+	entry              Fill
+	entryCost          float64
+	holdingDays        int
+	maxHigh            float64
+	minLow             float64
+	peakNetCloseReturn float64
+	peakNetCloseDate   string
 }
 
 type symbolState struct {
-	bars      []domain.DailyBar
-	byDate    map[string]int
-	lastClose float64
-	position  *positionState
-	pending   *pendingOrder
+	bars                 []domain.DailyBar
+	byDate               map[string]int
+	lastClose            float64
+	position             *positionState
+	pending              *pendingOrder
+	awaitingConfirmation *SignalSnapshot
 }
 
 func validateRequest(request Request) error {
@@ -75,6 +78,15 @@ func validateRequest(request Request) error {
 		return fmt.Errorf("开仓市场过滤需要基准")
 	}
 	p := request.Technical
+	if !finiteValues(request.EntryVolumeFloor) || request.EntryVolumeFloor < 0 || request.EntryVolumeFloor > 0 && p.EffectiveEntryMode() != EntryModeReclaim {
+		return fmt.Errorf("追加量比下限必须非负且仅支持趋势重返策略")
+	}
+	if request.EntryConfirmation != "" && (request.EntryConfirmation != EntryConfirmReclaimTwoClose || p.EffectiveEntryMode() != EntryModeReclaim) {
+		return fmt.Errorf("开仓确认仅支持趋势重返的双收盘规则")
+	}
+	if request.ExitProtection != "" && (request.ExitProtection != ExitProtectHalfProfit || p.EffectiveEntryMode() != EntryModeReclaim) {
+		return fmt.Errorf("盈利保护仅支持趋势重返的收盘利润回吐规则")
+	}
 	if !ValidEntryMode(p.EffectiveEntryMode()) || p.FastMA < 2 || p.SlowMA <= p.FastMA || p.BreakoutDays < 2 || p.VolumeRatioMin <= 0 ||
 		p.StopLoss <= 0 || p.TakeProfit <= 0 || p.MaxHoldingDays < 1 || p.MaxPosition <= 0 || p.MaxPosition > 1 {
 		return fmt.Errorf("技术策略参数无效")
@@ -571,6 +583,19 @@ func benchmarkMetrics(ctx context.Context, engine *DailyEngine, request Request)
 }
 
 func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, error) {
+	return engine.run(ctx, request, false)
+}
+
+// RunForward preserves first-day signals without inventing a second day or a
+// terminal liquidation. Its inputs must come from the sealed forward archive.
+func (engine *DailyEngine) RunForward(ctx context.Context, request Request) (Result, error) {
+	if request.LiquidateAtEnd {
+		return Result{}, fmt.Errorf("前瞻观察不得期末强制平仓")
+	}
+	return engine.run(ctx, request, true)
+}
+
+func (engine *DailyEngine) run(ctx context.Context, request Request, forward bool) (Result, error) {
 	if engine == nil || engine.provider == nil {
 		return Result{}, fmt.Errorf("回测历史数据源未初始化")
 	}
@@ -583,7 +608,7 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 		return Result{}, err
 	}
 	dates := tradingDates(states, request.Start, request.End)
-	if len(dates) < 2 {
+	if len(dates) == 0 || !forward && len(dates) < 2 {
 		return Result{}, fmt.Errorf("回测区间内交易日不足")
 	}
 	coverage := make(map[string]DataCoverage, len(request.Tickers))
@@ -615,6 +640,8 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 	var benchmarkEquity []BenchmarkPoint
 	var benchmarkBars []domain.DailyBar
 	blockedEntries := []EntryMarketBlock{}
+	confirmations := []EntryConfirmationEvent{}
+	volumeBlocks := []EntryVolumeBlock{}
 	if request.EntryMarketFilter != "" {
 		benchmarkReturn, benchmarkAvailable, benchmarkWarning, benchmarkEquity, benchmarkBars = benchmarkMetrics(ctx, engine, request)
 		if !benchmarkAvailable {
@@ -717,17 +744,46 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 				state.position.holdingDays++
 				state.position.maxHigh = math.Max(state.position.maxHigh, bar.High)
 				state.position.minLow = math.Min(state.position.minLow, bar.Low)
+				if request.ExitProtection != "" {
+					updateNetClosePeak(request, state.position, bar.Close, date)
+				}
 			}
 			snapshot, ready := technicalSnapshot(state.bars, index, request.Technical)
+			if state.awaitingConfirmation != nil {
+				// This stock's next available bar is the only confirmation close.
+				// The opening-fill loop has already finished for this date.
+				signal := *state.awaitingConfirmation
+				state.awaitingConfirmation = nil
+				snapshot.Date = date
+				event := confirmReclaimEntry(symbol, signal, snapshot, ready)
+				confirmations = append(confirmations, event)
+				if event.Status == "confirmed" {
+					signal.Confirmation = &event
+					state.pending = &pendingOrder{side: "buy", signal: signal, reason: strings.Join(signal.Reasons, "；")}
+				}
+				continue
+			}
 			if !ready || state.pending != nil {
 				continue
 			}
 			if state.position == nil {
 				if signal, triggered := entrySignal(snapshot, request.Technical); triggered {
-					state.pending = &pendingOrder{side: "buy", signal: signal, reason: strings.Join(signal.Reasons, "；")}
+					if !entryVolumeAllowed(signal, request.EntryVolumeFloor) {
+						volumeBlocks = append(volumeBlocks, EntryVolumeBlock{Symbol: symbol, SignalDate: signal.Date, VolumeRatio: signal.VolumeRatio, Minimum: request.EntryVolumeFloor})
+						continue
+					}
+					if request.EntryConfirmation == EntryConfirmReclaimTwoClose {
+						state.awaitingConfirmation = &signal
+					} else {
+						state.pending = &pendingOrder{side: "buy", signal: signal, reason: strings.Join(signal.Reasons, "；")}
+					}
 				}
 			} else {
-				if signal, reason, triggered := exitSignal(snapshot, state.position, request.Technical); triggered {
+				signal, reason, triggered := exitSignal(snapshot, state.position, request.Technical)
+				if !triggered && request.ExitProtection != "" {
+					signal, reason, triggered = profitProtectionSignal(snapshot, state.position, request)
+				}
+				if triggered {
 					state.pending = &pendingOrder{side: "sell", signal: signal, reason: reason}
 				}
 			}
@@ -781,9 +837,16 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 			equity[len(equity)-1].Drawdown = (finalEquity/peak - 1) * 100
 		}
 	}
+	var pendingOrders []ForwardPendingOrder
 	for _, symbol := range request.Tickers {
 		state := states[symbol]
+		if state != nil && state.awaitingConfirmation != nil {
+			confirmations = append(confirmations, EntryConfirmationEvent{Symbol: symbol, SignalDate: state.awaitingConfirmation.Date, Status: "unresolved", Reason: "回测期末尚无下一交易日收盘"})
+		}
 		if state != nil && state.pending != nil {
+			if forward {
+				pendingOrders = append(pendingOrders, ForwardPendingOrder{Symbol: symbol, Side: state.pending.side, Signal: state.pending.signal, Reason: state.pending.reason})
+			}
 			warnings = append(warnings, fmt.Sprintf("%s %s 的%s信号在回测期末尚无下一交易日，未生成成交", symbol, state.pending.signal.Date, state.pending.signal.Action))
 		}
 	}
@@ -822,5 +885,8 @@ func (engine *DailyEngine) Run(ctx context.Context, request Request) (Result, er
 		RunID: generatedAt.Format("20060102T150405"), GeneratedAt: generatedAt, Request: request,
 		Metrics: metrics, Trades: trades, OpenPositions: openPositions, Equity: equity, BenchmarkEquity: benchmarkEquity,
 		MarketRegimes: regimes, DataSources: sources, DataCoverage: coverage, Warnings: warnings, BlockedEntries: blockedEntries,
+		EntryConfirmations:   confirmations,
+		VolumeBlockedEntries: volumeBlocks,
+		PendingOrders:        pendingOrders,
 	}, nil
 }

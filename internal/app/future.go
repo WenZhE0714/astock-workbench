@@ -114,8 +114,20 @@ func (app *App) runBacktest(ctx context.Context, arguments []string) error {
 		return app.runBacktestPositionStudy(ctx, arguments[1:])
 	case "regime-study":
 		return app.runBacktestRegimeStudy(ctx, arguments[1:])
+	case "confirmation-study":
+		return app.runBacktestConfirmationStudy(ctx, arguments[1:])
+	case "exit-study":
+		return app.runBacktestExitStudy(ctx, arguments[1:])
+	case "stability-review":
+		return app.runBacktestStabilityReview(ctx, arguments[1:])
+	case "volume-study":
+		return app.runBacktestVolumeStudy(ctx, arguments[1:])
+	case "volume-forward":
+		return app.runBacktestVolumeForward(ctx, arguments[1:])
+	case "trade-review":
+		return app.runBacktestTradeReview(ctx, arguments[1:])
 	default:
-		return fmt.Errorf("用法: astock backtest [status | run | list | show | trades | trade | optimize | optimize-list | optimize-show | continuous | continuous-list | continuous-show | position-study | regime-study]")
+		return fmt.Errorf("用法: astock backtest [status | run | list | show | trades | trade | optimize | optimize-list | optimize-show | continuous | continuous-list | continuous-show | position-study | regime-study | confirmation-study | exit-study | stability-review | volume-study | volume-forward | trade-review]")
 	}
 }
 

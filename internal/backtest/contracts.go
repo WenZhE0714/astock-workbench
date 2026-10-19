@@ -103,6 +103,9 @@ type Request struct {
 	Adjustment        PriceAdjustment     `json:"adjustment"`
 	Benchmark         string              `json:"benchmark,omitempty"`
 	EntryMarketFilter string              `json:"entry_market_filter,omitempty"`
+	EntryVolumeFloor  float64             `json:"entry_volume_floor,omitempty"`
+	EntryConfirmation string              `json:"entry_confirmation,omitempty"`
+	ExitProtection    string              `json:"exit_protection,omitempty"`
 	NoFutureData      bool                `json:"no_future_data"`
 	PointInTimePool   bool                `json:"point_in_time_pool"`
 	LiquidateAtEnd    bool                `json:"liquidate_at_end"`
@@ -110,9 +113,11 @@ type Request struct {
 }
 
 type SignalSnapshot struct {
-	Date      string `json:"date"`
-	Action    string `json:"action"`
-	EntryMode string `json:"entry_mode,omitempty"`
+	Date             string                    `json:"date"`
+	Action           string                    `json:"action"`
+	EntryMode        string                    `json:"entry_mode,omitempty"`
+	Confirmation     *EntryConfirmationEvent   `json:"confirmation,omitempty"`
+	ProfitProtection *ProfitProtectionEvidence `json:"profit_protection,omitempty"`
 	// SelectedEntryMode records the concrete setup selected by the adaptive
 	// ensemble. EntryMode remains the configured mode so reports can distinguish
 	// an adaptive request from the shape that actually supplied the evidence.
@@ -238,21 +243,24 @@ type MarketRegimeMetrics struct {
 }
 
 type Result struct {
-	RunID           string                  `json:"run_id"`
-	GeneratedAt     time.Time               `json:"generated_at"`
-	Request         Request                 `json:"request"`
-	Metrics         Metrics                 `json:"metrics"`
-	Trades          []Trade                 `json:"trades"`
-	OpenPositions   []OpenPosition          `json:"open_positions,omitempty"`
-	Equity          []EquityPoint           `json:"equity"`
-	BenchmarkEquity []BenchmarkPoint        `json:"benchmark_equity,omitempty"`
-	MarketRegimes   []MarketRegimeMetrics   `json:"market_regimes,omitempty"`
-	DataSources     map[string]string       `json:"data_sources"`
-	DataCoverage    map[string]DataCoverage `json:"data_coverage,omitempty"`
-	Warnings        []string                `json:"warnings,omitempty"`
-	BlockedEntries  []EntryMarketBlock      `json:"blocked_entries,omitempty"`
-	Directory       string                  `json:"-"`
-	ReportPath      string                  `json:"-"`
+	RunID                string                   `json:"run_id"`
+	GeneratedAt          time.Time                `json:"generated_at"`
+	Request              Request                  `json:"request"`
+	Metrics              Metrics                  `json:"metrics"`
+	Trades               []Trade                  `json:"trades"`
+	OpenPositions        []OpenPosition           `json:"open_positions,omitempty"`
+	Equity               []EquityPoint            `json:"equity"`
+	BenchmarkEquity      []BenchmarkPoint         `json:"benchmark_equity,omitempty"`
+	MarketRegimes        []MarketRegimeMetrics    `json:"market_regimes,omitempty"`
+	DataSources          map[string]string        `json:"data_sources"`
+	DataCoverage         map[string]DataCoverage  `json:"data_coverage,omitempty"`
+	Warnings             []string                 `json:"warnings,omitempty"`
+	BlockedEntries       []EntryMarketBlock       `json:"blocked_entries,omitempty"`
+	EntryConfirmations   []EntryConfirmationEvent `json:"entry_confirmations,omitempty"`
+	VolumeBlockedEntries []EntryVolumeBlock       `json:"volume_blocked_entries,omitempty"`
+	PendingOrders        []ForwardPendingOrder    `json:"pending_orders,omitempty"`
+	Directory            string                   `json:"-"`
+	ReportPath           string                   `json:"-"`
 }
 
 type DataCoverage struct {
