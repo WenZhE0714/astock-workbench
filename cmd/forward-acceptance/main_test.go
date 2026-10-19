@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,16 +164,88 @@ func TestHistoricalRehearsalFirstDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(archive, "days", entries[0].Name()))
-	if err != nil {
+	summary := newExecutionAcceptance()
+	var previous *backtest.VolumeForwardDay
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(archive, "days", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var day backtest.VolumeForwardDay
+		if err := json.Unmarshal(data, &day); err != nil {
+			t.Fatal(err)
+		}
+		if previous == nil {
+			if err := verifyFirstDay(plan, day); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			changes, err := verifyExecutionDay(t.Context(), plan, *previous, day)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary.record(day.Date, changes)
+		}
+		previous = &day
+	}
+	if summary.Transitions != count-1 {
+		t.Fatal("not every archived transition was verified")
+	}
+	if output := os.Getenv("ASTOCK_ACCEPTANCE_REHEARSAL_REPORT"); output != "" {
+		data, err := json.MarshalIndent(map[string]any{"classification": "historical-execution-acceptance", "real_time_evidence": false, "promotion_allowed": false, "archive": archive, "sealed_days": count, "execution": summary}, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, writeErr := file.Write(data)
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			t.Fatalf("write report: %v %v", writeErr, closeErr)
+		}
+	}
+	t.Logf("historical execution verified: %d transitions, %+v; not live evidence", summary.Transitions, summary.Accounts)
+}
+
+func TestInspectExecutionAndCollectorPause(t *testing.T) {
+	plan, days := executionFixture(t, 1.5, true)
+	_, _, source, program := fixture(t)
+	root := t.TempDir()
+	archive, binary := filepath.Join(root, "archive"), filepath.Join(root, "collector")
+	store := storage.NewVolumeForwardStore(archive)
+	if err := store.Initialize(plan, source); err != nil {
 		t.Fatal(err)
 	}
-	var day backtest.VolumeForwardDay
-	if err := json.Unmarshal(data, &day); err != nil {
+	if err := os.WriteFile(binary, program, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyFirstDay(plan, day); err != nil {
+	for i, day := range days {
+		if err := store.Append(plan, day); err != nil {
+			t.Fatal(err)
+		}
+		result, err := inspect(archive, binary, plan.Fingerprint, day.CapturedAt.Add(time.Minute))
+		want := []string{"waiting-next-day", "waiting-fill", "passed", "passed"}[i]
+		if err != nil || result.Execution.Status != want || result.Execution.Transitions != i || result.SealedDays != i+1 {
+			t.Fatalf("unexpected execution progress: %+v %v", result, err)
+		}
+		if i == 3 && result.Execution.Accounts[1].Sells != 2 {
+			t.Fatal("candidate sale was not checked")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(archive, "status.json"), []byte(`{"status":"error","detail":"missing daily bar"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("historical first-day structure verified: %s; this is not live acceptance", day.Date)
+	result, err := inspect(archive, binary, plan.Fingerprint, days[3].CapturedAt.Add(time.Hour))
+	if err == nil || result.Execution.Status != "paused" {
+		t.Fatalf("collector error ignored after first seal: %+v %v", result, err)
+	}
+	_, last, count, err := store.Load()
+	if err != nil || count != len(days) || last.Fingerprint != days[3].Fingerprint {
+		t.Fatalf("execution inspection changed the archive: %v", err)
+	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,16 +21,17 @@ import (
 var shanghai = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type acceptance struct {
-	CheckedAt        time.Time `json:"checked_at"`
-	Status           string    `json:"status"`
-	Detail           string    `json:"detail"`
-	Archive          string    `json:"archive"`
-	PlanFingerprint  string    `json:"plan_fingerprint"`
-	FirstDate        string    `json:"first_date,omitempty"`
-	FirstFingerprint string    `json:"first_fingerprint,omitempty"`
-	SealedDays       int       `json:"sealed_days"`
-	PendingOrders    []int     `json:"pending_orders,omitempty"`
-	PromotionAllowed bool      `json:"promotion_allowed"`
+	CheckedAt        time.Time           `json:"checked_at"`
+	Status           string              `json:"status"`
+	Detail           string              `json:"detail"`
+	Archive          string              `json:"archive"`
+	PlanFingerprint  string              `json:"plan_fingerprint"`
+	FirstDate        string              `json:"first_date,omitempty"`
+	FirstFingerprint string              `json:"first_fingerprint,omitempty"`
+	SealedDays       int                 `json:"sealed_days"`
+	PendingOrders    []int               `json:"pending_orders,omitempty"`
+	PromotionAllowed bool                `json:"promotion_allowed"`
+	Execution        executionAcceptance `json:"execution"`
 }
 
 func verifyFirstDay(plan backtest.VolumeForwardPlan, day backtest.VolumeForwardDay) error {
@@ -117,8 +119,8 @@ func verifyFirstDay(plan backtest.VolumeForwardPlan, day backtest.VolumeForwardD
 }
 
 func inspect(archive, binary, fingerprint string, now time.Time) (acceptance, error) {
-	result := acceptance{CheckedAt: now.In(shanghai), Archive: archive, PlanFingerprint: fingerprint, Status: "waiting"}
-	plan, _, count, err := storage.NewVolumeForwardStore(archive).Load()
+	result := acceptance{CheckedAt: now.In(shanghai), Archive: archive, PlanFingerprint: fingerprint, Status: "waiting", Execution: newExecutionAcceptance()}
+	plan, latest, count, err := storage.NewVolumeForwardStore(archive).Load()
 	if err != nil {
 		return result, err
 	}
@@ -134,21 +136,22 @@ func inspect(archive, binary, fingerprint string, now time.Time) (acceptance, er
 		return result, fmt.Errorf("采集程序与冻结指纹不一致")
 	}
 	result.SealedDays = count
-	if count == 0 {
-		result.Detail = "配置、源研究和采集程序校验通过，等待首份真实日档"
-		statusBytes, err := os.ReadFile(filepath.Join(archive, "status.json"))
-		if err != nil && !os.IsNotExist(err) {
+	statusBytes, err := os.ReadFile(filepath.Join(archive, "status.json"))
+	if err != nil && !os.IsNotExist(err) {
+		return result, err
+	}
+	if err == nil {
+		var status struct{ Status, Detail string }
+		if err := json.Unmarshal(statusBytes, &status); err != nil {
 			return result, err
 		}
-		if err == nil {
-			var status struct{ Status, Detail string }
-			if err := json.Unmarshal(statusBytes, &status); err != nil {
-				return result, err
-			}
-			if status.Status == "error" {
-				return result, fmt.Errorf("采集任务报错: %s", status.Detail)
-			}
+		if status.Status == "error" {
+			result.Execution.Status, result.Execution.Detail = "paused", "采集任务报错，暂停成交验收"
+			return result, fmt.Errorf("采集任务报错: %s", status.Detail)
 		}
+	}
+	if count == 0 {
+		result.Detail = "配置、源研究和采集程序校验通过，等待首份真实日档"
 		local := now.In(shanghai)
 		start := plan.Baseline.Start.In(shanghai).Format(time.DateOnly)
 		if local.Format(time.DateOnly) > start || local.Format(time.DateOnly) == start && local.Hour() >= 19 {
@@ -161,9 +164,19 @@ func inspect(archive, binary, fingerprint string, now time.Time) (acceptance, er
 	if err != nil {
 		return result, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var previous *backtest.VolumeForwardDay
+	processed := 0
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
+		}
+		if processed == count {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return result, err
 		}
 		data, err := os.ReadFile(filepath.Join(archive, "days", entry.Name()))
 		if err != nil {
@@ -177,19 +190,33 @@ func inspect(archive, binary, fingerprint string, now time.Time) (acceptance, er
 			return result, err
 		}
 		if day.CapturedAt.After(now) {
-			return result, fmt.Errorf("首日日档采集时间晚于验收时间")
+			return result, fmt.Errorf("日档采集时间晚于验收时间")
 		}
-		if err := verifyFirstDay(plan, day); err != nil {
-			return result, err
+		if previous == nil {
+			if err := verifyFirstDay(plan, day); err != nil {
+				return result, err
+			}
+			result.Status, result.Detail = "passed", "首日四组账户验收通过；成交验收进度见各组记录，不代表策略效果通过"
+			result.FirstDate, result.FirstFingerprint = day.Date, day.Fingerprint
+			result.Execution.Status, result.Execution.Detail = "waiting-next-day", "首日仅记录信号，等待后续日档验证执行"
+			for _, run := range day.Runs {
+				result.PendingOrders = append(result.PendingOrders, len(run.PendingOrders))
+			}
+		} else {
+			changes, err := verifyExecutionDay(ctx, plan, *previous, day)
+			if err != nil {
+				result.Execution.Status, result.Execution.Detail = "error", err.Error()
+				return result, err
+			}
+			result.Execution.record(day.Date, changes)
 		}
-		result.Status, result.Detail = "passed", "首日四组账户验收通过；仅验证采集和初始状态，不代表策略效果通过"
-		result.FirstDate, result.FirstFingerprint = day.Date, day.Fingerprint
-		for _, run := range day.Runs {
-			result.PendingOrders = append(result.PendingOrders, len(run.PendingOrders))
-		}
-		return result, nil
+		previous = &day
+		processed++
 	}
-	return result, fmt.Errorf("归档计数与日档目录不一致")
+	if previous == nil || latest == nil || processed != count || previous.Fingerprint != latest.Fingerprint {
+		return result, fmt.Errorf("验收期间归档快照发生变化，请重试")
+	}
+	return result, nil
 }
 
 func writeAtomic(path string, data []byte) error {
@@ -217,7 +244,11 @@ func execute() error {
 	if *archive == "" || *binary == "" || *output == "" || *fingerprint == "" || flag.NArg() != 0 {
 		return fmt.Errorf("required: --archive --binary --output --fingerprint")
 	}
-	archivePath, err := filepath.EvalSymlinks(*archive)
+	archivePath, err := filepath.Abs(*archive)
+	if err != nil {
+		return err
+	}
+	archivePath, err = filepath.EvalSymlinks(archivePath)
 	if err != nil {
 		return err
 	}
@@ -259,12 +290,23 @@ func execute() error {
 	if firstDate == "" {
 		firstDate, firstHash, orders = "尚无", "尚无", "等待日档"
 	}
-	report := fmt.Sprintf("# 前瞻首日自动验收\n\n检查时间：%s\n\n状态：%s\n\n%s。\n\n观察目录：%s\n\n已封存交易日：%d；首日：%s\n\n四组首日待执行信号数：%s\n\n配置指纹：%s\n\n首日日档指纹：%s\n\n本程序只读检查归档，不采集行情、不产生交易、不修改策略、不计入历史演练样本。passed只代表首日验收通过，后续成交和策略效果仍需继续观察。\n", result.CheckedAt.Format(time.RFC3339), result.Status, result.Detail, result.Archive, result.SealedDays, firstDate, orders, result.PlanFingerprint, firstHash)
+	report := fmt.Sprintf("# 前瞻采集与成交自动验收\n\n检查时间：%s\n\n归档与首日状态：%s\n\n%s。\n\n观察目录：%s\n\n已封存交易日：%d；首日：%s\n\n四组首日待执行信号数：%s\n\n配置指纹：%s\n\n首日日档指纹：%s\n\n## 成交验收\n\n状态：%s；已核对%d次相邻日档转换，核验至：%s\n\n%s。\n\n| 账户 | 首次买入 | 首次卖出 | 买入次数 | 卖出次数 | 一字板顺延次数 |\n|---|---|---|---:|---:|---:|\n", result.CheckedAt.Format(time.RFC3339), result.Status, result.Detail, result.Archive, result.SealedDays, firstDate, orders, result.PlanFingerprint, firstHash, result.Execution.Status, result.Execution.Transitions, displayDate(result.Execution.VerifiedThrough), result.Execution.Detail)
+	for _, account := range result.Execution.Accounts {
+		report += fmt.Sprintf("| %s | %s | %s | %d | %d | %d |\n", account.Account, displayDate(account.FirstBuy), displayDate(account.FirstSell), account.Buys, account.Sells, account.DeferredOrders)
+	}
+	report += "\n本程序只读复算封存日K并核对账务，不下载行情、不写入交易、不修改策略、不迁移历史演练样本。成交passed要求四组各有至少一次已核验买入；尚未发生卖出的账户不代表已获得实际卖出或T+1观察证据。成交价是既有日K开盘模拟，不代表真实订单成交，策略效果仍需按原样本门槛复核。\n"
 	if err := writeAtomic(filepath.Join(outputPath, "report.md"), []byte(report)); err != nil {
 		return err
 	}
 	fmt.Printf("%s %s: %s\n", result.CheckedAt.Format(time.RFC3339), result.Status, result.Detail)
 	return inspectErr
+}
+
+func displayDate(date string) string {
+	if date == "" {
+		return "尚无"
+	}
+	return date
 }
 
 func main() {
