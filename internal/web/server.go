@@ -202,6 +202,7 @@ type sentimentHistoryStore interface {
 }
 
 type Server struct {
+	frozenReplaySources          []frozenReplaySource
 	resolver                     SymbolResolver
 	quotes                       QuoteClient
 	history                      DailyHistoryClient
@@ -1108,6 +1109,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
 	mux.HandleFunc("/api/strategy/candidates", s.handleStrategyCandidates)
 	mux.HandleFunc("/api/strategy/volume-forward", s.handleVolumeForwardStudy)
+	mux.HandleFunc("/api/replay/catalog", s.handleReplayCatalog)
+	mux.HandleFunc("/api/replay/day", s.handleReplayDay)
 	mux.HandleFunc("/api/strategy/realtime", s.handleRealtimeStrategy)
 	mux.HandleFunc("/api/strategy/shadow", s.handleShadowExecution)
 	mux.HandleFunc("/api/strategy/shadow-daily", s.handleShadowDailyReview)

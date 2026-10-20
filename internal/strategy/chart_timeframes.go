@@ -48,6 +48,12 @@ func completedTimeframeWeeks(bars []domain.DailyBar, complete bool) []domain.Dai
 	return weeks
 }
 
+// CompletedChartWeeks shares the existing completed-week boundary with replay charts.
+// The caller supplies chronologically ordered daily bars already cut to its snapshot.
+func CompletedChartWeeks(bars []domain.DailyBar) []domain.DailyBar {
+	return completedTimeframeWeeks(bars, true)
+}
+
 func timeframeTrend(bars []domain.DailyBar, timeframe string, fast, slow, rangeWindow, volumeWindow int) domain.ChartTimeframeTrend {
 	result := domain.ChartTimeframeTrend{Timeframe: timeframe, State: "insufficient", Samples: len(bars), Required: slow,
 		FastPeriod: fast, SlowPeriod: slow, RangeLookback: rangeWindow, VolumeLookback: volumeWindow, RangeState: "unavailable"}

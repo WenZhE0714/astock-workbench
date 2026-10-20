@@ -28,7 +28,7 @@
             <div class="watchlist-list" v-if="watchlistItems.length">
               <div class="watchlist-item" v-for="item in watchlistItems" :key="item.symbol" :class="{active: item.symbol === data.symbol}" @click="selectWatchlistSymbol(item.symbol)">
                 <div class="watchlist-copy"><strong v-text="watchlistName(item)"></strong><small><span class="watchlist-kind" v-text="assetKindLabel(item.kind)"></span> <span v-text="displayCode(item.symbol)"></span></small></div>
-                <div class="watchlist-market"><strong v-text="item.kind === 'sector' ? '板块' : (item.price || '--')"></strong><small :class="watchlistChangeClass(item.percent)" v-text="watchlistPercent(item.percent)"></small></div>
+                <div class="watchlist-market" v-if="!frozenReplayActive"><strong v-text="item.kind === 'sector' ? '板块' : (item.price || '--')"></strong><small :class="watchlistChangeClass(item.percent)" v-text="watchlistPercent(item.percent)"></small></div>
                 <button type="button" class="remove-button" title="从当前自选中移除" :aria-label="'移除 ' + displayCode(item.symbol)" @click.stop="removeWatchlist(item.symbol)">×</button>
               </div>
             </div>
@@ -716,8 +716,9 @@
               <div><div class="eyebrow">QUANT / RESEARCH</div><h1>量化策略研究</h1><p v-if="strategySection === 'backtests'">复用 CLI 的 A 股日线回测引擎，结果自动归档并保留完整交易证据。</p></div>
               <div class="strategy-stage" v-if="strategySection === 'backtests'"><span>当前阶段</span><strong v-text="strategyLifecycleHeadline"></strong><small>审批只影响下一轮研究基线，不修改实时评分或下单</small></div>
             </div>
-            <div class="strategy-tabs dashboard-segment" role="tablist" aria-label="量化研究视图"><button type="button" role="tab" :aria-selected="strategySection === 'backtests'" :class="{active:strategySection === 'backtests'}" @click="switchStrategySection('backtests')">策略回测</button><button type="button" role="tab" :aria-selected="strategySection === 'patterns'" :class="{active:strategySection === 'patterns'}" @click="switchStrategySection('patterns')">形态验证</button></div>
+            <div class="strategy-tabs dashboard-segment" role="tablist" aria-label="量化研究视图"><button type="button" role="tab" :aria-selected="strategySection === 'backtests'" :class="{active:strategySection === 'backtests'}" @click="switchStrategySection('backtests')">策略回测</button><button type="button" role="tab" :aria-selected="strategySection === 'patterns'" :class="{active:strategySection === 'patterns'}" @click="switchStrategySection('patterns')">形态验证</button><button type="button" role="tab" :aria-selected="strategySection === 'replay'" :class="{active:strategySection === 'replay'}" @click="switchStrategySection('replay')">交易复盘</button></div>
             <pattern-validation-view v-if="strategySection === 'patterns'" :selection="patternValidationSelection" :default-symbol="requestedSymbol" @selection="patternValidationSelection = $event" @open-sample="openPatternValidationSample"></pattern-validation-view>
+            <frozen-replay-view v-else-if="strategySection === 'replay'" @open="selectBoardMember" @replay-mode="frozenReplayActive=$event; if($event) assistantOpen=false"></frozen-replay-view>
             <template v-else>
             <volume-forward-study-view @status="volumeForwardHeadline=$event"></volume-forward-study-view>
             <section class="candidate-lifecycle" :class="{'candidate-archive': !!volumeForwardHeadline}">
@@ -898,7 +899,7 @@
         </div>
       </div>
       <div class="assistant-scrim" v-if="assistantOpen" @click="assistantClose"></div>
-      <aside class="assistant-dock" :class="{open: assistantOpen}">
+      <aside class="assistant-dock" :class="{open: assistantOpen}" v-show="!frozenReplayActive">
         <button type="button" class="assistant-launcher" :class="{active: assistantOpen}" title="打开 AI 研究助手" aria-label="打开 AI 研究助手" @click="assistantToggle">
           <span class="assistant-launcher-mark" aria-hidden="true">AI</span>
           <span class="assistant-launcher-label">研究助手</span>

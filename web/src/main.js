@@ -1,6 +1,6 @@
 // The page template is delivered by Go so the browser bundle needs Vue's
 // runtime compiler, not the runtime-only default entry.
-import { createApp } from "vue/dist/vue.esm-bundler.js"
+import { createApp, defineAsyncComponent } from "vue/dist/vue.esm-bundler.js"
 import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell } from "lucide-vue-next"
 import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "./dashboard.mjs"
 import { matchingChartAnalysis, chartLevelRows, chartStructureState, chartWeeklyState, savedPlanState, chartDataLagNotice, chartPatternBias, chartStructureLines, chartStructureColor, chartStructureVisible, preferredChartStructureID } from "./chart-analysis.mjs"
@@ -17,6 +17,8 @@ import { BoardWorkbench } from "./board-workbench-view.js"
 import { NativeNotificationView } from "./native-notification-view.js"
 import { CandidateDiagnostics } from "./candidate-diagnostics-view.js"
 import { VolumeForwardStudyView } from "./volume-forward-study-view.js"
+const FrozenReplayView = defineAsyncComponent(() => import("./frozen-replay-view.js").then(module => module.FrozenReplayView))
+import "./frozen-replay.css"
 import "./volume-forward-study.css"
 import "./candidate-diagnostics.css"
 import "./native-notifications.css"
@@ -113,14 +115,15 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView },
   data() {
     return {
       query: defaultSymbol,
       requestedSymbol: defaultSymbol,
       data: {},
       workspaceMode: workspaceNavigation.some(item => item.id === initialView.get("view")) ? initialView.get("view") : "dashboard",
-      strategySection: initialView.get("strategy") === "patterns" ? "patterns" : "backtests",
+      strategySection: ["patterns", "replay"].includes(initialView.get("strategy")) ? initialView.get("strategy") : "backtests",
+      frozenReplayActive: false,
       patternValidationSelection: null,
       patternValidationTarget: null,
       patternValidationReturn: false,

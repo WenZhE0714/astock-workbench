@@ -43,6 +43,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 	macNotifications := set.Bool("mac-notifications", false, "通过 macOS 通知中心提醒候选触发和模拟买卖")
 	testMacNotification := set.Bool("test-mac-notification", false, "发送一条 Mac 测试通知后退出")
 	volumeForwardDir := set.String("volume-forward-dir", os.Getenv("ASTOCK_VOLUME_FORWARD_DIR"), "只读展示已冻结量比前瞻实验的目录")
+	replayArchiveDir := set.String("replay-archive-dir", os.Getenv("ASTOCK_REPLAY_ARCHIVE_DIR"), "只读展示历史演练归档，不计入真实前瞻")
 	acceptanceDir := set.String("volume-forward-acceptance-dir", os.Getenv("ASTOCK_VOLUME_FORWARD_ACCEPTANCE_DIR"), "只读展示独立前瞻验收报告的目录")
 	if err := set.Parse(arguments); err != nil {
 		return err
@@ -170,6 +171,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 			return err
 		}
 		serverOptions = append(serverOptions, web.WithVolumeForwardStudy(storage.NewVolumeForwardStore(absolute)))
+		serverOptions = append(serverOptions, web.WithFrozenReplay("forward", "P008 前瞻", "forward", absolute))
 		if directory := strings.TrimSpace(*acceptanceDir); directory != "" {
 			absolute, err := filepath.Abs(directory)
 			if err != nil {
@@ -177,6 +179,13 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 			}
 			serverOptions = append(serverOptions, web.WithForwardAcceptance(storage.NewForwardAcceptanceStore(absolute)))
 		}
+	}
+	if directory := strings.TrimSpace(*replayArchiveDir); directory != "" {
+		absolute, err := filepath.Abs(directory)
+		if err != nil {
+			return err
+		}
+		serverOptions = append(serverOptions, web.WithFrozenReplay("historical", "P008 历史演练", "historical", absolute))
 	}
 	notificationRecords := storage.NewNativeNotificationStore(filepath.Join(app.paths.DataDir, "notifications", "mac.json"))
 	notificationReviews := storage.NewNotificationReviewStore(filepath.Join(app.paths.DataDir, "notifications", "reviews.json"))
