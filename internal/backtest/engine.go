@@ -494,7 +494,7 @@ func (engine *DailyEngine) loadStates(ctx context.Context, request Request) (map
 	for _, symbol := range request.Tickers {
 		bars, err := engine.provider.FetchDailyBarsRange(ctx, symbol, warmStart, request.End, request.Adjustment)
 		if err != nil {
-			return nil, nil, warnings, fmt.Errorf("%s: %w", symbol, err)
+			return nil, nil, warnings, &SymbolHistoryError{Symbol: symbol, Err: err}
 		}
 		sort.SliceStable(bars, func(left, right int) bool { return bars[left].Date < bars[right].Date })
 		byDate := make(map[string]int, len(bars))
@@ -502,7 +502,7 @@ func (engine *DailyEngine) loadStates(ctx context.Context, request Request) (map
 			byDate[bar.Date] = index
 		}
 		if len(bars) < request.Technical.SlowMA+2 {
-			return nil, nil, warnings, fmt.Errorf("%s 有效日K不足：%d", symbol, len(bars))
+			return nil, nil, warnings, &SymbolHistoryError{Symbol: symbol, Err: fmt.Errorf("有效日K不足：%d 根，当前策略至少需要 %d 根", len(bars), request.Technical.SlowMA+2)}
 		}
 		states[symbol] = &symbolState{bars: bars, byDate: byDate}
 		sources[symbol] = bars[len(bars)-1].Source

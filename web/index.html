@@ -787,10 +787,14 @@
                   <button type="button" :class="{active: strategyScope === 'current'}" :disabled="!currentStrategyAsset" @click="strategyScope = 'current'">当前个股</button>
                   <button type="button" :class="{active: strategyScope === 'group'}" @click="strategyScope = 'group'">当前自选组</button>
                 </div>
-                <div class="strategy-pool" v-if="strategyPool.length">
-                  <span v-for="item in strategyPool" :key="item.symbol"><b v-text="item.name || displayCode(item.symbol)"></b><small v-text="displayCode(item.symbol)"></small></span>
+                <label class="field strategy-group-field" v-if="strategyScope === 'group'"><span>回测自选分组</span><select v-model="selectedWatchlistGroup" aria-label="回测自选分组" :disabled="strategyLoading"><option v-for="name in watchlistGroupNames" :key="name" :value="name" v-text="name"></option></select></label>
+                <div class="strategy-pool" v-if="strategyAvailableStocks.length">
+                  <label v-for="item in strategyAvailableStocks" :key="item.symbol" :class="{omitted:strategyOmittedSymbols.includes(item.symbol)}"><input type="checkbox" :aria-label="'本次回测包含 ' + (item.name || displayCode(item.symbol)) + ' ' + displayCode(item.symbol)" :checked="!strategyOmittedSymbols.includes(item.symbol)" :disabled="strategyLoading" @change="setStrategyStockIncluded(item.symbol,$event.target.checked)"><b v-text="item.name || displayCode(item.symbol)"></b><small v-text="displayCode(item.symbol)"></small></label>
                 </div>
-                <div class="strategy-empty-inline" v-else>当前范围没有可回测的 A 股，板块、指数和转债不会进入股票池。</div>
+                <div class="strategy-empty-inline" v-else>当前范围没有可回测的 A 股</div>
+                <div class="strategy-empty-inline" v-if="strategyAvailableStocks.length && !strategyPool.length">尚未勾选本次回测股票</div>
+                <details class="strategy-excluded" v-if="strategyExcludedAssets.length"><summary v-text="'已排除 ' + strategyExcludedAssets.length + ' 个非 A 股标的'"></summary><p v-for="item in strategyExcludedAssets" :key="item.symbol" v-text="(item.name || displayCode(item.symbol)) + ' · ' + displayCode(item.symbol)"></p></details>
+                <div class="strategy-error" role="alert" v-if="strategyPool.length && strategyPoolError" v-text="strategyPoolError"></div>
 
                 <form class="strategy-form" @submit.prevent="runStrategyBacktest">
                   <label class="field wide"><span>入场模型</span><select v-model="strategyForm.entry_mode"><option v-for="mode in strategyEntryModes" :key="mode.id" :value="mode.id" v-text="mode.label"></option></select></label>
@@ -813,9 +817,9 @@
                     <label class="field"><span>滑点</span><div class="input-unit"><input type="number" min="0" max="200" step="0.5" v-model.number="strategyForm.slippage_bps"><i>bp</i></div></label>
                   </template>
                   <div class="execution-note wide"><strong>执行口径</strong><span>未复权日 K · 收盘信号 · 次日开盘成交 · T+1 · 100 股整手 · 一字板不可成交 · 沪深300基准</span></div>
-                  <button type="submit" class="strategy-run wide" :disabled="strategyLoading || !strategyPool.length"><span v-text="strategyLoading ? '正在获取历史数据并回测…' : '运行回测'"></span></button>
+                  <button type="submit" class="strategy-run wide" :disabled="strategyLoading || !!strategyPoolError"><span v-text="strategyLoading ? '正在获取历史数据并回测…' : '运行回测'"></span></button>
                 </form>
-                <div class="strategy-error" v-if="strategyError" v-text="strategyError"></div>
+                <div class="strategy-error" role="alert" v-if="strategyError"><span v-text="strategyError"></span><template v-if="strategyHistoryIssue"><button type="button" class="text-action" v-if="canExcludeStrategyHistoryIssue" @click="setStrategyStockIncluded(strategyHistoryIssue.symbol,false)" v-text="'本次回测排除 ' + strategyHistoryIssue.name"></button><details class="strategy-history-detail"><summary>数据源详情</summary><p v-text="strategyHistoryIssue.detail"></p></details></template></div>
 
                 <div class="strategy-history">
                   <div class="research-section-head"><div><span class="section-kicker">ARCHIVE</span><h2>最近运行</h2></div><button type="button" class="text-action" :disabled="strategyHistoryLoading" @click="loadStrategyHistory">刷新</button></div>

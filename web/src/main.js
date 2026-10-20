@@ -39,6 +39,7 @@ import "./trade-playbook.css"
 
 const defaultSymbol = new URLSearchParams(window.location.search).get('symbol') || document.querySelector('meta[name="astock-default-symbol"]')?.content || "600519"
 const initialView = new URLSearchParams(window.location.search)
+const maximumStrategySymbols = 20
 const morningStart = 9 * 60 + 30
 const morningEnd = 11 * 60 + 30
 const afternoonStart = 13 * 60
@@ -362,6 +363,8 @@ createApp({
       ],
       strategyLoading: false,
       strategyError: "",
+      strategyHistoryIssue: null,
+      strategyOmittedSymbols: [],
       strategyResult: null,
       strategyAssessment: null,
       strategyHistory: [],
@@ -379,6 +382,10 @@ createApp({
       strategyChartGeometry: null,
       strategyCrosshair: null,
     }
+  },
+  watch: {
+    selectedWatchlistGroup: "resetStrategySelection",
+    strategyScope: "resetStrategySelection",
   },
   computed: {
     quote() { return this.data.quote || {} },
@@ -512,12 +519,26 @@ createApp({
     },
     currentStrategyAsset() {
       const symbol = String(this.data.symbol || "")
-      if (!symbol || this.data.kind !== "stock" || this.isMarketIndex(symbol)) return null
+      if (!this.isStrategyStock(this.data)) return null
       return { symbol, name: this.quote.name || this.data.name || this.displayCode(symbol), kind: "stock" }
     },
-    strategyPool() {
+    strategyAvailableStocks() {
       if (this.strategyScope === "current") return this.currentStrategyAsset ? [this.currentStrategyAsset] : []
-      return this.watchlistItems.filter(item => item && item.kind === "stock" && !this.isMarketIndex(item.symbol))
+      return this.watchlistItems.filter(item => this.isStrategyStock(item))
+    },
+    strategyPool() {
+      return this.strategyAvailableStocks.filter(item => !this.strategyOmittedSymbols.includes(item.symbol))
+    },
+    canExcludeStrategyHistoryIssue() {
+      return this.strategyScope === "group" && this.strategyPool.length > 1 && this.strategyPool.some(item => item.symbol === this.strategyHistoryIssue?.symbol)
+    },
+    strategyExcludedAssets() {
+      return this.strategyScope === "group" ? this.watchlistItems.filter(item => item && !this.isStrategyStock(item)) : []
+    },
+    strategyPoolError() {
+      if (!this.strategyPool.length) return "当前范围没有可回测的 A 股"
+      if (this.strategyPool.length > maximumStrategySymbols) return `当前股票池有 ${this.strategyPool.length} 只 A 股，单次最多 ${maximumStrategySymbols} 只，请取消部分勾选或切换自选组`
+      return ""
     },
     strategyMetrics() { return (this.strategyResult && this.strategyResult.metrics) || {} },
     strategyRequest() { return (this.strategyResult && this.strategyResult.request) || {} },
@@ -2221,9 +2242,11 @@ createApp({
       }
     },
     async runStrategyBacktest() {
-      if (this.strategyLoading || !this.strategyPool.length) return
+      if (this.strategyLoading) return
+      if (this.strategyPoolError) { this.strategyError = this.strategyPoolError; return }
       this.strategyLoading = true
       this.strategyError = ""
+      this.strategyHistoryIssue = null
       this.strategyCrosshair = null
       const payload = { ...this.strategyForm, symbols: this.strategyPool.map(item => item.symbol), benchmark: "sh000300", liquidate_at_end: true }
       try {
@@ -2232,7 +2255,10 @@ createApp({
         })
         const body = await response.text()
         const result = body ? JSON.parse(body) : {}
-        if (!response.ok) throw new Error(result.error || "量化回测失败")
+        if (!response.ok) {
+          this.strategyHistoryIssue = result.history_issue || null
+          throw new Error(result.error || "量化回测失败")
+        }
         this.strategyResult = result.result || null
         this.strategyAssessment = result.assessment || null
         await this.loadStrategyHistory()
@@ -2243,6 +2269,21 @@ createApp({
         await this.$nextTick()
         this.drawStrategyChart()
       }
+    },
+    isStrategyStock(item) {
+      return item?.kind === "stock" && item.symbol !== "bj899050" && /^(sh6[0-9]{5}|sz(00|30)[0-9]{4}|bj([48][0-9]{5}|92[0-9]{4}))$/.test(item.symbol || "")
+    },
+    resetStrategySelection() {
+      this.strategyOmittedSymbols = []
+      this.strategyHistoryIssue = null
+      this.strategyError = ""
+    },
+    setStrategyStockIncluded(symbol, included) {
+      if (this.strategyLoading || !this.strategyAvailableStocks.some(item => item.symbol === symbol)) return
+      this.strategyOmittedSymbols = this.strategyOmittedSymbols.filter(item => item !== symbol)
+      if (!included) this.strategyOmittedSymbols.push(symbol)
+      this.strategyHistoryIssue = null
+      this.strategyError = ""
     },
     realtimeStateLabel(state) {
       if (state === "triggered") return "触发"

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -65,6 +66,17 @@ type strategyBacktestResponse struct {
 	Result     backtest.Result                `json:"result"`
 	Assessment strategyResearchAssessment     `json:"assessment"`
 	EntryModes []backtest.EntryModeDescriptor `json:"entry_modes,omitempty"`
+}
+
+type strategyHistoryIssue struct {
+	Symbol string `json:"symbol"`
+	Name   string `json:"name"`
+	Detail string `json:"detail"`
+}
+
+type strategyBacktestFailure struct {
+	Error        string                `json:"error"`
+	HistoryIssue *strategyHistoryIssue `json:"history_issue,omitempty"`
 }
 
 type strategyRunSummary struct {
@@ -174,7 +186,17 @@ func (s *Server) runStrategyBacktest(writer http.ResponseWriter, request *http.R
 	}
 	result, err := s.strategyEngine.Run(ctx, backtestRequest)
 	if err != nil {
-		writeJSON(writer, http.StatusBadGateway, errorResponse{Error: "回测执行失败: " + err.Error()})
+		failure := strategyBacktestFailure{Error: "回测执行失败: " + err.Error()}
+		var historyError *backtest.SymbolHistoryError
+		if errors.As(err, &historyError) {
+			name := backtestRequest.Names[historyError.Symbol]
+			if name == "" {
+				name = historyError.Symbol
+			}
+			failure.Error = fmt.Sprintf("%s (%s) 的历史日K不足或暂不可用，当前回测未完成", name, historyError.Symbol)
+			failure.HistoryIssue = &strategyHistoryIssue{Symbol: historyError.Symbol, Name: name, Detail: historyError.Err.Error()}
+		}
+		writeJSON(writer, http.StatusBadGateway, failure)
 		return
 	}
 	backtest.EnrichRiskMetrics(&result)
@@ -191,8 +213,11 @@ func (s *Server) strategyRequest(ctx context.Context, input strategyBacktestInpu
 	if s.resolver == nil {
 		return backtest.Request{}, fmt.Errorf("证券解析服务未初始化")
 	}
-	if len(input.Symbols) < 1 || len(input.Symbols) > maximumStrategySymbols {
-		return backtest.Request{}, fmt.Errorf("股票池必须包含 1 到 %d 只 A 股", maximumStrategySymbols)
+	if len(input.Symbols) == 0 {
+		return backtest.Request{}, fmt.Errorf("股票池为空，请选择包含 A 股的自选组或当前个股")
+	}
+	if len(input.Symbols) > maximumStrategySymbols {
+		return backtest.Request{}, fmt.Errorf("当前提交了 %d 个标的，单次回测最多支持 %d 只 A 股，请缩小股票池", len(input.Symbols), maximumStrategySymbols)
 	}
 	start, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(input.Start), strategyLocation)
 	if err != nil {
@@ -278,7 +303,7 @@ func (s *Server) strategyRequest(ctx context.Context, input strategyBacktestInpu
 		if resolveError != nil {
 			return backtest.Request{}, resolveError
 		}
-		if market.AssetKindOf(symbol) != domain.AssetKindStock || strategyIndexSymbol(symbol) {
+		if market.AssetKindOf(symbol) != domain.AssetKindStock || !supportsStockPlan(symbol) {
 			return backtest.Request{}, fmt.Errorf("%s 不是可用于 A 股交易回测的股票", raw)
 		}
 		if seen[symbol] {

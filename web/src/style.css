@@ -937,9 +937,13 @@ button.boards-row:hover,button.boards-row.selected { background:#1d2d32; filter:
 .scope-control button:hover { color:var(--text); filter:none; }
 .scope-control button.active { background:#29434e; color:#d9f2fa; }
 .strategy-pool { display:flex; max-height:92px; flex-wrap:wrap; gap:5px; margin:0 12px 12px; overflow-y:auto; }
-.strategy-pool span { display:flex; align-items:center; gap:5px; max-width:100%; padding:4px 6px; border:1px solid #34434a; border-radius:3px; background:#141a1e; }
+.strategy-pool label { display:flex; align-items:center; gap:5px; max-width:100%; padding:4px 6px; border:1px solid #34434a; border-radius:3px; background:#141a1e; cursor:pointer; }
+.strategy-pool label.omitted { opacity:.6; }.strategy-pool input[type=checkbox] { width:13px; height:13px; flex:0 0 13px; margin:0; accent-color:var(--accent); }
 .strategy-pool b { overflow:hidden; font-size:11px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
 .strategy-pool small { color:var(--muted); font-size:9px; font-variant-numeric:tabular-nums; }
+.strategy-group-field { margin:10px 12px; }
+.strategy-excluded { margin:0 12px 12px; color:var(--muted); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.strategy-excluded summary { cursor:pointer; }.strategy-excluded p { margin:6px 0 0; }
 .strategy-empty-inline { padding:12px 14px; color:var(--muted); font-size:12px; }
 .strategy-form { display:grid; grid-template-columns:1fr 1fr; gap:9px 10px; padding:13px 12px 14px; border-top:1px solid var(--line); }
 .field { display:grid; min-width:0; gap:4px; }
@@ -957,6 +961,7 @@ button.boards-row:hover,button.boards-row.selected { background:#1d2d32; filter:
 .execution-note span { color:#b7afa1; font-size:10px; line-height:1.5; }
 .strategy-run { height:38px; }
 .strategy-error { margin:0 12px 12px; padding:9px 10px; border-left:2px solid var(--up); background:#2a1b1e; color:#efb1b1; font-size:11px; }
+.strategy-error { overflow-wrap:anywhere; }.strategy-error>.text-action { margin-top:8px; height:auto; min-height:30px; max-width:100%; white-space:normal; }.strategy-history-detail { margin-top:8px; }.strategy-history-detail summary { cursor:pointer; }.strategy-history-detail p { margin:6px 0 0; line-height:1.6; }
 .strategy-history { border-top:1px solid var(--line); }
 .text-action { height:26px; padding:0 7px; border-color:var(--line); background:transparent; color:var(--muted); font-size:10px; }
 .text-action:hover { color:var(--text); filter:none; }
