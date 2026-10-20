@@ -15,4 +15,12 @@
 .cd-reasons { padding-left:18px; color:var(--warn); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
 .cd-pending { color:var(--muted); font-size:11px; }
 .candidate-lifecycle .candidate-command-strip small { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; }
+.candidate-archive .candidate-lifecycle-head { align-items:center; gap:12px; }
+.candidate-archive .candidate-lifecycle-head>div:first-child { min-width:0; }
+.candidate-archive-summary { display:block; margin-top:6px; color:var(--muted); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.candidate-archive-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.candidate-archive-actions .expanded { transform:rotate(90deg); }
+.candidate-lifecycle.candidate-archive .candidate-command-strip { background:transparent; border-left-color:var(--muted); }
+.candidate-lifecycle .candidate-metrics { grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
+@media(max-width:400px) { .candidate-archive .candidate-lifecycle-head { flex-wrap:wrap; }.candidate-archive-actions { margin-left:auto; } }
 @media(max-width:600px) { .candidate-diagnostics { padding:10px; }.cd-table th,.cd-table td { padding:7px; }.cd-parameters { font-size:11px; } }

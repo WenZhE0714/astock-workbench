@@ -28,6 +28,9 @@ func NotificationURL(base string, message Message) string {
 	}
 	address.Path = "/"
 	address.RawQuery = url.Values{"view": {"monitor"}, "monitor": {"native"}, "event": {message.ID}}.Encode()
+	if strings.HasPrefix(message.Kind, "forward-") {
+		address.RawQuery = url.Values{"view": {"strategy"}, "forward": {"acceptance"}}.Encode()
+	}
 	address.Fragment = ""
 	return address.String()
 }

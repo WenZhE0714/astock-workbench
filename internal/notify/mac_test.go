@@ -29,3 +29,11 @@ func TestMacSenderMuteSkipsSystemDelivery(t *testing.T) {
 		t.Fatalf("muted notification not suppressed: %v", err)
 	}
 }
+
+func TestForwardNotificationOpensAcceptanceResearch(t *testing.T) {
+	link := NotificationURL("http://127.0.0.1:8788/old?view=monitor#old", Message{ID: "failure", Kind: "forward-collection"})
+	parsed, err := url.Parse(link)
+	if err != nil || parsed.Path != "/" || parsed.Query().Get("view") != "strategy" || parsed.Query().Get("forward") != "acceptance" || parsed.Fragment != "" {
+		t.Fatalf("wrong research link: %s", link)
+	}
+}

@@ -20,6 +20,20 @@ type VolumeForwardStatus struct {
 	SealedDays int       `json:"sealed_days"`
 }
 
+func (s *VolumeForwardStore) Path() string { return s.root }
+
+func (s *VolumeForwardStore) ReadPlan() (backtest.VolumeForwardPlan, error) {
+	var plan backtest.VolumeForwardPlan
+	data, err := os.ReadFile(filepath.Join(s.root, "config.json"))
+	if err != nil {
+		return plan, err
+	}
+	if err = json.Unmarshal(data, &plan); err != nil {
+		return plan, err
+	}
+	return plan, backtest.ValidateVolumeForwardPlan(plan)
+}
+
 // ReadStudy verifies that the displayed evidence actually produced the frozen
 // plan. It does not run the engine or update the forward experiment.
 func (s *VolumeForwardStore) ReadStudy(plan backtest.VolumeForwardPlan) (backtest.VolumeStudyResult, error) {

@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.466bcdca.js"></script>
-  <link rel="stylesheet" href="/assets/index.733b449f.css">
+  <script type="module" crossorigin src="/assets/index.057d4056.js"></script>
+  <link rel="stylesheet" href="/assets/index.808602d5.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -722,12 +722,13 @@
             <pattern-validation-view v-if="strategySection === 'patterns'" :selection="patternValidationSelection" :default-symbol="requestedSymbol" @selection="patternValidationSelection = $event" @open-sample="openPatternValidationSample"></pattern-validation-view>
             <template v-else>
             <volume-forward-study-view @status="volumeForwardHeadline=$event"></volume-forward-study-view>
-            <section class="candidate-lifecycle">
+            <section class="candidate-lifecycle" :class="{'candidate-archive': !!volumeForwardHeadline}">
               <div class="research-section-head candidate-lifecycle-head">
-                <div><span class="section-kicker">CHAMPION / CHALLENGER CONTROL</span><h2 v-text="volumeForwardHeadline ? '历史自动研究候选与审批' : '候选生命周期与人工批准'"></h2></div>
-                <button type="button" class="text-action" :disabled="strategyCandidatesLoading || !!strategyCandidateActionLoading" @click="loadStrategyCandidates(true)" v-text="strategyCandidatesLoading ? '读取中…' : '刷新候选'"></button>
+                <div><span class="section-kicker" v-text="volumeForwardHeadline ? 'RESEARCH ARCHIVE' : 'CHAMPION / CHALLENGER CONTROL'"></span><h2 v-text="volumeForwardHeadline ? '历史自动研究批次' : '候选生命周期与人工批准'"></h2><small v-if="volumeForwardHeadline" class="candidate-archive-summary" v-text="strategyCandidateArchiveSummary"></small></div>
+                <div class="candidate-archive-actions"><button type="button" class="text-action" :disabled="strategyCandidatesLoading || !!strategyCandidateActionLoading" @click="loadStrategyCandidates(true)" v-text="strategyCandidatesLoading ? '读取中…' : '刷新候选'"></button><button v-if="volumeForwardHeadline" type="button" class="icon-button" :title="strategyCandidateArchiveOpen ? '收起历史批次' : '展开历史批次'" :aria-label="strategyCandidateArchiveOpen ? '收起历史批次' : '展开历史批次'" :aria-expanded="strategyCandidateArchiveOpen" aria-controls="historical-candidate-content" @click="strategyCandidateArchiveOpen=!strategyCandidateArchiveOpen"><chevron-right :size="16" :class="{expanded:strategyCandidateArchiveOpen}"/></button></div>
               </div>
               <div class="strategy-error" v-if="strategyCandidateError" v-text="strategyCandidateError"></div>
+              <div id="historical-candidate-content" v-show="!volumeForwardHeadline || strategyCandidateArchiveOpen">
               <div class="candidate-loading" v-if="strategyCandidatesLoading && !strategyCandidatesLoaded"><span></span><strong>正在读取持续优化归档</strong></div>
               <div class="strategy-empty-inline candidate-empty" v-else-if="strategyCandidatesLoaded && !strategyCandidates.length">暂无持续优化实验。先从 CLI 或策略研究中心运行多 Agent 持续优化。</div>
               <template v-if="strategyActiveCandidate">
@@ -738,7 +739,7 @@
                 </div>
 
                 <div class="candidate-command-strip" :class="candidateStatusClass(strategyCandidateLifecycle.status, strategyActiveCandidate.research_stage)">
-                  <div><span v-text="candidateStatusLabel(strategyCandidateLifecycle.status, strategyActiveCandidate.research_stage)"></span><strong v-text="strategyActiveCandidate.next_action"></strong><small v-text="candidateParameterText(strategyActiveCandidate)"></small></div>
+                  <div><span v-text="(volumeForwardHeadline ? '历史批次 · ' : '') + strategyActiveCandidate.experiment_id"></span><strong v-text="volumeForwardHeadline ? (strategyActiveCandidate.parameters ? '本批次入选参数 ' + strategyActiveCandidate.selected_id : '本批次未产生入选参数') : strategyActiveCandidate.next_action"></strong><small v-text="candidateParameterText(strategyActiveCandidate)"></small><small v-if="volumeForwardHeadline" v-text="'本批次后续：' + strategyActiveCandidate.next_action"></small></div>
                   <div class="candidate-actions">
                     <button type="button" v-if="strategyActiveCandidate.research_stage === 'shadow-ready' && strategyCandidateLifecycle.status === 'awaiting-observation'" :disabled="candidateActionBusy(strategyActiveCandidate)" @click="runStrategyCandidateAction('start-observation')">批准进入观察</button>
                     <button type="button" v-if="strategyCandidateLifecycle.status === 'observing' || strategyCandidateLifecycle.status === 'approval-ready'" :disabled="candidateActionBusy(strategyActiveCandidate)" @click="runStrategyCandidateAction('refresh-observation')" v-text="candidateActionBusy(strategyActiveCandidate) ? '更新中…' : '更新观察'"></button>
@@ -749,7 +750,7 @@
                 </div>
 
                 <candidate-diagnostics :candidate="strategyActiveCandidate" :format-parameters="candidateParameterText"></candidate-diagnostics>
-                <div class="candidate-stage-lane" aria-label="候选晋级阶段">
+                <div class="candidate-stage-lane" aria-label="候选晋级阶段" v-if="strategyActiveCandidate.research_stage === 'shadow-ready' || strategyCandidateLifecycle.experiment_id">
                   <div :class="candidateStepClass(0)"><i>1</i><span><strong>历史门禁</strong><small>滚动、留出、压力测试</small></span></div>
                   <div :class="candidateStepClass(1)"><i>2</i><span><strong>真实时间观察</strong><small v-text="strategyCandidateLifecycle.observation_start_date ? strategyCandidateLifecycle.observation_start_date + ' 起' : '需人工批准后开始'"></small></span></div>
                   <div :class="candidateStepClass(2)"><i>3</i><span><strong>人工批准</strong><small>检查前向收益、超额与回撤</small></span></div>
@@ -759,14 +760,14 @@
                 <div class="candidate-metrics">
                   <div><span>滚动正收益窗口</span><strong v-text="strategyActiveCandidate.parameters ? percentText(Number(strategyActiveCandidate.positive_fold_ratio || 0) * 100) : '--'"></strong><small v-text="strategyActiveCandidate.parameters ? (strategyActiveCandidate.validation_trades || 0) + ' 笔验证交易' : '无入选候选'"></small></div>
                   <div><span>最终留出收益</span><strong :class="metricClass(strategyActiveCandidate.holdout_metrics && strategyActiveCandidate.holdout_metrics.total_return_percent)" v-text="strategyActiveCandidate.holdout_metrics ? percentText(strategyActiveCandidate.holdout_metrics.total_return_percent) : '--'"></strong><small v-text="strategyActiveCandidate.holdout_metrics ? '回撤 ' + percentText(strategyActiveCandidate.holdout_metrics.max_drawdown_percent) : '未执行'"></small></div>
-                  <div><span>前向观察</span><strong v-text="(strategyCandidateLifecycle.trading_days || 0) + ' / ' + (strategyCandidateLifecycle.policy && strategyCandidateLifecycle.policy.minimum_trading_days || 60) + '日'"></strong><small v-text="(strategyCandidateObservationMetrics.trades || 0) + ' / ' + (strategyCandidateLifecycle.policy && strategyCandidateLifecycle.policy.minimum_trades || 10) + ' 笔完成交易'"></small></div>
-                  <div><span>观察收益 / 超额</span><strong :class="metricClass(strategyCandidateObservationMetrics.total_return_percent)" v-text="strategyCandidateLifecycle.observation_start_date && strategyCandidateObservationMetrics.final_equity ? percentText(strategyCandidateObservationMetrics.total_return_percent) : '--'"></strong><small v-text="strategyCandidateObservationMetrics.benchmark_available ? '超额 ' + percentText(strategyCandidateObservationMetrics.excess_return_percent) : '等待沪深300同期样本'"></small></div>
-                  <div><span>观察最大回撤</span><strong class="down" v-text="strategyCandidateLifecycle.observation_start_date && strategyCandidateObservationMetrics.final_equity ? percentText(strategyCandidateObservationMetrics.max_drawdown_percent) : '--'"></strong><small v-text="'上限 ' + number(strategyCandidateLifecycle.policy && strategyCandidateLifecycle.policy.maximum_drawdown_percent || 10, 0) + '%'"></small></div>
+                  <div v-if="strategyCandidateLifecycle.experiment_id"><span>本批次前向观察</span><strong v-text="(strategyCandidateLifecycle.trading_days || 0) + ' / ' + (strategyCandidateLifecycle.policy && strategyCandidateLifecycle.policy.minimum_trading_days || 60) + '日'"></strong><small v-text="(strategyCandidateObservationMetrics.trades || 0) + ' / ' + (strategyCandidateLifecycle.policy && strategyCandidateLifecycle.policy.minimum_trades || 10) + ' 笔完成交易'"></small></div>
+                  <div v-if="strategyCandidateLifecycle.experiment_id"><span>观察收益 / 超额</span><strong :class="metricClass(strategyCandidateObservationMetrics.total_return_percent)" v-text="strategyCandidateLifecycle.observation_start_date && strategyCandidateObservationMetrics.final_equity ? percentText(strategyCandidateObservationMetrics.total_return_percent) : '--'"></strong><small v-text="strategyCandidateObservationMetrics.benchmark_available ? '超额 ' + percentText(strategyCandidateObservationMetrics.excess_return_percent) : '等待沪深300同期样本'"></small></div>
+                  <div v-if="strategyCandidateLifecycle.experiment_id"><span>观察最大回撤</span><strong class="down" v-text="strategyCandidateLifecycle.observation_start_date && strategyCandidateObservationMetrics.final_equity ? percentText(strategyCandidateObservationMetrics.max_drawdown_percent) : '--'"></strong><small v-text="'上限 ' + number(strategyCandidateLifecycle.policy && strategyCandidateLifecycle.policy.maximum_drawdown_percent || 10, 0) + '%'"></small></div>
                 </div>
 
                 <div class="candidate-evidence-grid">
                   <div class="candidate-checks">
-                    <div class="candidate-subhead"><strong>前向观察门禁</strong><small v-text="strategyCandidateAssessment.verdict || '尚未进入观察'"></small></div>
+                    <div class="candidate-subhead"><strong v-text="strategyCandidateLifecycle.experiment_id ? '本批次前向观察门禁' : '本批次历史研究门禁'"></strong><small v-text="strategyCandidateAssessment.verdict || '本批次尚未进入观察'"></small></div>
                     <div class="candidate-check-row" v-for="check in (strategyCandidateAssessment.checks || [])" :key="check.key" :class="candidateCheckClass(check)"><span v-text="check.passed ? '通过' : '待满足'"></span><strong v-text="check.name"></strong><small v-text="check.detail"></small></div>
                     <div class="candidate-check-row blocked" v-if="strategyActiveCandidate.gate_reasons && strategyActiveCandidate.gate_reasons.length" v-for="reason in strategyActiveCandidate.gate_reasons" :key="reason"><span>未晋级</span><strong>历史研究门禁</strong><small v-text="reason"></small></div>
                   </div>
@@ -777,6 +778,7 @@
                   </div>
                 </div>
               </template>
+              </div>
             </section>
 
             <div class="strategy-layout">

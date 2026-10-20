@@ -245,6 +245,7 @@ type Server struct {
 	candidateEngine              backtest.Engine
 	candidateArchive             continuousOptimizationArchive
 	volumeForwardStudy           *storage.VolumeForwardStore
+	forwardAcceptance            *storage.ForwardAcceptanceStore
 	realtimeScanner              realtimeScanner
 	realtimeArchive              realtimeSignalArchive
 	realtimeOutcomes             realtimeOutcomeAnalyzer
@@ -1160,6 +1161,9 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	}()
 	go s.runAutomationLoop(automationCtx)
 	go s.runPlanMonitorLoop(automationCtx)
+	healthDone := make(chan struct{})
+	go func() { defer close(healthDone); s.runForwardHealthLoop(automationCtx) }()
+	defer func() { cancelAutomation(); <-healthDone }()
 	boardDone := make(chan struct{})
 	go func() { defer close(boardDone); s.runBoardSnapshotLoop(automationCtx) }()
 	defer func() { cancelAutomation(); <-boardDone }()

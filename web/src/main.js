@@ -367,6 +367,7 @@ createApp({
 	  strategyCandidates: [],
 	  strategyCandidatesLoading: false,
 	  volumeForwardHeadline: "",
+	  strategyCandidateArchiveOpen: false,
 	  strategyCandidatesLoaded: false,
 	  strategyCandidateError: "",
 	  strategyCandidateID: "",
@@ -528,6 +529,12 @@ createApp({
 	  return this.strategyCandidates.find(item => item && item.experiment_id === this.strategyCandidateID) || this.strategyCandidates[0] || null
 	},
 	strategyCandidateLifecycle() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.lifecycle) || {} },
+	strategyCandidateArchiveSummary() {
+	  const item = this.strategyActiveCandidate
+	  if (!item) return this.strategyCandidatesLoaded ? "暂无历史批次" : "正在读取历史批次"
+	  const conclusion = item.parameters ? "本批次已入选 " + item.selected_id : "本批次未产生入选参数"
+	  return `${item.data_cutoff} · ${conclusion} · 滚动验证通过 ${item.passed_count} / ${item.candidate_count} 组`
+	},
     strategyCandidateAssessment() { return this.strategyCandidateLifecycle.assessment || { checks: [] } },
     strategyCandidateObservationMetrics() { return (this.strategyActiveCandidate && this.strategyActiveCandidate.observation_metrics) || {} },
 	strategyLifecycleHeadline() {

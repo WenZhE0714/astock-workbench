@@ -98,6 +98,28 @@ func TestDispatcherRejectsStaleAndFutureAndLimitsFailures(t *testing.T) {
 	}
 }
 
+func TestForwardFailureStaysDeduplicatedAfterRestart(t *testing.T) {
+	now := time.Now()
+	store, sender := &memoryStore{}, &recordingSender{}
+	message := Message{ID: "forward-health:plan:2026-10-20:collection", Kind: "forward-collection", At: now}
+	d := testDispatcher(t, sender, store, now)
+	d.deliver(context.Background(), message)
+	message.At = now.Add(time.Minute)
+	message.Body = "changed diagnostic"
+	d = testDispatcher(t, sender, store, message.At)
+	d.deliver(context.Background(), message)
+	if len(sender.items) != 1 {
+		t.Fatal("forward failure repeated after restart")
+	}
+	message.ID = "forward-health:plan:2026-10-21:collection"
+	message.At = now.AddDate(0, 0, 1)
+	d = testDispatcher(t, sender, store, message.At)
+	d.deliver(context.Background(), message)
+	if len(sender.items) != 2 {
+		t.Fatal("persistent failure not reported the next day")
+	}
+}
+
 func TestDispatcherDoesNotSendUntilRecordIsDurable(t *testing.T) {
 	now := time.Now()
 	store, sender := &memoryStore{fail: true}, &recordingSender{}

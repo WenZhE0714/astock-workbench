@@ -42,6 +42,7 @@ type volumeForwardStudyResponse struct {
 	Evidence    []volumeForwardEvidence                  `json:"evidence"`
 	Status      storage.VolumeForwardStatus              `json:"status"`
 	StatusStale bool                                     `json:"status_stale"`
+	Acceptance  forwardAcceptanceView                    `json:"acceptance"`
 	Warnings    []string                                 `json:"warnings"`
 }
 
@@ -85,6 +86,7 @@ func (s *Server) handleVolumeForwardStudy(w http.ResponseWriter, r *http.Request
 	}
 	age := s.currentTime().Sub(result.Status.CheckedAt)
 	result.StatusStale = result.Status.CheckedAt.IsZero() || age > 15*time.Minute || age < -time.Minute || result.Status.SealedDays != count
+	result.Acceptance = s.readForwardAcceptance(plan, count, result.LastDate, s.currentTime())
 	if strings.EqualFold(r.URL.Query().Get("download"), "1") {
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="volume-forward-%s.json"`, plan.CreatedAt.Format("20060102")))
 	}

@@ -20,20 +20,21 @@ import (
 const launchdLabel = "com.github.wenzhe.astock-workbench.web"
 
 type launchdServiceConfig struct {
-	Name             string
-	HTTPProxy        string
-	HTTPSProxy       string
-	NoProxy          string
-	Listen           string
-	Source           string
-	Symbol           string
-	DataHome         string
-	ConfigHome       string
-	CacheHome        string
-	CalendarFile     string
-	VolumeForwardDir string
-	MacNotifications bool
-	DryRun           bool
+	Name                 string
+	HTTPProxy            string
+	HTTPSProxy           string
+	NoProxy              string
+	Listen               string
+	Source               string
+	Symbol               string
+	DataHome             string
+	ConfigHome           string
+	CacheHome            string
+	CalendarFile         string
+	VolumeForwardDir     string
+	ForwardAcceptanceDir string
+	MacNotifications     bool
+	DryRun               bool
 }
 
 // runService manages an optional macOS launchd wrapper for the read-only Web
@@ -54,6 +55,7 @@ func (app *App) runService(arguments []string) error {
 	cacheHome := set.String("cache-home", filepath.Dir(app.paths.CacheDir), "固定 XDG_CACHE_HOME")
 	calendarFile := set.String("calendar", os.Getenv("ASTOCK_TRADING_CALENDAR_FILE"), "固定交易日历文件")
 	volumeForwardDir := set.String("volume-forward-dir", os.Getenv("ASTOCK_VOLUME_FORWARD_DIR"), "只读展示已冻结量比前瞻实验的目录")
+	forwardAcceptanceDir := set.String("volume-forward-acceptance-dir", os.Getenv("ASTOCK_VOLUME_FORWARD_ACCEPTANCE_DIR"), "只读展示独立前瞻验收报告的目录")
 	dryRun := set.Bool("dry-run", false, "仅输出 launchd 配置，不安装服务")
 	macNotifications := set.Bool("mac-notifications", false, "开启 macOS 候选触发和模拟买卖通知")
 	if len(arguments) == 0 {
@@ -73,6 +75,7 @@ func (app *App) runService(arguments []string) error {
 	config.DataHome, config.ConfigHome, config.CacheHome = *dataHome, *configHome, *cacheHome
 	config.CalendarFile, config.DryRun = *calendarFile, *dryRun
 	config.VolumeForwardDir = *volumeForwardDir
+	config.ForwardAcceptanceDir = *forwardAcceptanceDir
 	config.MacNotifications = *macNotifications
 	config.Name, config.HTTPProxy, config.HTTPSProxy, config.NoProxy = *name, *httpProxy, *httpsProxy, *noProxy
 	label, err := launchdServiceLabel(config.Name)
@@ -142,7 +145,7 @@ func (app *App) installLaunchdService(config launchdServiceConfig) error {
 	if config.NoProxy != "" {
 		environment["NO_PROXY"] = config.NoProxy
 	}
-	for key, value := range map[string]string{"XDG_DATA_HOME": config.DataHome, "XDG_CONFIG_HOME": config.ConfigHome, "XDG_CACHE_HOME": config.CacheHome, "ASTOCK_TRADING_CALENDAR_FILE": config.CalendarFile, "ASTOCK_VOLUME_FORWARD_DIR": config.VolumeForwardDir} {
+	for key, value := range map[string]string{"XDG_DATA_HOME": config.DataHome, "XDG_CONFIG_HOME": config.ConfigHome, "XDG_CACHE_HOME": config.CacheHome, "ASTOCK_TRADING_CALENDAR_FILE": config.CalendarFile, "ASTOCK_VOLUME_FORWARD_DIR": config.VolumeForwardDir, "ASTOCK_VOLUME_FORWARD_ACCEPTANCE_DIR": config.ForwardAcceptanceDir} {
 		if value == "" {
 			continue
 		}

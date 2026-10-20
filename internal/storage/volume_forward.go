@@ -48,15 +48,8 @@ func (s *VolumeForwardStore) write(name string, value any) error {
 }
 
 func (s *VolumeForwardStore) Load() (backtest.VolumeForwardPlan, *backtest.VolumeForwardDay, int, error) {
-	var plan backtest.VolumeForwardPlan
-	data, err := os.ReadFile(filepath.Join(s.root, "config.json"))
+	plan, err := s.ReadPlan()
 	if err != nil {
-		return plan, nil, 0, err
-	}
-	if err = json.Unmarshal(data, &plan); err != nil {
-		return plan, nil, 0, err
-	}
-	if err = backtest.ValidateVolumeForwardPlan(plan); err != nil {
 		return plan, nil, 0, err
 	}
 	source, err := os.ReadFile(filepath.Join(s.root, "source-result.json"))
@@ -99,7 +92,7 @@ func (s *VolumeForwardStore) Load() (backtest.VolumeForwardPlan, *backtest.Volum
 	var head struct {
 		Fingerprint string `json:"fingerprint"`
 	}
-	data, err = os.ReadFile(filepath.Join(s.root, "head.json"))
+	data, err := os.ReadFile(filepath.Join(s.root, "head.json"))
 	if err == nil {
 		if err = json.Unmarshal(data, &head); err != nil || !seenHashes[head.Fingerprint] {
 			return plan, nil, count, fmt.Errorf("前瞻封存末端缺失或head损坏")
