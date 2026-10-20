@@ -1,0 +1,5 @@
+.strategy-preflight { min-width:0; padding:10px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); font-size:11px; line-height:1.6; letter-spacing:0; }
+.sp-head,.sp-head>div,.sp-item>div { display:flex; align-items:center; justify-content:space-between; gap:8px; }.sp-head strong { font-size:12px; }.sp-head>div { flex-shrink:0; }
+.strategy-preflight p { margin:7px 0; overflow-wrap:anywhere; }.strategy-preflight small { display:block; font-size:10px; color:var(--muted); overflow-wrap:anywhere; }
+.strategy-preflight .sp-error { color:var(--up); }.strategy-preflight .sp-ready { color:var(--down); }.strategy-preflight .sp-warning { color:var(--warn); }
+.sp-details,.sp-exclude { margin-top:8px; }.sp-details summary,.sp-item summary { cursor:pointer; }.sp-items { max-height:310px; overflow-y:auto; }.sp-item { padding:9px 0; border-top:1px solid var(--line); }.sp-item b { min-width:0; overflow-wrap:anywhere; }.sp-item>div>span { flex-shrink:0; }.sp-item p { font-size:10px; }

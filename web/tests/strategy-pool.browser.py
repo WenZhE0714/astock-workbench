@@ -38,6 +38,11 @@ with sync_playwright() as p:
                 route.continue_()
         page.route('**/api/watchlist*', watchlist_route)
         page.route('**/api/strategy/backtests*', backtest_route)
+        page.route('**/api/strategy/preflight', lambda route: route.fulfill(json={
+            'ready': True, 'available': len(route.request.post_data_json['symbols']), 'unavailable': 0,
+            'checked_at': '2026-10-20T16:00:00+08:00', 'end': '2026-10-19',
+            'items': [{'symbol': symbol, 'name': symbol, 'ready': True, 'bars': 700, 'minimum_bars': 62}
+                      for symbol in route.request.post_data_json['symbols']]}))
         page.goto(args.url + '/?view=strategy', wait_until='networkidle')
         config = page.locator('.strategy-config')
         config.get_by_role('button', name='当前自选组', exact=True).click()

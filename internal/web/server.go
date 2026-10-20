@@ -1107,6 +1107,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/plan-experiment", s.handlePlanExperiment)
 	mux.HandleFunc("/api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("/api/strategy/backtests", s.handleStrategyBacktests)
+	mux.HandleFunc("/api/strategy/preflight", s.handleStrategyPreflight)
 	mux.HandleFunc("/api/strategy/candidates", s.handleStrategyCandidates)
 	mux.HandleFunc("/api/strategy/volume-forward", s.handleVolumeForwardStudy)
 	mux.HandleFunc("/api/replay/catalog", s.handleReplayCatalog)

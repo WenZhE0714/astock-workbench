@@ -17,6 +17,8 @@ import { BoardWorkbench } from "./board-workbench-view.js"
 import { NativeNotificationView } from "./native-notification-view.js"
 import { CandidateDiagnostics } from "./candidate-diagnostics-view.js"
 import { VolumeForwardStudyView } from "./volume-forward-study-view.js"
+import { StrategyPreflightView } from "./strategy-preflight-view.js"
+import "./strategy-preflight.css"
 const FrozenReplayView = defineAsyncComponent(() => import("./frozen-replay-view.js").then(module => module.FrozenReplayView))
 import "./frozen-replay.css"
 import "./volume-forward-study.css"
@@ -116,7 +118,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView, StrategyPreflightView },
   data() {
     return {
       query: defaultSymbol,
@@ -362,6 +364,7 @@ createApp({
         { id: "adaptive-ensemble", label: "自适应多形态" },
       ],
       strategyLoading: false,
+      strategyPreflightBusy: false,
       strategyError: "",
       strategyHistoryIssue: null,
       strategyOmittedSymbols: [],
@@ -539,6 +542,9 @@ createApp({
       if (!this.strategyPool.length) return "当前范围没有可回测的 A 股"
       if (this.strategyPool.length > maximumStrategySymbols) return `当前股票池有 ${this.strategyPool.length} 只 A 股，单次最多 ${maximumStrategySymbols} 只，请取消部分勾选或切换自选组`
       return ""
+    },
+    strategyBacktestPayload() {
+      return { ...this.strategyForm, symbols: this.strategyPool.map(item => item.symbol), benchmark: "sh000300", liquidate_at_end: true }
     },
     strategyMetrics() { return (this.strategyResult && this.strategyResult.metrics) || {} },
     strategyRequest() { return (this.strategyResult && this.strategyResult.request) || {} },
@@ -2242,14 +2248,16 @@ createApp({
       }
     },
     async runStrategyBacktest() {
-      if (this.strategyLoading) return
+      if (this.strategyLoading || this.strategyPreflightBusy) return
       if (this.strategyPoolError) { this.strategyError = this.strategyPoolError; return }
       this.strategyLoading = true
       this.strategyError = ""
       this.strategyHistoryIssue = null
       this.strategyCrosshair = null
-      const payload = { ...this.strategyForm, symbols: this.strategyPool.map(item => item.symbol), benchmark: "sh000300", liquidate_at_end: true }
+      const payload = JSON.parse(JSON.stringify(this.strategyBacktestPayload))
       try {
+        if (!await this.$refs.strategyPreflight?.inspect()) return
+        if (JSON.stringify(payload) !== JSON.stringify(this.strategyBacktestPayload)) return
         const response = await fetch("/api/strategy/backtests", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
         })
@@ -2284,6 +2292,9 @@ createApp({
       if (!included) this.strategyOmittedSymbols.push(symbol)
       this.strategyHistoryIssue = null
       this.strategyError = ""
+    },
+    excludeStrategyPreflightStocks(symbols) {
+      for (const symbol of symbols) this.setStrategyStockIncluded(symbol, false)
     },
     realtimeStateLabel(state) {
       if (state === "triggered") return "触发"

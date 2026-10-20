@@ -487,22 +487,14 @@ func (engine *DailyEngine) loadStates(ctx context.Context, request Request) (map
 	if !request.PointInTimePool {
 		warnings = append(warnings, "股票池由本次输入的静态代码组成，不是历史点时成份股池；多股横截面结果可能存在幸存者偏差")
 	}
-	warmupBars := max(request.Technical.SlowMA, request.Technical.BreakoutDays+1, 21)
-	// Three calendar days per required trading bar covers weekends, exchange
-	// holidays and long holiday closures without fetching years of unused data.
-	warmStart := request.Start.AddDate(0, 0, -warmupBars*3)
 	for _, symbol := range request.Tickers {
-		bars, err := engine.provider.FetchDailyBarsRange(ctx, symbol, warmStart, request.End, request.Adjustment)
+		bars, err := engine.stockHistory(ctx, request, symbol)
 		if err != nil {
-			return nil, nil, warnings, &SymbolHistoryError{Symbol: symbol, Err: err}
+			return nil, nil, warnings, err
 		}
-		sort.SliceStable(bars, func(left, right int) bool { return bars[left].Date < bars[right].Date })
 		byDate := make(map[string]int, len(bars))
 		for index, bar := range bars {
 			byDate[bar.Date] = index
-		}
-		if len(bars) < request.Technical.SlowMA+2 {
-			return nil, nil, warnings, &SymbolHistoryError{Symbol: symbol, Err: fmt.Errorf("有效日K不足：%d 根，当前策略至少需要 %d 根", len(bars), request.Technical.SlowMA+2)}
 		}
 		states[symbol] = &symbolState{bars: bars, byDate: byDate}
 		sources[symbol] = bars[len(bars)-1].Source

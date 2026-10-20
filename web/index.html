@@ -817,7 +817,8 @@
                     <label class="field"><span>滑点</span><div class="input-unit"><input type="number" min="0" max="200" step="0.5" v-model.number="strategyForm.slippage_bps"><i>bp</i></div></label>
                   </template>
                   <div class="execution-note wide"><strong>执行口径</strong><span>未复权日 K · 收盘信号 · 次日开盘成交 · T+1 · 100 股整手 · 一字板不可成交 · 沪深300基准</span></div>
-                  <button type="submit" class="strategy-run wide" :disabled="strategyLoading || !!strategyPoolError"><span v-text="strategyLoading ? '正在获取历史数据并回测…' : '运行回测'"></span></button>
+                  <strategy-preflight-view ref="strategyPreflight" class="wide" :request="strategyBacktestPayload" :disabled="strategyLoading || !!strategyPoolError" @busy="strategyPreflightBusy=$event" @exclude="excludeStrategyPreflightStocks"></strategy-preflight-view>
+                  <button type="submit" class="strategy-run wide" :disabled="strategyLoading || strategyPreflightBusy || !!strategyPoolError"><span v-text="strategyPreflightBusy ? '正在检查回测数据…' : strategyLoading ? '正在获取历史数据并回测…' : '运行回测'"></span></button>
                 </form>
                 <div class="strategy-error" role="alert" v-if="strategyError"><span v-text="strategyError"></span><template v-if="strategyHistoryIssue"><button type="button" class="text-action" v-if="canExcludeStrategyHistoryIssue" @click="setStrategyStockIncluded(strategyHistoryIssue.symbol,false)" v-text="'本次回测排除 ' + strategyHistoryIssue.name"></button><details class="strategy-history-detail"><summary>数据源详情</summary><p v-text="strategyHistoryIssue.detail"></p></details></template></div>
 
