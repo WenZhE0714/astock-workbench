@@ -94,18 +94,21 @@ with sync_playwright() as p:
         expect(panel.locator('.rp-symbol-list button')).to_have_count(1)
         panel.get_by_label('仅自选',exact=True).uncheck()
         panel.get_by_role('button',name='创建价位提醒',exact=True).click()
-        dialog = page.get_by_role('dialog',name='价位提醒草案')
+        dialog = page.get_by_role('dialog',name='后台价位提醒草案')
         expect(dialog).to_be_visible()
-        dialog.get_by_label('提醒价位',exact=True).fill('999999')
-        assert not page.evaluate("JSON.parse(localStorage.getItem('astock.replay-price-alerts.v1')||'[]').length")
-        dialog.get_by_role('button',name='确认启用',exact=True).click()
+        dialog.get_by_label('后台提醒价位',exact=True).fill('999999')
+        before = page.request.get(args.url+'/api/price-alerts').json()['items']
+        dialog.get_by_role('button',name='确认并启用后台提醒',exact=True).click()
         expect(dialog).not_to_be_visible()
-        expect(panel.get_by_label('本页价位提醒')).to_contain_text('已启用')
-        alerts = page.evaluate("JSON.parse(localStorage.getItem('astock.replay-price-alerts.v1'))")
-        assert alerts[0]['source_kind'] == 'historical' and alerts[0]['price'] == 999999
-        panel.locator('.rp-alerts input[type=checkbox]').uncheck()
-        expect(panel.locator('.rp-alerts')).to_contain_text('已停用')
-        panel.get_by_role('button',name='删除提醒',exact=True).click()
+        expect(panel.get_by_label('后台价位提醒')).to_contain_text('后台提醒已启用')
+        alerts = page.request.get(args.url+'/api/price-alerts').json()['items']
+        created = next(a for a in alerts if a['id'] not in {old['id'] for old in before})
+        assert created['rule']['source']['id']=='historical' and created['rule']['price']==999999
+        alert_row = panel.locator('[data-alert-id="'+created['id']+'"]')
+        alert_row.get_by_role('button',name='暂停提醒',exact=True).click()
+        expect(alert_row.locator('.pa-phase')).to_have_text('已暂停')
+        alert_row.get_by_role('button',name='删除后台提醒',exact=True).click()
+        expect(alert_row).to_have_count(0)
         panel.get_by_label('工作区布局',exact=True).select_option('review')
         with page.expect_download() as download:
             panel.get_by_role('button',name='导出当前快照',exact=True).click()

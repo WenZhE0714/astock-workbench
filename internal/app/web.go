@@ -122,6 +122,7 @@ func (app *App) runWeb(ctx context.Context, arguments []string) error {
 		web.WithPatternValidationFactors(market.SinaAdjustmentClient{}),
 		web.WithTradePlanReviews(storage.NewTradePlanReviewStore(app.paths.PlanReviewsDir)),
 		web.WithPlanMonitors(storage.NewPlanMonitorStore(app.paths.PlanMonitorsDir)),
+		web.WithPriceAlerts(storage.NewPriceAlertStore(filepath.Join(app.paths.DataDir, "notifications", "price-alerts.json"))),
 		web.WithPlanExperiment(storage.NewPlanExperimentStore(app.paths.PlanExperimentFile)),
 		web.WithMarketAmount(app.amounts),
 		web.WithIndustryFlows(app.industryFlows),

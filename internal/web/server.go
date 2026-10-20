@@ -22,7 +22,6 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/backtest"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
-	"github.com/wenzhe/astock-workbench/internal/notify"
 	"github.com/wenzhe/astock-workbench/internal/paper"
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/storage"
@@ -202,6 +201,12 @@ type sentimentHistoryStore interface {
 }
 
 type Server struct {
+	priceAlerts                  *storage.PriceAlertStore
+	priceAlertMu                 sync.Mutex
+	priceAlertCycleMu            sync.Mutex
+	priceAlertRuntime            priceAlertRuntime
+	priceAlertWake               chan struct{}
+	priceAlertInterval           time.Duration
 	frozenReplaySources          []frozenReplaySource
 	resolver                     SymbolResolver
 	quotes                       QuoteClient
@@ -254,7 +259,7 @@ type Server struct {
 	shadowEvaluator              shadowAnalyzer
 	shadowArchive                shadowArchive
 	shadowProfiles               map[string]shadowExecutionProfile
-	nativeNotifications          *notify.Dispatcher
+	nativeNotifications          nativeNotificationDispatcher
 	notificationRecords          *storage.NativeNotificationStore
 	notificationReviews          *storage.NotificationReviewStore
 	boardSnapshots               *storage.BoardSnapshotStore
@@ -1088,6 +1093,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/board-snapshots", s.handleBoardSnapshots)
 	mux.HandleFunc("/api/board-daily-flows", s.handleBoardDailyFlows)
 	mux.HandleFunc("/api/native-notifications", s.handleNativeNotifications)
+	mux.HandleFunc("/api/price-alerts", s.handlePriceAlerts)
 	mux.HandleFunc("/api/rankings", s.handleRankings)
 	mux.HandleFunc("/api/global/markets", s.handleGlobalMarkets)
 	mux.HandleFunc("/api/global/chart", s.handleGlobalChart)
@@ -1165,6 +1171,9 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 	}()
 	go s.runAutomationLoop(automationCtx)
 	go s.runPlanMonitorLoop(automationCtx)
+	priceAlertsDone := make(chan struct{})
+	go func() { defer close(priceAlertsDone); s.runPriceAlertLoop(automationCtx) }()
+	defer func() { cancelAutomation(); <-priceAlertsDone }()
 	healthDone := make(chan struct{})
 	go func() { defer close(healthDone); s.runForwardHealthLoop(automationCtx) }()
 	defer func() { cancelAutomation(); <-healthDone }()

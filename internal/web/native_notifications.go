@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -11,8 +12,19 @@ import (
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 )
 
+type nativeNotificationDispatcher interface {
+	Offer(notify.Message)
+	Run(context.Context)
+}
+
 func WithNativeNotifications(dispatcher *notify.Dispatcher) ServerOption {
-	return func(server *Server) { server.nativeNotifications = dispatcher }
+	return func(server *Server) {
+		if dispatcher == nil {
+			server.nativeNotifications = nil
+			return
+		}
+		server.nativeNotifications = dispatcher
+	}
 }
 
 func (s *Server) notifyRealtimeCandidates(result realtime.ScanResult) {

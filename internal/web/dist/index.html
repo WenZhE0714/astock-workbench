@@ -6,7 +6,7 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.c89aa29f.js"></script>
+  <script type="module" crossorigin src="/assets/index.8400f57c.js"></script>
   <link rel="stylesheet" href="/assets/index.1c8debcb.css">
 </head>
 <body>
@@ -193,12 +193,13 @@
             <details class="dashboard-data-status" v-if="dashboardWarnings.length"><summary v-text="'数据状态 · ' + dashboardWarnings.length + ' 项提示'"></summary><p v-for="warning in dashboardWarnings" :key="warning" v-text="warning"></p></details>
           </section>
           <section class="monitor-view" v-if="workspaceMode === 'monitor'">
-            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1></div><div class="dashboard-head-status"><span v-text="monitorView === 'calendar' ? '只读归档' : monitorView === 'signals' ? realtimeStateLabel(realtimeMarketState) : monitorView === 'playbook' ? tradePlaybookRuntimeLabel : planMonitorRuntimeLabel"></span><button type="button" class="dashboard-icon" title="刷新监控状态" aria-label="刷新监控状态" :disabled="planMonitorLoading || realtimeSnapshotLoading || planExperimentLoading || tradePlaybookLoading" @click="refreshMonitorWorkspace"><refresh-cw :size="16"></refresh-cw></button></div></header>
+            <header class="dashboard-head"><div class="dashboard-heading"><radio :size="20"></radio><h1>监控中心</h1></div><div class="dashboard-head-status"><span v-text="monitorView === 'prices' ? '后台价位提醒' : monitorView === 'calendar' ? '只读归档' : monitorView === 'signals' ? realtimeStateLabel(realtimeMarketState) : monitorView === 'playbook' ? tradePlaybookRuntimeLabel : planMonitorRuntimeLabel"></span><button type="button" class="dashboard-icon" title="刷新监控状态" aria-label="刷新监控状态" :disabled="planMonitorLoading || realtimeSnapshotLoading || planExperimentLoading || tradePlaybookLoading" @click="refreshMonitorWorkspace"><refresh-cw :size="16"></refresh-cw></button></div></header>
             <div class="monitor-view-tabs dashboard-segment" role="tablist" aria-label="监控类型">
               <button type="button" role="tab" :aria-selected="monitorView === 'signals'" :aria-pressed="monitorView === 'signals'" @click="monitorView = 'signals'">策略信号</button>
               <button type="button" role="tab" :aria-selected="monitorView === 'plans'" :aria-pressed="monitorView === 'plans'" @click="monitorView = 'plans'; loadPlanMonitors()">计划监控 <b v-text="planMonitors.filter(item => item.enabled).length"></b></button>
               <button type="button" role="tab" aria-label="提醒记录" :aria-selected="monitorView === 'notifications'" :aria-pressed="monitorView === 'notifications'" @click="monitorView = 'notifications'; loadPlanMonitors()"><bell :size="13"></bell>提醒记录 <b v-text="localAlertsUnread"></b></button>
               <button type="button" role="tab" :aria-selected="monitorView === 'native'" :aria-pressed="monitorView === 'native'" @click="monitorView = 'native'">Mac 通知</button>
+              <button type="button" role="tab" :aria-selected="monitorView === 'prices'" :aria-pressed="monitorView === 'prices'" @click="monitorView = 'prices'">价位提醒</button>
               <button type="button" role="tab" :aria-selected="monitorView === 'experiment'" :aria-pressed="monitorView === 'experiment'" @click="monitorView = 'experiment'; loadPlanExperiment()">影子实验</button>
               <button type="button" role="tab" :aria-selected="monitorView === 'playbook'" :aria-pressed="monitorView === 'playbook'" @click="monitorView = 'playbook'; loadTradePlaybook()">交易剧本</button>
               <button type="button" role="tab" :aria-selected="monitorView === 'calendar'" :aria-pressed="monitorView === 'calendar'" @click="monitorView = 'calendar'">复盘日历</button>
@@ -234,6 +235,7 @@
               </div>
               <div class="chart-analysis-empty" v-if="!filteredPlanMonitors.length" v-text="planMonitorLoading ? '读取中' : '暂无符合条件的计划监控'"></div>
             </section>
+            <price-alerts-view v-else-if="monitorView === 'prices'" ref="priceAlertCenter"></price-alerts-view>
             <plan-experiment-view v-else-if="monitorView === 'experiment'" :state="planExperiment" :review="planExperimentReview" :runtime="planExperimentRuntime" :config="planExperimentConfig" :monitors="planMonitors" :busy="planExperimentBusy" :error="planExperimentError" @configure="configurePlanExperiment" @open-stock="openMonitoredStock" @open-plan="openPlaybookItem"></plan-experiment-view>
             <review-calendar-view v-else-if="monitorView === 'calendar'" :initial-month="reviewCalendarMonth" :selection="reviewCalendarSelection" :refresh-key="reviewCalendarRefresh" @selection="reviewCalendarSelection = $event" @open-plan="openPlaybookItem" @open-shadow="openCalendarShadow"></review-calendar-view>
             <section class="trade-playbook" v-else-if="monitorView === 'playbook'" aria-label="交易剧本复盘统计">

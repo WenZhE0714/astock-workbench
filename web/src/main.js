@@ -20,6 +20,7 @@ import { VolumeForwardStudyView } from "./volume-forward-study-view.js"
 import { StrategyPreflightView } from "./strategy-preflight-view.js"
 import "./strategy-preflight.css"
 const FrozenReplayView = defineAsyncComponent(() => import("./frozen-replay-view.js").then(module => module.FrozenReplayView))
+const PriceAlertsView = defineAsyncComponent(() => import("./price-alerts-view.js").then(module => module.PriceAlertsView))
 import "./frozen-replay.css"
 import "./volume-forward-study.css"
 import "./candidate-diagnostics.css"
@@ -118,7 +119,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView, StrategyPreflightView },
+  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView, StrategyPreflightView, PriceAlertsView },
   data() {
     return {
       query: defaultSymbol,
@@ -131,7 +132,7 @@ createApp({
       patternValidationTarget: null,
       patternValidationReturn: false,
       patternValidationChartError: "",
-      monitorView: ["plans", "experiment", "playbook", "notifications", "native", "calendar"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
+      monitorView: ["plans", "experiment", "playbook", "notifications", "native", "calendar", "prices"].includes(initialView.get("monitor")) ? initialView.get("monitor") : "signals",
       reviewCalendarMonth: initialView.get("month") || "",
       reviewCalendarRefresh: 0,
       reviewCalendarSelection: null,
@@ -1040,6 +1041,7 @@ createApp({
       this.switchWorkspace("monitor")
     },
     refreshMonitorWorkspace() {
+      if (this.monitorView === "prices") { this.$refs.priceAlertCenter?.load(); return }
       if (this.monitorView === "calendar") this.reviewCalendarRefresh++
       else if (this.monitorView === "experiment") this.loadPlanExperiment(true)
       else if (this.monitorView === "playbook") this.loadTradePlaybook(true)

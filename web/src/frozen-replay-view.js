@@ -1,11 +1,12 @@
 import { Play, Pause, SkipBack, SkipForward, StepBack, StepForward, RefreshCw, Crosshair, BellPlus, X, Star, Save, Trash2, SlidersHorizontal, Download, Search, ArrowUpRight } from 'lucide-vue-next'
 import { ReplayChart } from './replay-chart.js'
-import { replayGroups, replayStorageKey, alertStorageKey, replayTrades, replayMarkers, relativeSeries, normalizeReplayLayout, filterReplaySymbols, quoteTriggersAlert } from './frozen-replay.mjs'
+import { PriceAlertsView } from './price-alerts-view.js'
+import { replayGroups, replayStorageKey, replayTrades, replayMarkers, relativeSeries, normalizeReplayLayout, filterReplaySymbols } from './frozen-replay.mjs'
 
 export const FrozenReplayView = {
-  components: { ReplayChart, Play, Pause, SkipBack, SkipForward, StepBack, StepForward, RefreshCw, Crosshair, BellPlus, X, Star, Save, Trash2, SlidersHorizontal, Download, Search, ArrowUpRight },
+  components: { ReplayChart, PriceAlertsView, Play, Pause, SkipBack, SkipForward, StepBack, StepForward, RefreshCw, Crosshair, BellPlus, X, Star, Save, Trash2, SlidersHorizontal, Download, Search, ArrowUpRight },
   emits: ['open', 'replay-mode'],
-  data() { return { sources: [], sourceID: '', snapshot: null, symbol: '', group: 0, index: 0, mode: 'review', playing: false, speed: 1, timer: null, controller: null, requestID: 0, loading: false, error: '', notice: '', search: '', state: 'all', watchOnly: false, watched: [], watchGroup: '复盘关注', watchBusy: false, tradeKey: '', focus: null, cursor: '', range: null, price: null, layout: normalizeReplayLayout(), preset: 'review', presets: [], presetName: '', settings: false, filters: [], filterName: '', filterID: '', alertOpen: false, alerts: [], alertDirection: 'above', alertPrice: '', alertExpiry: '', alertName: '', alertBusy: false, alertError: '', alertTimer: null, alertController: null, checkingAlerts: false } },
+  data() { return { sources: [], sourceID: '', snapshot: null, symbol: '', group: 0, index: 0, mode: 'review', playing: false, speed: 1, timer: null, controller: null, requestID: 0, loading: false, error: '', notice: '', search: '', state: 'all', watchOnly: false, watched: [], watchGroup: '复盘关注', watchBusy: false, tradeKey: '', focus: null, cursor: '', range: null, price: null, layout: normalizeReplayLayout(), preset: 'review', presets: [], presetName: '', settings: false, filters: [], filterName: '', filterID: '' } },
   computed: {
     groups() { return replayGroups }, source() { return this.sources.find(s => s.id === this.sourceID) }, dates() { return this.source?.dates || [] },
     day() { return this.snapshot?.date || '' }, run() { return this.snapshot?.runs[this.group] },
@@ -19,6 +20,7 @@ export const FrozenReplayView = {
     point() { return this.snapshot?.bars.find(b => b.time === this.cursor) || this.snapshot?.bars.at(-1) },
     snapshotLabel() { return this.source?.kind === 'forward' ? '前瞻封存' : '历史演练' },
     metrics() { return this.run?.metrics || {} },
+    priceAlertSource() { return this.snapshot ? {id:this.sourceID,date:this.day,fingerprint:this.snapshot.fingerprint} : null },
   },
   methods: {
     money(v) { return Number.isFinite(v) ? v.toLocaleString('zh-CN', { maximumFractionDigits: 2, minimumFractionDigits: 2 }) : '--' },
@@ -60,7 +62,7 @@ export const FrozenReplayView = {
     focusSelected() { const t = this.reference; this.focus = t ? { from: t.entry_signal.date, to: t.exit?.date || this.day, key: `${this.group}:${this.tradeKey}` } : null },
     groupChanged() { this.focusSelected() },
     pick(pick) { if (Number.isFinite(pick.price) && pick.price > 0) this.price = Math.round(pick.price * 100) / 100; if (pick.tradeKey) { this.tradeKey = pick.tradeKey; this.$nextTick(() => this.$el.querySelector('[data-selected-trade="true"]')?.scrollIntoView({ block: 'nearest' })) } },
-    async setMode(mode) { this.stop(); this.mode = mode; this.$emit('replay-mode', mode === 'replay'); this.tradeKey = ''; this.alertController?.abort(); this.index = mode === 'replay' ? 0 : this.dates.length - 1; await this.loadSnapshot() },
+    async setMode(mode) { this.stop(); this.mode = mode; this.$emit('replay-mode', mode === 'replay'); this.tradeKey = ''; this.index = mode === 'replay' ? 0 : this.dates.length - 1; await this.loadSnapshot() },
     stop() { clearTimeout(this.timer); this.playing = false },
     async seek(index) { this.stop(); this.index = Math.max(0, Math.min(this.dates.length - 1, index)); await this.loadSnapshot() },
     async togglePlay() { if (this.playing) return this.stop(); if (this.index >= this.dates.length - 1) this.index = -1; this.playing = true; await this.advance() },
@@ -75,40 +77,13 @@ export const FrozenReplayView = {
     applyFilter() { const f = this.filters.find(f => f.id === this.filterID); if (f) { this.search = f.search || ''; this.state = f.state; this.watchOnly = !!f.watchOnly } },
     removeFilter() { this.filters = this.filters.filter(f => f.id !== this.filterID); this.filterID = ''; this.persist() },
     exportSnapshot() { if (!this.snapshot) return; const blob = new Blob([JSON.stringify(this.snapshot, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `replay-${this.sourceID}-${this.day}-${this.symbol}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000) },
-    openAlert() { if (this.mode === 'replay') return; this.stop(); this.alertName = this.name; this.alertPrice = String(this.price || this.point?.close || ''); this.alertExpiry = new Date(Date.now() + 8 * 3600000 + 7 * 86400000).toISOString().slice(0, 10); this.alertError = ''; this.alertOpen = true; this.$nextTick(() => this.$refs.alertDialog.showModal()) },
-    closeAlert() { this.$refs.alertDialog?.close(); this.alertOpen = false; this.$nextTick(() => this.$refs.alertButton?.focus()) },
-    persistAlerts() { try { localStorage.setItem(alertStorageKey, JSON.stringify(this.alerts)); return true } catch { this.alertError = '提醒保存失败'; return false } },
-    async confirmAlert() {
-      const price = Number(this.alertPrice); const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)
-      if (!Number.isFinite(price) || price <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(this.alertExpiry) || this.alertExpiry < today) { this.alertError = '请填写有效价位和未来有效期'; return }
-      if (this.alerts.filter(a => a.enabled && !a.fired_at && this.alertState(a)!=='已到期').length >= 10) { this.alertError = '最多启用10条本页提醒'; return }
-      this.alerts.push({ id: `price-${Date.now()}`, symbol: this.symbol, name: this.alertName, direction: this.alertDirection, price, expires_on: this.alertExpiry, enabled: true, source_date: this.day, source_kind: this.source.kind, source_fingerprint: this.snapshot.fingerprint })
-      if (!this.persistAlerts()) { this.alerts.pop(); return }
-      this.closeAlert(); this.notice = '本页提醒已启用'; await this.checkAlerts()
-    },
-    removeAlert(id) { const previous = this.alerts; this.alerts = this.alerts.filter(a => a.id !== id); if (!this.persistAlerts()) { this.alerts = previous; this.notice = this.alertError } else this.notice = '提醒已删除' },
-    alertState(a) { return a.fired_at ? '已触发 · ' + this.money(a.fired_price) : a.expires_on < new Date(Date.now()+8*3600000).toISOString().slice(0,10) ? '已到期' : a.enabled ? '已启用' : '已停用' },
-    async checkAlerts() {
-      if (this.mode === 'replay' || this.checkingAlerts) return
-      const active = this.alerts.filter(a => a.enabled && !a.fired_at && this.alertState(a)!=='已到期')
-      if (!active.length) return
-      this.checkingAlerts = true; const controller = new AbortController(); this.alertController = controller
-      try {
-        for (const symbol of [...new Set(active.map(a => a.symbol))]) {
-          const r = await fetch('/api/stock?' + new URLSearchParams({ symbol }), { cache: 'no-store', signal: controller.signal }); const data = await r.json()
-          if (!r.ok) throw Error(data.error || '提醒行情读取失败')
-          if (this.mode === 'replay') break
-          for (const alert of active.filter(a => a.symbol === symbol)) if (quoteTriggersAlert(alert, data.quote)) { alert.fired_at = new Date().toISOString(); alert.fired_price = Number(data.quote.current); alert.enabled = false; this.notice = `${alert.name} 价位提醒已触发：${alert.fired_price}` }
-        }
-        if (this.persistAlerts()) this.alertError = ''
-      } catch (e) { if (e.name !== 'AbortError') this.alertError = e.message } finally { this.checkingAlerts = false }
-    },
+    openAlert() { if (this.mode !== 'replay') { this.stop(); this.$refs.priceAlerts?.open() } },
   },
   mounted() {
-    try { const data = JSON.parse(localStorage.getItem(replayStorageKey) || 'null'); if (data?.version === 1) { this.layout = normalizeReplayLayout(data.layout); this.presets = Array.isArray(data.presets) ? data.presets.slice(0, 12) : []; this.filters = Array.isArray(data.filters) ? data.filters.slice(0, 12) : []; this.preset = ['review','focus',...this.presets.map(p=>p.id)].includes(data.preset) ? data.preset : 'review' } const alerts = JSON.parse(localStorage.getItem(alertStorageKey) || '[]'); this.alerts = Array.isArray(alerts) ? alerts.filter(a => typeof a.symbol === 'string' && Number.isFinite(a.price)).slice(-30) : [] } catch { this.notice = '本地设置损坏，已使用默认配置' }
-    this.catalog(); this.loadWatchlist(); this.alertTimer = setInterval(() => this.checkAlerts(), 10000)
+    try { const data = JSON.parse(localStorage.getItem(replayStorageKey) || 'null'); if (data?.version === 1) { this.layout = normalizeReplayLayout(data.layout); this.presets = Array.isArray(data.presets) ? data.presets.slice(0, 12) : []; this.filters = Array.isArray(data.filters) ? data.filters.slice(0, 12) : []; this.preset = ['review','focus',...this.presets.map(p=>p.id)].includes(data.preset) ? data.preset : 'review' } } catch { this.notice = '本地设置损坏，已使用默认配置' }
+    this.catalog(); this.loadWatchlist()
   },
-  beforeUnmount() { this.stop(); clearInterval(this.alertTimer); this.controller?.abort(); this.alertController?.abort(); this.requestID++; this.$emit('replay-mode', false) },
+  beforeUnmount() { this.stop(); this.controller?.abort(); this.requestID++; this.$emit('replay-mode', false) },
   template: `<section class="frozen-replay" aria-label="冻结交易复盘" :aria-busy="loading">
     <div class="rp-toolbar"><div class="rp-title"><h2>交易复盘</h2><span :class="['rp-source-kind',source?.kind]">{{ snapshotLabel }}</span></div><select v-model="sourceID" @change="sourceChanged" aria-label="复盘来源"><option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option></select><div class="rp-mode" role="tablist" aria-label="复盘模式"><button role="tab" :aria-selected="mode==='review'" @click="setMode('review')">复盘</button><button role="tab" :aria-selected="mode==='replay'" @click="setMode('replay')">逐日回放</button></div><div class="rp-tools"><select v-model="preset" @change="applyPreset" aria-label="工作区布局"><option value="review">交易复盘</option><option value="focus">单图专注</option><option v-for="p in presets" :key="p.id" :value="p.id">{{ p.name }}</option></select><button class="icon-button" title="布局设置" aria-label="布局设置" :aria-pressed="settings" @click="settings=!settings"><sliders-horizontal :size="16"/></button><button class="icon-button" title="刷新归档" aria-label="刷新归档" @click="catalog(true)" :disabled="loading"><refresh-cw :size="16"/></button><button class="icon-button" title="导出当前快照" aria-label="导出当前快照" @click="exportSnapshot" :disabled="!snapshot"><download :size="16"/></button></div></div>
     <div class="rp-layout-editor" v-if="settings"><label v-for="[key,name] in [['weekly','周线'],['benchmark','基准对照'],['ma','MA20/60'],['markers','交易标记'],['ledger','交易明细']]" :key="key"><input type="checkbox" v-model="layout[key]" @change="persist">{{ name }}</label><input aria-label="布局名称" v-model="presetName" maxlength="30" placeholder="布局名称"><button class="icon-button" title="保存布局" aria-label="保存布局" @click="savePreset" :disabled="!presetName.trim()"><save :size="16"/></button><button v-if="preset.startsWith('saved-')" class="icon-button" title="删除布局" aria-label="删除布局" @click="removePreset"><trash-2 :size="16"/></button></div>
@@ -126,7 +101,6 @@ export const FrozenReplayView = {
       <div class="rp-ledger" v-if="layout.ledger"><div class="rp-ledger-heading"><h4>交易记录</h4><span>{{ trades.length }} 笔 · 截至 {{ day }}</span></div><div class="rp-ledger-scroll"><table><thead><tr><th>股票</th><th>信号 / 买入</th><th>卖出</th><th>股数</th><th>净盈亏</th><th>状态</th></tr></thead><tbody><tr v-for="t in trades" :key="t.key" :data-selected-trade="t.key===tradeKey" :class="{selected:t.key===tradeKey}" @click="chooseTrade(t)"><td><button type="button" @click.stop="chooseTrade(t)">{{ t.name || t.symbol }}</button><small>{{ t.symbol }}</small></td><td>{{ t.entry_signal.date }}<small>{{ t.entry.date }} · {{ money(t.entry.price) }}</small></td><td>{{ t.exit?.date || '--' }}<small>{{ t.exit ? money(t.exit.price) : '' }}</small></td><td>{{ t.entry.quantity }}</td><td :class="tone(t.profit)">{{ money(t.profit) }}</td><td>{{ t.state==='closed'?'已平仓':'持仓' }}</td></tr></tbody></table></div><p class="rp-muted" v-if="!trades.length">截至所选日期尚无成交</p></div>
       <details class="rp-integrity"><summary>封存依据与图表署名</summary><p>{{ snapshotLabel }} · {{ snapshot.captured_at }} · {{ snapshot.fingerprint }}</p><p>TradingView Lightweight Charts™ · Copyright (с) 2025 TradingView, Inc. <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a> · <a href="/licenses/lightweight-charts-LICENSE.txt" target="_blank" rel="noopener noreferrer">Apache-2.0</a></p></details></template>
     </main></div></template>
-    <section class="rp-alerts" v-if="alerts.length && mode!=='replay'" aria-label="本页价位提醒"><h3>本页提醒 <small>当前报价 · 单次触发</small></h3><p v-if="alertError" class="rp-error">{{ alertError }}</p><div v-for="a in alerts" :key="a.id"><label class="rp-check"><input type="checkbox" v-model="a.enabled" :disabled="!!a.fired_at||alertState(a)==='已到期'" :aria-label="'启停'+a.name+'提醒'" @change="persistAlerts">{{ a.name }} {{ a.direction==='above'?'≥':'≤' }} {{ money(a.price) }}</label><span>{{ alertState(a) }}</span><small>有效至 {{ a.expires_on }}</small><button class="icon-button" title="删除提醒" aria-label="删除提醒" @click="removeAlert(a.id)"><trash-2 :size="14"/></button></div></section>
-    <dialog v-if="alertOpen" ref="alertDialog" class="rp-dialog" aria-labelledby="rp-alert-title" @cancel.prevent="closeAlert"><div class="rp-selection-title"><h3 id="rp-alert-title">价位提醒草案</h3><button class="icon-button" title="关闭" aria-label="关闭价位提醒" @click="closeAlert"><x :size="16"/></button></div><p>{{ name }} · {{ symbol }}</p><p class="rp-muted">来源：{{ snapshotLabel }} {{ day }} · 未复权价位</p><label>条件<select v-model="alertDirection" aria-label="提醒条件"><option value="above">达到或高于</option><option value="below">达到或低于</option></select></label><label>价位<input v-model="alertPrice" type="number" min="0.01" step="0.01" aria-label="提醒价位"></label><label>有效期<input v-model="alertExpiry" type="date" aria-label="提醒有效期"></label><p class="rp-muted">仅在本页打开且不处于回放时检查当前报价。不会修改冻结策略或下单。</p><p class="rp-error" v-if="alertError" role="alert">{{ alertError }}</p><div class="rp-dialog-actions"><button type="button" @click="closeAlert">取消</button><button type="button" @click="confirmAlert"><bell-plus :size="15"/>确认启用</button></div></dialog>
+    <price-alerts-view v-if="snapshot && mode!=='replay'" ref="priceAlerts" :symbol="symbol" :default-name="name" :default-price="price||point?.close" :source="priceAlertSource"></price-alerts-view>
   </section>`,
 }
