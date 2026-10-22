@@ -1,11 +1,30 @@
 package storage
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	"github.com/wenzhe/astock-workbench/internal/realtime"
 )
+
+func TestRealtimeSignalStorePreservesMissingQuoteFieldsAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	when := storageRealtimeTime(2026, 10, 22, 10, 0)
+	signal := realtime.Signal{ID: "missing-speed", Symbol: "sh600000", Price: 18, Percent: math.NaN(), Speed: math.NaN(), AsOf: when}
+	if err := NewRealtimeSignalStore(root).Append(realtime.ScanResult{GeneratedAt: when, Signals: []realtime.Signal{signal}}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewRealtimeSignalStore(root)
+	latest, err := store.Latest()
+	if err != nil || len(latest.Signals) != 1 || latest.Signals[0].ID != signal.ID || !math.IsNaN(latest.Signals[0].Speed) || !math.IsNaN(latest.Signals[0].Percent) {
+		t.Fatalf("latest snapshot lost missing quote values: %+v %v", latest, err)
+	}
+	history, err := store.List(10)
+	if err != nil || len(history) != 1 || !math.IsNaN(history[0].Speed) || !math.IsNaN(history[0].Percent) {
+		t.Fatalf("signal history lost missing quote values: %+v %v", history, err)
+	}
+}
 
 func TestRealtimeSignalStoreAppendsAndListsNewestFirst(t *testing.T) {
 	store := NewRealtimeSignalStore(t.TempDir())

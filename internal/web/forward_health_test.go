@@ -133,6 +133,45 @@ func TestForwardFailureSelectionAndDailyIdentity(t *testing.T) {
 	}
 }
 
+func TestForwardFailureSelectionAfterCollectorRecovery(t *testing.T) {
+	checked := time.Date(2026, 10, 22, 15, 35, 5, 0, realtimeWebLocation)
+	for _, tc := range []struct {
+		name             string
+		collectorStatus  string
+		collectorTime    time.Time
+		collectorDays    int
+		executionStatus  string
+		detail           string
+		wantNotification bool
+	}{
+		{"sealed after failure", "sealed", checked.Add(40 * time.Second), 3, "paused", "采集任务报错: HTTP 501", false},
+		{"waiting after failure", "waiting", checked.Add(5 * time.Minute), 3, "paused", "采集任务报错: HTTP 501", false},
+		{"recovery with same day count", "sealed", checked.Add(40 * time.Second), 2, "paused", "采集任务报错: HTTP 501", false},
+		{"collector has not recovered yet", "waiting", checked.Add(-time.Minute), 2, "paused", "采集任务报错: HTTP 501", true},
+		{"same timestamp is inconclusive", "sealed", checked, 3, "paused", "采集任务报错: HTTP 501", true},
+		{"missing collector timestamp", "sealed", time.Time{}, 3, "paused", "采集任务报错: HTTP 501", true},
+		{"collector archive count regressed", "sealed", checked.Add(time.Minute), 1, "paused", "采集任务报错: HTTP 501", true},
+		{"unknown collector status", "unknown", checked.Add(time.Minute), 3, "paused", "采集任务报错: HTTP 501", true},
+		{"independent execution failure", "sealed", checked.Add(time.Minute), 3, "error", "cash mismatch", true},
+		{"independent paused failure", "sealed", checked.Add(time.Minute), 3, "paused", "archive mismatch", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := storage.VolumeForwardStatus{Status: tc.collectorStatus, CheckedAt: tc.collectorTime, SealedDays: tc.collectorDays}
+			view := forwardAcceptanceView{Configured: true, Report: &storage.ForwardAcceptanceReport{
+				Status: "error", CheckedAt: checked, SealedDays: 2, Detail: tc.detail,
+				Execution: &storage.ForwardExecutionAcceptance{Status: tc.executionStatus, Detail: tc.detail},
+			}}
+			messages := forwardStatusFailureMessages("plan", status, nil, view, checked.Add(6*time.Minute))
+			if (len(messages) > 0) != tc.wantNotification {
+				t.Fatalf("want notification %v, got %+v", tc.wantNotification, messages)
+			}
+			if len(messages) > 0 && messages[0].Kind != "forward-acceptance" {
+				t.Fatalf("unexpected notification: %+v", messages)
+			}
+		})
+	}
+}
+
 func TestForwardAcceptanceAPIIsReadOnlyAndRejectsWrongExperiment(t *testing.T) {
 	store, plan, root := volumeStudyViewFixture(t)
 	now := plan.CreatedAt.Add(time.Minute)

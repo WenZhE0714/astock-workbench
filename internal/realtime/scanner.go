@@ -485,6 +485,8 @@ func (scanner *Scanner) evaluate(input Snapshot) Signal {
 	monster = classifyMonsterRadar(input, indicators, hasIndicators)
 	if speedEstimated {
 		warnings = append(warnings, "涨速字段缺失，已按最近两条有效分时价格估算")
+	} else if !finite(input.Stock.Speed) {
+		warnings = append(warnings, "涨速字段缺失，分时数据不足以估算")
 	}
 	reasons := topReasons(components, contributions, 5)
 	risks := signalRisks(input, indicators, hasIndicators)

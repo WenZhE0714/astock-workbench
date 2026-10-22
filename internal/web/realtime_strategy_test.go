@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -238,6 +239,44 @@ func (stub realtimeOutcomeStub) Report(limit int, _ time.Time) (realtime.Outcome
 		*stub.reportLimit = limit
 	}
 	return stub.report, nil
+}
+
+func TestRealtimeStrategyEncodesMissingQuoteFields(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/strategy/realtime"},
+		{http.MethodPost, "/api/strategy/realtime"},
+		{http.MethodGet, "/api/strategy/realtime?view=history"},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			watchlist := filepath.Join(t.TempDir(), "watchlist")
+			if err := storage.SaveWatchlist(watchlist, []string{"sh600000"}); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 10, 22, 10, 30, 0, 0, realtimeWebLocation)
+			result := realtime.ScanResult{GeneratedAt: now, Signals: []realtime.Signal{{ID: "missing-speed", Symbol: "sh600000", Price: 18, Percent: math.NaN(), Speed: math.NaN(), AsOf: now}}}
+			server := NewServer(resolverStub{}, nil, nil, nil, "", WithWatchlist(watchlist), WithRealtimeStrategy(realtimeScannerStub{result: result}, realtimeArchiveStub{latest: result, items: result.Signals}))
+			server.now = func() time.Time { return now }
+			writer := httptest.NewRecorder()
+			server.Handler().ServeHTTP(writer, httptest.NewRequest(tc.method, tc.path, nil))
+			if writer.Code != http.StatusOK || !strings.Contains(writer.Body.String(), `"speed_percent":null`) || !strings.Contains(writer.Body.String(), `"percent":null`) {
+				t.Fatalf("missing quote field broke response: %d %s", writer.Code, writer.Body.String())
+			}
+			var response realtimeStrategyResponse
+			if err := json.Unmarshal(writer.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			signals := response.History
+			if response.Result != nil {
+				signals = response.Result.Signals
+			}
+			if len(signals) != 1 || signals[0].Price != 18 || !math.IsNaN(signals[0].Speed) || !math.IsNaN(signals[0].Percent) || !math.IsNaN(result.Signals[0].Speed) {
+				t.Fatalf("missing quote fields changed: %+v", signals)
+			}
+		})
+	}
 }
 
 func TestRealtimeStrategyEndpointRunsAndReturnsHistory(t *testing.T) {

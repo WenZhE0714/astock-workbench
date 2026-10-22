@@ -106,8 +106,14 @@ func forwardStatusFailureMessages(key string, status storage.VolumeForwardStatus
 	if report == nil {
 		return messages
 	}
-	if collectorFailed && report.Execution != nil && report.Execution.Status == "paused" && strings.HasPrefix(report.Detail, "采集任务报错") {
-		return messages
+	if report.Execution != nil && report.Execution.Status == "paused" && strings.HasPrefix(report.Detail, "采集任务报错") {
+		// The collector and acceptance jobs publish independently. A newer
+		// successful collection supersedes the copied error until acceptance reruns.
+		collectorRecovered := statusErr == nil && (status.Status == "sealed" || status.Status == "waiting") &&
+			status.CheckedAt.After(report.CheckedAt) && status.SealedDays >= report.SealedDays
+		if collectorFailed || collectorRecovered {
+			return messages
+		}
 	}
 	if report.Status == "error" || report.Execution != nil && report.Execution.Status == "error" {
 		detail := report.Detail

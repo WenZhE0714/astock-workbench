@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -38,6 +39,13 @@ func TestScannerKeepsPartialSnapshotsAndRejectsOldDates(t *testing.T) {
 		}
 		if !strings.Contains(strings.Join(result.Warnings, "|"), "部分扫描行情缺失") {
 			t.Fatal("partial coverage was hidden")
+		}
+		if !math.IsNaN(result.Signals[0].Speed) || !strings.Contains(strings.Join(result.Signals[0].Warnings, "|"), "涨速字段缺失") {
+			t.Fatal("missing speed was not preserved and reported")
+		}
+		data, err := json.Marshal(result)
+		if err != nil || !strings.Contains(string(data), `"speed_percent":null`) {
+			t.Fatalf("partial scan cannot be encoded: %s %v", data, err)
 		}
 	}
 }
