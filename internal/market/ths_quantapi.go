@@ -21,11 +21,7 @@ import (
 
 const defaultTHSQuantAPIBaseURL = "https://quantapi.51ifind.com/api/v1"
 
-// THSQuantOptions configures the HTTP Quant API adapter. The API uses the
-// access_token header; refresh_token is retained for configuration/audit but
-// is not exchanged automatically because the public data API does not expose
-// a stable refresh endpoint (the web console refresh endpoints require its
-// browser session).
+// THSQuantOptions configures the HTTP adapter and optional credential persistence.
 type THSQuantOptions struct {
 	AccessToken       string
 	RefreshToken      string
@@ -35,6 +31,7 @@ type THSQuantOptions struct {
 	QuoteIndicators   string
 	HistoryIndicators string
 	MinuteIndicators  string
+	OnAccessToken     func(previous, next string) error
 }
 
 // THSQuantClient implements the project's quote/history/minute interfaces.
@@ -51,12 +48,21 @@ type THSQuantClient struct {
 	minuteIndicators  string
 	mu                sync.Mutex
 	lastRequest       time.Time
+	tokenMu           sync.RWMutex
+	refreshGate       chan struct{}
+	refreshRetryAt    time.Time
+	refreshError      error
+	onAccessToken     func(previous, next string) error
+	quotaRetryAt      map[string]time.Time
+	quotaErrors       map[string]error
 }
 
 func (client *THSQuantClient) AccessToken() string {
 	if client == nil {
 		return ""
 	}
+	client.tokenMu.RLock()
+	defer client.tokenMu.RUnlock()
 	return client.accessToken
 }
 
@@ -69,6 +75,20 @@ func NewTHSQuantClient(options THSQuantOptions) *THSQuantClient {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	copyClient := *client
+	redirectPolicy := client.CheckRedirect
+	copyClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host) {
+			return errors.New("拒绝跨来源转发同花顺凭证")
+		}
+		if redirectPolicy != nil {
+			return redirectPolicy(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("同花顺接口重定向次数过多")
+		}
+		return nil
+	}
 	gap := options.MinRequestGap
 	if gap <= 0 {
 		// The documented free/standard gateway limits are account-dependent;
@@ -79,28 +99,63 @@ func NewTHSQuantClient(options THSQuantOptions) *THSQuantClient {
 		accessToken:       strings.TrimSpace(options.AccessToken),
 		refreshToken:      strings.TrimSpace(options.RefreshToken),
 		baseURL:           base,
-		httpClient:        client,
+		httpClient:        &copyClient,
 		minRequestGap:     gap,
 		quoteIndicators:   firstNonEmpty(options.QuoteIndicators, os.Getenv("ASTOCK_THS_QUOTE_INDICATORS"), "latest,changeRatio,open,high,low,preClose,volume,amount,turnoverRatio,limitUp,limitDown"),
 		historyIndicators: firstNonEmpty(options.HistoryIndicators, os.Getenv("ASTOCK_THS_HISTORY_INDICATORS"), "open,close,high,low,volume,amount,turnoverRatio"),
 		minuteIndicators:  firstNonEmpty(options.MinuteIndicators, os.Getenv("ASTOCK_THS_MINUTE_INDICATORS"), "latest,avgPrice,volume,amount"),
+		refreshGate:       make(chan struct{}, 1), onAccessToken: options.OnAccessToken,
 	}
 }
 
 func (client *THSQuantClient) Configured() bool {
-	return client != nil && strings.TrimSpace(client.accessToken) != ""
+	return client != nil && (client.AccessToken() != "" || client.refreshToken != "")
 }
 
 func (client *THSQuantClient) do(ctx context.Context, path string, payload map[string]any) ([]byte, error) {
 	if client == nil || !client.Configured() {
 		return nil, errors.New("同花顺 Quant API 未配置 access token")
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
+	if err := client.quotaError(path); err != nil {
 		return nil, err
 	}
-	client.mu.Lock()
-	if wait := client.minRequestGap - time.Since(client.lastRequest); wait > 0 {
+	token := client.AccessToken()
+	if token == "" {
+		if err := client.renewAccessToken(ctx, token); err != nil {
+			return nil, err
+		}
+		token = client.AccessToken()
+	}
+	body, err := client.request(ctx, path, payload, "access_token", token)
+	if !thsTokenExpired(err) || ctx.Err() != nil {
+		return body, err
+	}
+	if client.refreshToken == "" {
+		return nil, fmt.Errorf("同花顺访问令牌已失效；请配置刷新令牌或更新访问令牌: %w", err)
+	}
+	if refreshErr := client.renewAccessToken(ctx, token); refreshErr != nil {
+		return nil, refreshErr
+	}
+	return client.request(ctx, path, payload, "access_token", client.AccessToken())
+}
+
+func (client *THSQuantClient) request(ctx context.Context, path string, payload map[string]any, header, token string) ([]byte, error) {
+	var data []byte
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		data = encoded
+	}
+	for {
+		client.mu.Lock()
+		wait := client.minRequestGap - time.Since(client.lastRequest)
+		if wait <= 0 {
+			client.lastRequest = time.Now()
+			client.mu.Unlock()
+			break
+		}
 		timer := time.NewTimer(wait)
 		client.mu.Unlock()
 		select {
@@ -109,10 +164,7 @@ func (client *THSQuantClient) do(ctx context.Context, path string, payload map[s
 			timer.Stop()
 			return nil, ctx.Err()
 		}
-		client.mu.Lock()
 	}
-	client.lastRequest = time.Now()
-	client.mu.Unlock()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/"+strings.TrimLeft(path, "/"), bytes.NewReader(data))
 	if err != nil {
@@ -121,7 +173,7 @@ func (client *THSQuantClient) do(ctx context.Context, path string, payload map[s
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "astock-workbench/0.21")
-	request.Header.Set("access_token", client.accessToken)
+	request.Header.Set(header, token)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return nil, err
@@ -131,23 +183,37 @@ func (client *THSQuantClient) do(ctx context.Context, path string, payload map[s
 	if err != nil {
 		return nil, err
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("同花顺 Quant API HTTP %s: %s", response.Status, summarizeTHSError(body))
-	}
 	var envelope struct {
 		ErrorCode  int    `json:"errorcode"`
 		ErrorMsg   string `json:"errmsg"`
 		StatusCode int    `json:"status_code"`
 		StatusMsg  string `json:"status_msg"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("同花顺 Quant API 返回 JSON 无效: %w", err)
+	parseErr := json.Unmarshal(body, &envelope)
+	redact := func(text string) string {
+		return redactTHSTokens(text, token, client.refreshToken, client.AccessToken())
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		code := envelope.ErrorCode
+		if code == 0 {
+			code = envelope.StatusCode
+		}
+		apiErr := &thsAPIError{httpStatus: response.StatusCode, code: code, message: redact(firstNonEmpty(envelope.ErrorMsg, envelope.StatusMsg, summarizeTHSError(body)))}
+		client.rememberQuotaError(path, apiErr)
+		return nil, apiErr
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("同花顺 Quant API 返回 JSON 无效: %w", parseErr)
 	}
 	if envelope.ErrorCode != 0 {
-		return nil, fmt.Errorf("同花顺 Quant API 错误 %d: %s", envelope.ErrorCode, firstNonEmpty(envelope.ErrorMsg, "unknown error"))
+		err := &thsAPIError{code: envelope.ErrorCode, message: redact(firstNonEmpty(envelope.ErrorMsg, "unknown error"))}
+		client.rememberQuotaError(path, err)
+		return nil, err
 	}
 	if envelope.StatusCode != 0 {
-		return nil, fmt.Errorf("同花顺 Quant API 错误 %d: %s", envelope.StatusCode, firstNonEmpty(envelope.StatusMsg, "unknown error"))
+		err := &thsAPIError{code: envelope.StatusCode, message: redact(firstNonEmpty(envelope.StatusMsg, "unknown error"))}
+		client.rememberQuotaError(path, err)
+		return nil, err
 	}
 	return body, nil
 }

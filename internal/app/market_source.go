@@ -60,8 +60,8 @@ func localTHSConfigEnabled() bool {
 	if err != nil {
 		return false
 	}
-	config, access, _, err := storage.LoadTHSQuantAPIConfig(paths.THSQuantAPIConfigFile, paths.THSQuantAPITokenFile, paths.THSQuantAPIRefreshTokenFile)
-	return err == nil && config.Enabled && strings.TrimSpace(access) != ""
+	config, access, refresh, err := storage.LoadTHSQuantAPIConfig(paths.THSQuantAPIConfigFile, paths.THSQuantAPITokenFile, paths.THSQuantAPIRefreshTokenFile)
+	return err == nil && config.Enabled && (strings.TrimSpace(access) != "" || strings.TrimSpace(refresh) != "")
 }
 
 func (app *App) tdxPythonPath() string {
@@ -106,10 +106,10 @@ func (app *App) configureMarketSource(value string) error {
 			return fmt.Errorf("读取同花顺本地配置失败: %w", loadErr)
 		}
 		accessToken := firstNonEmptyEnv("ASTOCK_THS_ACCESS_TOKEN", fileAccessToken)
-		if accessToken == "" {
-			return fmt.Errorf("同花顺 Quant API 未配置 ASTOCK_THS_ACCESS_TOKEN")
-		}
 		refreshToken := firstNonEmptyEnv("ASTOCK_THS_REFRESH_TOKEN", fileRefreshToken)
+		if accessToken == "" && refreshToken == "" {
+			return fmt.Errorf("同花顺 Quant API 未配置访问令牌或刷新令牌")
+		}
 		if app.httpQuotes == nil || app.httpHistory == nil || app.httpMinutes == nil {
 			return fmt.Errorf("HTTP 行情回退源未初始化")
 		}
@@ -120,8 +120,14 @@ func (app *App) configureMarketSource(value string) error {
 			}
 			app.thsMarket = market.NewTHSQuantClient(market.THSQuantOptions{
 				AccessToken: accessToken, RefreshToken: refreshToken,
-				BaseURL: os.Getenv("ASTOCK_THS_BASE_URL"), MinRequestGap: time.Duration(gapMS) * time.Millisecond,
-				QuoteIndicators: os.Getenv("ASTOCK_THS_QUOTE_INDICATORS"), HistoryIndicators: os.Getenv("ASTOCK_THS_HISTORY_INDICATORS"), MinuteIndicators: os.Getenv("ASTOCK_THS_MINUTE_INDICATORS"),
+				BaseURL: firstNonEmptyEnv("ASTOCK_THS_BASE_URL", localConfig.BaseURL), MinRequestGap: time.Duration(gapMS) * time.Millisecond,
+				QuoteIndicators: firstNonEmptyEnv("ASTOCK_THS_QUOTE_INDICATORS", localConfig.QuoteIndicators), HistoryIndicators: firstNonEmptyEnv("ASTOCK_THS_HISTORY_INDICATORS", localConfig.HistoryIndicators), MinuteIndicators: firstNonEmptyEnv("ASTOCK_THS_MINUTE_INDICATORS", localConfig.MinuteIndicators),
+				OnAccessToken: func(previous, next string) error {
+					if strings.TrimSpace(os.Getenv("ASTOCK_THS_ACCESS_TOKEN")) != "" || strings.TrimSpace(os.Getenv("ASTOCK_THS_REFRESH_TOKEN")) != "" {
+						return nil
+					}
+					return storage.SaveTHSAccessToken(app.paths.THSQuantAPIConfigFile, app.paths.THSQuantAPITokenFile, previous, next)
+				},
 			})
 		}
 		app.quotes = market.NewFallbackQuoteClient(app.thsMarket, app.httpQuotes)

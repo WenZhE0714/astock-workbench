@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -175,6 +176,10 @@ func fetchTencentDailyBars(ctx context.Context, symbol string) ([]domain.DailyBa
 		cancel()
 		if err != nil {
 			lastError = err
+			var status *httpStatusError
+			if errors.As(err, &status) && status.code == 501 {
+				return nil, fmt.Errorf("腾讯日K访问受限（HTTP 501）: %w", err)
+			}
 			continue
 		}
 		bars := ParseTencentDailyHistoryPayload(raw, symbol)

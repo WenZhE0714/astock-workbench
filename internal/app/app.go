@@ -68,8 +68,8 @@ func New(output, errorOutput io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	primaryHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{})
-	primaryScanHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{})
+	primaryHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{}, market.SinaDailyHistoryClient{})
+	primaryScanHistory := market.NewFallbackDailyHistoryClient(market.TencentClient{}, market.EastmoneyClient{}, market.SinaDailyHistoryClient{})
 	quoteClient := market.TencentClient{}
 	boardClient := market.NewFallbackBoardFlowClient(market.EastmoneyClient{}, market.THSStockBoardClient{})
 	rankingClient := market.NewIndustryEnrichedRankingClient(

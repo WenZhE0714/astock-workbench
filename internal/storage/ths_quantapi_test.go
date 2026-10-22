@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,6 +30,58 @@ func TestLoadTHSQuantAPIConfigReadsNonSecretAndSecretFiles(t *testing.T) {
 	}
 	if access != "json-access" || refresh != "json-refresh" {
 		t.Fatalf("unexpected secrets: %q / %q", access, refresh)
+	}
+}
+
+func TestSaveTHSAccessTokenPreservesConfigurationAndSecretLocation(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "config.json")
+	token := filepath.Join(root, "token")
+	if err := os.WriteFile(cfg, []byte(`{"enabled":true,"access_token":"old","refresh_token":"refresh","extra":{"keep":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveTHSAccessToken(cfg, token, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if string(doc["access_token"]) != `"new"` || string(doc["refresh_token"]) != `"refresh"` || len(doc["extra"]) == 0 {
+		t.Fatal("unrelated configuration changed")
+	}
+	if _, err := os.Stat(token); !os.IsNotExist(err) {
+		t.Fatal("inline secret was relocated")
+	}
+	info, _ := os.Stat(cfg)
+	if info.Mode().Perm() != 0o600 {
+		t.Fatal("credential file permissions changed")
+	}
+	if err := SaveTHSAccessToken(cfg, token, "old", "other"); err == nil {
+		t.Fatal("newer credential overwritten")
+	}
+	if err := SaveTHSAccessToken(cfg, token, "old", "new"); err != nil {
+		t.Fatal("same server token not idempotent")
+	}
+}
+
+func TestSaveTHSAccessTokenSupportsSeparateFile(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "config.json")
+	token := filepath.Join(root, "token")
+	if err := os.WriteFile(cfg, []byte(`{"enabled":true,"refresh_token":"refresh"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveTHSAccessToken(cfg, token, "", "new"); err != nil {
+		t.Fatal(err)
+	}
+	_, access, refresh, err := LoadTHSQuantAPIConfig(cfg, token, "")
+	if err != nil || access != "new" || refresh != "refresh" {
+		t.Fatal("separate token not readable")
 	}
 }
 

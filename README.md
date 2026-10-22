@@ -705,7 +705,7 @@ JSON 文件同时保存连接参数和 Token，建议权限设为 `0600`：
 }
 ```
 
-当 `enabled` 为 `true` 且 `access_token` 已填写时，CLI 和 Web 在未显式指定行情源的情况下会默认使用
+当 `enabled` 为 `true` 且访问令牌或刷新令牌已填写时，CLI 和 Web 在未显式指定行情源的情况下会默认使用
 同花顺；仍可用 `--source http` 或 `--source tdx` 临时覆盖。
 
 也可以只使用环境变量；环境变量优先于本地文件：
@@ -718,9 +718,15 @@ export ASTOCK_MARKET_SOURCE=ths
 ./dist/astock web --listen 127.0.0.1:8788 --source ths
 ```
 
-Quant API 请求使用 `access_token` Header。`refresh_token` 当前不会被程序自动交换，
-因为公开数据网关没有稳定的 CLI 刷新端点；Access Token 失效时应在同花顺控制台重新生成并
-更新本地 JSON。可通过 `ASTOCK_THS_BASE_URL` 覆盖网关地址，通过
+Quant API 请求使用 `access_token` Header。访问令牌到期（HTTP 401 / `-1302`）后，程序按
+[官方 HTTP 示例](https://quantapi.51ifind.com/gwstatic/static/ds_web/quantapi-web/example.html)
+使用 `refresh_token` Header 调用 `get_access_token`，共用并发刷新结果并重试原请求一次。
+本地文件配置的新访问令牌会原子保存到原位置（权限 `0600`）；环境变量配置仅在进程内更新。
+刷新失败会退避一分钟。刷新令牌随账号到期、权限变更而失效时，仍需在官方账号详情更新。
+`-4318` 表示本月数据额度已用尽，换令牌不能恢复额度；该接口会短暂退避并走备用行情源。
+近期未复权日K依次尝试腾讯、东方财富和新浪，再使用未过期缓存；新浪不替代长区间回测数据，
+也不推算缺失的成交额或换手率。`ASTOCK_DAILY_HISTORY_SINA_API_URL` 可覆盖新浪兼容接口地址。
+可通过 `ASTOCK_THS_BASE_URL` 覆盖网关地址，通过
 `ASTOCK_THS_MIN_REQUEST_GAP_MS` 调高本地请求间隔；指标名称可分别用
 `ASTOCK_THS_QUOTE_INDICATORS`、`ASTOCK_THS_HISTORY_INDICATORS` 和
 `ASTOCK_THS_MINUTE_INDICATORS` 覆盖。若账号权限不足或返回结构无法识别，系统会自动回退
