@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/wenzhe/astock-workbench/internal/domain"
 	"github.com/wenzhe/astock-workbench/internal/market"
+	"github.com/wenzhe/astock-workbench/internal/realtime"
 	"github.com/wenzhe/astock-workbench/internal/strategy"
 )
 
@@ -75,6 +75,7 @@ func (app *App) collectMarketChatFacts(ctx context.Context, progress stockReport
 		}
 	}
 	facts := domain.MarketChatFacts{GeneratedAt: time.Now(), Warnings: warnings}
+	facts.TradingDates = realtime.TradingDatesFromBars(fetched["sh000001"].bars)
 	facts.MarketStatus = marketSessionAt(facts.GeneratedAt).Label
 	quotes := map[string]domain.Quote{}
 	for _, quote := range fetched["quotes"].quotes {
@@ -160,12 +161,7 @@ func (app *App) collectMarketChatFacts(ctx context.Context, progress stockReport
 		facts.Warnings = append(facts.Warnings, "沪深成交额缺少可比完整交易日口径，不能据此判定放量或缩量")
 	}
 	facts.Warnings = sortedWarnings(facts.Warnings)
-	data, err := json.Marshal(facts)
-	if err != nil {
-		return facts, fmt.Errorf("大盘快照含无效数据: %w", err)
-	}
-	facts.SnapshotHash = snapshotHash(data)
-	return facts, nil
+	return finalizeMarketChatFacts(facts)
 }
 
 func marketChatBreadth(boards map[string]domain.BoardFlow, fetchErr error) domain.MarketChatBreadth {
@@ -227,7 +223,7 @@ func marketChatBreadth(boards map[string]domain.BoardFlow, fetchErr error) domai
 }
 
 func marketChatTurnover(quotes map[string]domain.Quote, previous domain.MarketAmountSnapshot, status string) domain.MarketChatAmount {
-	result := domain.MarketChatAmount{Scope: "沪深两市（上证+深证综指），单位万元", PreviousDate: previous.TradeDate}
+	result := domain.MarketChatAmount{Basis: "shanghai-shenzhen", Scope: "沪深两市（上证+深证综指），单位万元", PreviousDate: previous.TradeDate}
 	sh, sz := quotes["sh000001"], quotes["sz399106"]
 	if finite(sh.Amount) && finite(sz.Amount) && sh.Amount > 0 && sz.Amount > 0 {
 		result.Available = true
@@ -241,6 +237,7 @@ func marketChatTurnover(quotes map[string]domain.Quote, previous domain.MarketAm
 		date = sh.QuoteTime[:10]
 	}
 	_, validDate := parseFactDate(previous.TradeDate)
+	result.QuoteDate = date
 	result.Comparable = result.Available && result.Previous > 0 && validDate && date > previous.TradeDate && status == "已收盘"
 	if result.Comparable {
 		result.ChangePercent = (result.Current/result.Previous - 1) * 100

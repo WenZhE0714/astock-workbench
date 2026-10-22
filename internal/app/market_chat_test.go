@@ -67,6 +67,9 @@ func (m *marketAnswerMock) Synthesize(_ context.Context, prompt string) (string,
 func (m *marketAnswerMock) SynthesizeJSON(_ context.Context, prompt string, _ []byte, out any) error {
 	m.prompts = append(m.prompts, prompt)
 	m.structured++
+	if _, ok := out.(*marketChatAnswerAudit); ok {
+		return json.Unmarshal([]byte(`{"consistent":true,"evidence_supported":true,"short_direction":"range","medium_direction":"bearish","issues":[]}`), out)
+	}
 	return json.Unmarshal([]byte(`{"short_direction":"range","short_reason":"短线分化","medium_direction":"bearish","medium_reason":"中期结构承压","answer":"未来5个交易日震荡，20个交易日偏空。"}`), out)
 }
 func TestMarketChatUsesMarketEvidenceAndFreezesDirectionalRecord(t *testing.T) {
@@ -74,15 +77,22 @@ func TestMarketChatUsesMarketEvidenceAndFreezesDirectionalRecord(t *testing.T) {
 	store := storage.NewAIChatStore(t.TempDir())
 	app := &App{quotes: marketChatQuotesMock{}, history: marketChatHistoryMock{}, industryFlows: marketChatIndustriesMock{},
 		boards: forbiddenStockContext{}, dragonTiger: forbiddenStockContext{}, news: forbiddenStockContext{}, research: forbiddenStockContext{}, marketReportAI: model, aiChats: store}
-	result, err := app.answerAIChatQuestionDetailed(context.Background(), "market", nil, nil, "现在大盘趋势怎么样，后续看涨还是看跌", nil)
+	collected, err := app.collectMarketChatFacts(context.Background(), nil)
+	if err != nil || len(collected.Indices) != 3 {
+		t.Fatalf("market collection failed: %v", err)
+	}
+	if collected.Breadth.Strong[0].FlowAvailable {
+		t.Fatal("missing flow counted as zero")
+	}
+	result, err := app.answerMarketChatSnapshot(context.Background(), nil, "现在大盘趋势怎么样，后续看涨还是看跌", readyMarketChatFacts(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Fallback || result.Assessment == nil || model.structured != 1 || len(model.prompts) != 4 {
+	if result.Fallback || result.Assessment == nil || model.structured != 2 || len(model.prompts) != 5 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	for _, p := range model.prompts {
-		for _, required := range []string{"sh000001", "sz399001", "sz399006", "现在大盘趋势怎么样", "industry_breadth", "未来5个交易日", "未来20个交易日"} {
+		for _, required := range []string{"sh000001", "sz399001", "sz399006", "现在大盘趋势怎么样", "industry_breadth"} {
 			if !strings.Contains(p, required) {
 				t.Fatalf("missing market context %s", required)
 			}
@@ -102,9 +112,6 @@ func TestMarketChatUsesMarketEvidenceAndFreezesDirectionalRecord(t *testing.T) {
 		if run.FactsHash != result.FactsHash {
 			t.Fatal("agent hash mismatch")
 		}
-	}
-	if record.Facts.Breadth.Strong[0].FlowAvailable {
-		t.Fatal("missing flow counted as zero")
 	}
 }
 

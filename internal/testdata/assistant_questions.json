@@ -1,0 +1,18 @@
+[
+  {"name":"market-original","symbol":"sh600519","scope":"auto","question":"现在大盘趋势怎么样，后续看涨还是看跌","market":true},
+  {"name":"stock-valuation","symbol":"sh600519","scope":"auto","question":"贵州茅台现在估值贵不贵？缺什么财务数据？","market":false},
+  {"name":"bank-code-collision","symbol":"sz000001","scope":"auto","question":"平安银行的财报怎么样？","market":false},
+  {"name":"index-short-question","symbol":"sh000001","scope":"auto","question":"后面怎么看？","market":true},
+  {"name":"market-follow-up","symbol":"market","scope":"auto","question":"你刚才的判断有什么反证？","market":true},
+  {"name":"stock-follow-up","symbol":"sh600519","scope":"security","question":"我已经持有，什么条件会改变刚才的判断？","market":false},
+  {"name":"relative-market","symbol":"sh600519","scope":"auto","question":"这只股票能跑赢大盘吗？","market":false},
+  {"name":"large-cap-stock","symbol":"sh600519","scope":"auto","question":"这类大盘股的估值怎么样？","market":false},
+  {"name":"explicit-market","symbol":"sh600519","scope":"market","question":"接着说，哪些数据缺失？","market":true},
+  {"name":"explicit-security","symbol":"sh600519","scope":"security","question":"大盘变化影响持仓吗？","market":false},
+  {"name":"missing-index","symbol":"market","scope":"market","question":"深证和创业板日K拿不到，还能说全市场偏空吗？","market":true,"gate_case":"missing-index"},
+  {"name":"stale-data","symbol":"market","scope":"market","question":"行情还是昨天的，现在大盘能买吗？","market":true,"gate_case":"stale-quote"},
+  {"name":"turnover-mismatch","symbol":"market","scope":"market","question":"现在的成交额比昨天多，算放量吗？","market":true,"gate_case":"turnover-mismatch"},
+  {"name":"missing-breadth","symbol":"market","scope":"market","question":"只有银行板块数据，能判断市场普跌吗？","market":true,"gate_case":"missing-breadth"},
+  {"name":"financial-follow-up","symbol":"sh600519","scope":"security","question":"没有利润和现金流数据，为什么能判断便宜？","market":false},
+  {"name":"separate-horizons","symbol":"market","scope":"market","question":"请分别给出未来5个和20个交易日判断，不要混在一起。","market":true}
+]

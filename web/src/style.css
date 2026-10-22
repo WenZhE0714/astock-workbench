@@ -1400,10 +1400,13 @@ html.assistant-open, body.assistant-open { overflow:hidden; overscroll-behavior:
 .market-chat-review header { display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:space-between; gap:8px; }
 .market-chat-review header > div { display:flex; gap:6px; }
 .market-chat-review .icon-button { width:28px; height:28px; padding:5px; display:inline-flex; align-items:center; justify-content:center; }
-.market-chat-review dl { margin:8px 0; display:grid; grid-template-columns:minmax(85px,1fr) minmax(0,2fr); gap:6px; }
+.market-chat-review dl { margin:8px 0; display:grid; grid-template-columns:minmax(125px,1fr) minmax(0,2fr); gap:6px; }
 .market-chat-review dd { margin:0; text-align:right; }
 .market-chat-review p { margin:5px 0; }
 .market-chat-review small { color:var(--muted); }
+.market-chat-quality { margin:7px 0; color:var(--muted); }
+.market-chat-quality summary { cursor:pointer; }
+.market-chat-quality ul { margin:5px 0; padding-left:18px; }
 .assistant-agent-status { display:flex; flex-wrap:wrap; gap:4px 8px; margin-top:6px; }
 .assistant-agent-status span { display:inline-flex; align-items:center; gap:3px; color:var(--muted); font-size:8px; }
 .assistant-agent-status i { width:5px; height:5px; border-radius:50%; background:var(--muted); }

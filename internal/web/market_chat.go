@@ -27,7 +27,7 @@ func assistantMarketTarget(symbol, question, scope string) (bool, error) {
 		return false, nil
 	}
 	// Explicit scope remains available when a sentence mentions both a stock and the market.
-	for _, word := range []string{"这只", "个股", "跑赢", "相对", "相比", "这支", "我的持仓"} {
+	for _, word := range []string{"这只", "个股", "大盘股", "跑赢", "相对", "相比", "这支", "我的持仓"} {
 		if strings.Contains(question, word) {
 			return false, nil
 		}

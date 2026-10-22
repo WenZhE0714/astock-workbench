@@ -21,7 +21,7 @@ func (service webAIChatService) ReviewMarket(ctx context.Context, id string) (do
 	if err != nil {
 		return domain.MarketChatReview{}, err
 	}
-	if !record.Assessment.Evaluable {
+	if !marketAssessmentCanEvaluate(record.Assessment) {
 		return evaluateMarketRecord(record, nil, time.Now())
 	}
 	if service.app.history == nil {
@@ -36,6 +36,9 @@ func (service webAIChatService) ReviewMarket(ctx context.Context, id string) (do
 
 func evaluateMarketRecord(record domain.MarketChatRecord, bars []domain.DailyBar, now time.Time) (domain.MarketChatReview, error) {
 	a := record.Assessment
+	if !marketAssessmentCanEvaluate(a) {
+		a.Evaluable = false
+	}
 	result := domain.MarketChatReview{Assessment: a, CheckedAt: now}
 	if a.AnchorSymbol != "sh000001" || a.BaseClose <= 0 || !finite(a.BaseClose) || a.NeutralBandPercent != 1 {
 		return result, fmt.Errorf("判断基准无效")
@@ -97,4 +100,14 @@ func evaluateMarketRecord(record domain.MarketChatRecord, bars []domain.DailyBar
 		result.Outcomes = append(result.Outcomes, outcome)
 	}
 	return result, nil
+}
+
+func marketAssessmentCanEvaluate(a domain.MarketChatAssessment) bool {
+	if !a.Evaluable {
+		return false
+	}
+	if a.Quality != nil {
+		return a.Quality.Status == "ready" && a.Consistency != nil && a.Consistency.Status == "passed"
+	}
+	return a.Consistency == nil || a.Consistency.Status == "passed"
 }

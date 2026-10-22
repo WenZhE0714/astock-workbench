@@ -6,13 +6,33 @@ const MarketChatSymbol = "market"
 
 // MarketChatFacts deliberately excludes company announcements and stock boards.
 type MarketChatFacts struct {
-	GeneratedAt  time.Time         `json:"generated_at"`
-	SnapshotHash string            `json:"snapshot_hash"`
-	MarketStatus string            `json:"market_status"`
-	Indices      []MarketChatIndex `json:"indices"`
-	Breadth      MarketChatBreadth `json:"industry_breadth"`
-	Amount       MarketChatAmount  `json:"turnover"`
-	Warnings     []string          `json:"warnings"`
+	GeneratedAt  time.Time          `json:"generated_at"`
+	SnapshotHash string             `json:"snapshot_hash"`
+	MarketStatus string             `json:"market_status"`
+	Indices      []MarketChatIndex  `json:"indices"`
+	Breadth      MarketChatBreadth  `json:"industry_breadth"`
+	Amount       MarketChatAmount   `json:"turnover"`
+	Warnings     []string           `json:"warnings"`
+	TradingDates []string           `json:"trading_dates,omitempty"`
+	Quality      *MarketChatQuality `json:"quality,omitempty"`
+}
+
+type MarketChatQuality struct {
+	Version       int      `json:"version"`
+	Status        string   `json:"status"`
+	QuoteDate     string   `json:"quote_date"`
+	DailyDate     string   `json:"daily_date"`
+	ReadyIndices  []string `json:"ready_indices"`
+	UsableIndices []string `json:"usable_indices"`
+	TurnoverReady bool     `json:"turnover_ready"`
+	BreadthReady  bool     `json:"breadth_ready"`
+	Reasons       []string `json:"reasons"`
+}
+
+type MarketChatConsistency struct {
+	Status   string   `json:"status"`
+	Attempts int      `json:"attempts"`
+	Issues   []string `json:"issues,omitempty"`
 }
 
 type MarketChatIndex struct {
@@ -42,6 +62,7 @@ type MarketChatBreadth struct {
 }
 
 type MarketChatAmount struct {
+	Basis         string  `json:"basis,omitempty"`
 	Scope         string  `json:"scope"`
 	Available     bool    `json:"available"`
 	Current       float64 `json:"current_wan_yuan"`
@@ -49,6 +70,7 @@ type MarketChatAmount struct {
 	PreviousDate  string  `json:"previous_date"`
 	Comparable    bool    `json:"comparable"`
 	ChangePercent float64 `json:"change_percent"`
+	QuoteDate     string  `json:"quote_date,omitempty"`
 }
 
 type MarketChatPrediction struct {
@@ -66,6 +88,8 @@ type MarketChatAssessment struct {
 	Evaluable          bool                   `json:"evaluable"`
 	LimitReason        string                 `json:"limit_reason,omitempty"`
 	Predictions        []MarketChatPrediction `json:"predictions"`
+	Quality            *MarketChatQuality     `json:"quality,omitempty"`
+	Consistency        *MarketChatConsistency `json:"consistency,omitempty"`
 }
 
 type MarketChatRecord struct {

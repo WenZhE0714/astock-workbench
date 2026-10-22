@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wenzhe/astock-workbench/internal/analysis"
 	"github.com/wenzhe/astock-workbench/internal/domain"
 )
 
@@ -47,10 +46,24 @@ func (app *App) answerMarketChat(ctx context.Context, history []domain.AIChatTur
 	if err != nil {
 		return aiChatAnswer{}, err
 	}
+	return app.answerMarketChatSnapshot(ctx, history, question, facts, progress)
+}
+
+func (app *App) answerMarketChatSnapshot(ctx context.Context, history []domain.AIChatTurn, question string, facts domain.MarketChatFacts, progress stockReportProgress) (aiChatAnswer, error) {
+	facts, err := finalizeMarketChatFacts(facts)
+	if err != nil {
+		return aiChatAnswer{}, err
+	}
+	if ctx.Err() != nil {
+		return aiChatAnswer{}, ctx.Err()
+	}
 	historyContext := newAIChatResearchContext(domain.StockReportFacts{}, history, question, nil).History
 	payload := marketChatContext{Facts: facts, Question: question, History: historyContext}
 	freshness := marketChatFreshness(facts)
-	runs := app.runResearchAgents(ctx, "大盘咨询", freshness, payload, marketChatRoles, progress)
+	var runs []domain.AgentResearchRun
+	if facts.Quality.Status == "ready" {
+		runs = app.runResearchAgents(ctx, "大盘咨询", freshness, payload, marketChatRoles, progress)
+	}
 	result := aiChatAnswer{FactsAt: facts.GeneratedAt, FactsHash: facts.SnapshotHash, Agents: runs}
 	if ctx.Err() != nil {
 		return result, ctx.Err()
@@ -61,17 +74,12 @@ func (app *App) answerMarketChat(ctx context.Context, history []domain.AIChatTur
 	}
 	prompt := marketChatRules + "\n角色意见只供审计，事实优先。失败角色不计入共识。回答当前问题，不必复述每个角色。\n角色结果JSON：\n" + agentEvidenceJSON(runs) + "\n结构化上下文JSON：\n" + string(data)
 	model := marketChatModelAnswer{ShortDirection: "unknown", MediumDirection: "unknown"}
-	if successfulAgentCount(runs) > 0 {
+	consistency := domain.MarketChatConsistency{Status: "not_run"}
+	if facts.Quality.Status != "ready" {
+		model = limitedMarketChatAnswer(facts, "数据质量门禁未通过，仅展示已知指数数据")
+	} else if successfulAgentCount(runs) > 0 {
 		reportStockProgress(progress, "综合大盘证据，记录5/20交易日方向")
-		callCtx, cancel := context.WithTimeout(ctx, codexReportTimeout())
-		if structured, ok := app.marketReportAI.(analysis.StructuredSynthesizer); ok {
-			err = structured.SynthesizeJSON(callCtx, prompt, []byte(marketChatAnswerSchema), &model)
-		} else {
-			model.Answer, err = app.marketReportAI.Synthesize(callCtx, prompt+"\n当前通道仅支持文本，正文可分析，但不生成可计分方向。")
-			model.ShortReason = "当前通道未提供结构化方向"
-			model.MediumReason = model.ShortReason
-		}
-		cancel()
+		model, consistency, err = app.synthesizeCheckedMarketChat(ctx, prompt, payload, progress)
 	} else {
 		err = fmt.Errorf("大盘分析角色均不可用")
 	}
@@ -85,17 +93,18 @@ func (app *App) answerMarketChat(ctx context.Context, history []domain.AIChatTur
 		} else {
 			result.ModelError = "综合回答为空或方向格式无效"
 		}
-		model = marketChatModelAnswer{ShortDirection: "unknown", MediumDirection: "unknown", ShortReason: "综合分析未完成", MediumReason: "综合分析未完成"}
-		var out strings.Builder
-		out.WriteString("## 当前状态\n\n本轮综合分析未完成，未形成未来5/20交易日预测。\n\n")
-		for _, index := range facts.Indices {
-			fmt.Fprintf(&out, "- %s：完整日K截至%s，收盘%.2f，MA5 %.2f、MA20 %.2f、MA60 %.2f。\n", index.Quote.Symbol, index.Technical.DataDate, index.Technical.Price, index.Technical.MA5, index.Technical.MA20, index.Technical.MA60)
-		}
-		out.WriteString("\n以上仅为已观测数据，不触发交易。")
-		model.Answer = out.String()
+		model = limitedMarketChatAnswer(facts, "综合分析或正文核验未完成，本轮不形成有效预测")
 	}
 	result.Answer = attachResearchFreshness(model.Answer, freshness, runs)
+	if len(runs) == 0 {
+		result.Answer = fmt.Sprintf("> 数据时效：%s。\n\n%s", freshness, model.Answer)
+	}
 	assessment := newMarketAssessment(facts, model)
+	assessment.Consistency = &consistency
+	if consistency.Status != "passed" {
+		assessment.Evaluable = false
+		assessment.LimitReason = "数据或正文核验未通过，不计方向命中"
+	}
 	if app.aiChats != nil && assessment.BaseClose > 0 {
 		record := domain.MarketChatRecord{SchemaVersion: 1, Assessment: assessment, Facts: facts, Question: question, Answer: result.Answer}
 		if err := app.aiChats.SaveMarketRecord(record); err != nil {
@@ -104,6 +113,25 @@ func (app *App) answerMarketChat(ctx context.Context, history []domain.AIChatTur
 		result.Assessment = &assessment
 	}
 	return result, nil
+}
+
+func limitedMarketChatAnswer(facts domain.MarketChatFacts, reason string) marketChatModelAnswer {
+	var out strings.Builder
+	fmt.Fprintf(&out, "## 分析范围\n\n%s，不能概括全市场走势。\n\n未来5个交易日：证据不足；未来20个交易日：证据不足。\n\n## 已知指数数据\n\n", reason)
+	for _, index := range facts.Indices {
+		if !marketChatDailyUsable(index, facts.GeneratedAt) {
+			continue
+		}
+		fmt.Fprintf(&out, "- %s：截至%s完整日K，收盘%.2f，MA5 %.2f、MA20 %.2f、MA60 %.2f。以上是该日状态，不代表未来方向。\n", index.Quote.Symbol, index.Technical.DataDate, index.Technical.Price, index.Technical.MA5, index.Technical.MA20, index.Technical.MA60)
+	}
+	if facts.Quality != nil && len(facts.Quality.Reasons) > 0 {
+		out.WriteString("\n## 待补证据\n\n")
+		for _, item := range facts.Quality.Reasons {
+			fmt.Fprintf(&out, "- %s。\n", item)
+		}
+	}
+	out.WriteString("\n研究说明不触发交易。")
+	return marketChatModelAnswer{ShortDirection: "unknown", MediumDirection: "unknown", ShortReason: reason, MediumReason: reason, Answer: out.String()}
 }
 
 func validMarketDirection(value string) bool {
@@ -117,6 +145,7 @@ func newMarketAssessment(facts domain.MarketChatFacts, answer marketChatModelAns
 	}
 	a := domain.MarketChatAssessment{ID: fmt.Sprintf("%019d-%s", time.Now().UnixNano(), hash[:12]), AnchorSymbol: "sh000001", NeutralBandPercent: 1,
 		Predictions: []domain.MarketChatPrediction{{TradingDays: 5, Direction: answer.ShortDirection, Reason: answer.ShortReason}, {TradingDays: 20, Direction: answer.MediumDirection, Reason: answer.MediumReason}}}
+	a.Quality = facts.Quality
 	for _, index := range facts.Indices {
 		if index.Quote.Symbol != "sh000001" {
 			continue
@@ -124,7 +153,7 @@ func newMarketAssessment(facts domain.MarketChatFacts, answer marketChatModelAns
 		a.BaseDate = index.Technical.DataDate
 		a.BaseClose = index.Technical.Price
 		today := facts.GeneratedAt.In(shanghaiLocation).Format(time.DateOnly)
-		a.Evaluable = facts.MarketStatus == "已收盘" && a.BaseDate == today && strings.HasPrefix(index.Quote.QuoteTime, today)
+		a.Evaluable = facts.Quality != nil && facts.Quality.Status == "ready" && facts.MarketStatus == "已收盘" && a.BaseDate == today && strings.HasPrefix(index.Quote.QuoteTime, today)
 	}
 	if !a.Evaluable {
 		a.LimitReason = "仅对当日收盘后、行情与完整日K同日的判断计分；本轮保留证据，不计方向命中"

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,31 @@ func TestAssistantMarketRouting(t *testing.T) {
 	}
 	if _, err := assistantMarketTarget("sh600519", "问题", "invalid"); err == nil {
 		t.Fatal("unknown scope accepted")
+	}
+}
+
+func TestAssistantFixedQuestionRegression(t *testing.T) {
+	data, err := os.ReadFile("../testdata/assistant_questions.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name, Symbol, Scope, Question string
+		Market                        bool
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 16 {
+		t.Fatal("regression cases unexpectedly removed")
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			got, err := assistantMarketTarget(tc.Symbol, tc.Question, tc.Scope)
+			if err != nil || got != tc.Market {
+				t.Fatalf("wrong route for %q: %v %v", tc.Question, got, err)
+			}
+		})
 	}
 }
 
