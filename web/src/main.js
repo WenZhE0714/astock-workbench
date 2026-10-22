@@ -1,6 +1,8 @@
 // The page template is delivered by Go so the browser bundle needs Vue's
 // runtime compiler, not the runtime-only default entry.
 import { createApp, defineAsyncComponent } from "vue/dist/vue.esm-bundler.js"
+import { renderAssistantAnswer } from "./assistant-answer.mjs"
+import { MarketChatReview } from "./market-chat-review.js"
 import { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell } from "lucide-vue-next"
 import { finiteNumber, boardDistribution, signalScore, selectMonitorSignals, radarPoint, radarPolygon } from "./dashboard.mjs"
 import { matchingChartAnalysis, chartLevelRows, chartStructureState, chartWeeklyState, savedPlanState, chartDataLagNotice, chartPatternBias, chartStructureLines, chartStructureColor, chartStructureVisible, preferredChartStructureID } from "./chart-analysis.mjs"
@@ -119,7 +121,7 @@ const strategyStartDate = new Date(strategyEndDate)
 strategyStartDate.setFullYear(strategyStartDate.getFullYear() - 3)
 
 createApp({
-  components: { LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView, StrategyPreflightView, PriceAlertsView },
+  components: { MarketChatReview, LayoutDashboard, ChartNoAxesCombined, Layers, Globe, Activity, FlaskConical, Radio, ScanLine, Settings, Star, RefreshCw, ArrowUpRight, X, ChevronRight, BookmarkPlus, MessageCircle, Bell, PlanMonitorDetails, PlanExperimentView, PlanDecision, LocalAlertCenter, ReviewCalendarView, ChartTimeframesView, PatternValidationView, ShadowDailyReviewView, ShadowComparisonView, BoardWorkbench, NativeNotificationView, CandidateDiagnostics, VolumeForwardStudyView, FrozenReplayView, StrategyPreflightView, PriceAlertsView },
   data() {
     return {
       query: defaultSymbol,
@@ -293,6 +295,7 @@ createApp({
       globalCrosshair: null,
       globalChartGeometry: null,
       assistantOpen: false,
+      assistantScope: 'auto',
       assistantLoading: false,
       assistantSending: false,
       assistantContext: null,
@@ -1627,6 +1630,7 @@ createApp({
       this.assistantDraft = question
       this.$nextTick(() => this.$refs.assistantInput?.focus())
     },
+    renderAssistantAnswer,
     scrollAssistantThread() {
       this.$nextTick(() => {
         const scroll = this.$refs.assistantScroll
@@ -1643,8 +1647,9 @@ createApp({
       })
     },
     async loadAssistantContext(symbol = this.assistantSymbol) {
-      const target = String(symbol || "").trim()
+      const target = this.assistantScope === 'market' ? 'market' : String(symbol || "").trim()
       if (!target) return
+      const preserveAnswer = this.assistantBusy
       const requestID = ++this.assistantContextRequestID
       this.assistantLoading = true
       this.assistantError = ""
@@ -1655,7 +1660,8 @@ createApp({
         if (!response.ok) throw new Error(payload.error || "AI上下文读取失败")
         if (requestID !== this.assistantContextRequestID) return
         this.assistantContext = payload
-        this.assistantConversation = Array.isArray(payload.history) ? payload.history : []
+        if (payload.symbol === 'market') this.assistantScope = 'market'
+        if (!preserveAnswer && !this.assistantBusy) this.assistantConversation = Array.isArray(payload.history) ? payload.history : []
         if (Array.isArray(payload.alerts)) this.assistantAlerts = payload.alerts
         this.assistantContextCheckedAt = Date.now()
         this.assistantAlertsCheckedAt = Date.now()
@@ -1696,6 +1702,12 @@ createApp({
         if (requestID === this.assistantAlertsRequestID && !this.assistantContext) this.assistantError = error instanceof Error ? error.message : String(error)
       }
     },
+    changeAssistantScope() {
+      this.assistantContext = null
+      this.assistantConversation = []
+      this.assistantRuleDraft = null
+      this.loadAssistantContext(this.assistantSymbol)
+    },
     async sendAssistantMessage() {
       const question = String(this.assistantDraft || "").trim()
       if (!question || this.assistantBusy) return
@@ -1713,11 +1725,17 @@ createApp({
         const response = await fetch("/api/assistant/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbol, question, ...(chart ? { chart } : {}) }),
+          body: JSON.stringify({ symbol, question, scope: this.assistantScope, ...(chart ? { chart } : {}) }),
           cache: "no-store",
         })
         const body = await response.text()
         const payload = body ? JSON.parse(body) : {}
+        if (payload.symbol === 'market' && this.assistantScope !== 'market' && payload.job_id) {
+          this.assistantScope = 'market'
+          this.assistantConversation = []
+          this.assistantContext = null
+          this.loadAssistantContext('market')
+        }
         if (response.status === 409 && payload.job_id) {
           this.assistantJobID = payload.job_id
           this.assistantJobStatus = payload.status || "running"
@@ -1827,6 +1845,7 @@ createApp({
             answer: result.answer,
             fallback: result.fallback === true,
             agents: result.agents || [],
+            assessment: result.assessment || null,
           }]
           if (this.assistantContext) {
             this.assistantContext.facts_at = result.facts_at || this.assistantContext.facts_at

@@ -30,6 +30,9 @@ func NewAIChatStore(root string) *AIChatStore {
 }
 
 func (store *AIChatStore) conversationPath(symbol string) (string, error) {
+	if symbol == domain.MarketChatSymbol {
+		return filepath.Join(store.root, "market", "conversation.json"), nil
+	}
 	code := stockReportCode(symbol)
 	if code == "" {
 		return "", fmt.Errorf("无效AI咨询股票代码 %q", symbol)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/wenzhe/astock-workbench/internal/analysis"
 	"github.com/wenzhe/astock-workbench/internal/domain"
+	"github.com/wenzhe/astock-workbench/internal/market"
 	"github.com/wenzhe/astock-workbench/internal/strategy"
 	"github.com/wenzhe/astock-workbench/internal/web"
 )
@@ -23,6 +24,15 @@ type webAIChatService struct {
 func (service webAIChatService) Prepare(ctx context.Context, symbol string) (web.AIChatContext, error) {
 	if service.app == nil {
 		return web.AIChatContext{}, fmt.Errorf("应用服务未初始化")
+	}
+	if symbol == domain.MarketChatSymbol || market.IsBroadMarketSymbol(symbol) {
+		facts, err := service.app.collectMarketChatFacts(ctx, nil)
+		if err != nil {
+			return web.AIChatContext{}, err
+		}
+		primary := facts.Indices[0]
+		return web.AIChatContext{Symbol: domain.MarketChatSymbol, Name: "大盘 · 三大指数", MarketFacts: &facts,
+			Facts: domain.StockReportFacts{GeneratedAt: facts.GeneratedAt, SnapshotHash: facts.SnapshotHash, Quote: primary.Quote, Technical: primary.Technical, Warnings: facts.Warnings}}, nil
 	}
 	facts, err := service.app.collectStockReportFacts(ctx, strings.TrimSpace(symbol), nil, nil)
 	if err != nil {
@@ -59,7 +69,7 @@ func (service webAIChatService) Ask(
 	result, err := service.app.answerAIChatQuestionDetailed(ctx, strings.TrimSpace(symbol), nil, history, question, progress)
 	return web.AIChatAnswer{
 		Answer: result.Answer, FactsAt: result.FactsAt, FactsHash: result.FactsHash,
-		Agents: result.Agents, Fallback: result.Fallback,
+		Agents: result.Agents, Fallback: result.Fallback, Assessment: result.Assessment,
 	}, err
 }
 
@@ -76,7 +86,7 @@ func (service webAIChatService) AskWithChart(
 	result, err := service.app.answerAIChatQuestionDetailedWithChart(ctx, strings.TrimSpace(symbol), nil, history, question, chart, progress)
 	return web.AIChatAnswer{
 		Answer: result.Answer, FactsAt: result.FactsAt, FactsHash: result.FactsHash,
-		Agents: result.Agents, Fallback: result.Fallback,
+		Agents: result.Agents, Fallback: result.Fallback, Assessment: result.Assessment,
 	}, err
 }
 

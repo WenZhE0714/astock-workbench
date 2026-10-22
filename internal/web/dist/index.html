@@ -6,8 +6,8 @@
   <meta name="astock-default-symbol" content="{{.DefaultSymbol}}">
   <link rel="icon" href="data:,">
   <title>ASTOCK Web 行情</title>
-  <script type="module" crossorigin src="/assets/index.8400f57c.js"></script>
-  <link rel="stylesheet" href="/assets/index.1c8debcb.css">
+  <script type="module" crossorigin src="/assets/index.d602a3e2.js"></script>
+  <link rel="stylesheet" href="/assets/index.21e48675.css">
 </head>
 <body>
   <div id="app" v-cloak>
@@ -921,14 +921,16 @@
           </header>
 
           <div class="assistant-panel-scroll" ref="assistantScroll">
+            <div class="assistant-scope"><label for="assistant-scope">分析对象</label><select id="assistant-scope" v-model="assistantScope" :disabled="assistantBusy" @change="changeAssistantScope"><option value="auto">自动识别</option><option value="security">当前证券</option><option value="market">大盘</option></select><span v-if="assistantScope === 'market'">5 / 20 交易日</span></div>
             <div class="assistant-context" v-if="assistantContext">
               <div class="assistant-context-head"><div><strong v-text="assistantName"></strong><span v-text="displayCode(assistantContext.symbol || assistantSymbol)"></span></div><small v-text="assistantContextAge + (assistantContext.market_state ? ' · ' + assistantMarketStateLabel(assistantContext.market_state) : '') + (assistantFacts.technical && assistantFacts.technical.data_date ? ' · 日K ' + assistantFacts.technical.data_date : '')"></small></div>
-              <div class="assistant-context-metrics"><span>现价 <b v-text="assistantQuote.price ? priceText(assistantQuote.price) : priceText(quote.current)"></b></span><span :class="metricClass(assistantQuote.percent)" v-text="percentText(assistantQuote.percent)"></span><span>方向 <b v-text="assistantTechnical.bias || '--'"></b></span><span>量比 <b v-text="number(assistantQuote.volume_ratio || assistantTechnical.volume_ratio_20d)"></b></span><span>主力 <b :class="metricClass(assistantFundAvailable ? assistantFacts.fund.main_net_yuan : null)" v-text="assistantFundAvailable ? compact(assistantFacts.fund.main_net_yuan) : '--'"></b></span></div>
+              <div class="assistant-context-metrics" v-if="assistantContext.market_facts"><span v-for="index in assistantContext.market_facts.indices" :key="index.quote.symbol"><span v-text="index.quote.name || index.quote.symbol"></span> <b v-text="priceText(index.quote.price)"></b> <em :class="metricClass(index.quote.percent)" v-text="percentText(index.quote.percent)"></em></span></div>
+              <div class="assistant-context-metrics" v-else><span>现价 <b v-text="assistantQuote.price ? priceText(assistantQuote.price) : priceText(quote.current)"></b></span><span :class="metricClass(assistantQuote.percent)" v-text="percentText(assistantQuote.percent)"></span><span>方向 <b v-text="assistantTechnical.bias || '--'"></b></span><span>量比 <b v-text="number(assistantQuote.volume_ratio || assistantTechnical.volume_ratio_20d)"></b></span><span>主力 <b :class="metricClass(assistantFundAvailable ? assistantFacts.fund.main_net_yuan : null)" v-text="assistantFundAvailable ? compact(assistantFacts.fund.main_net_yuan) : '--'"></b></span></div>
               <div class="assistant-context-warning" v-if="assistantFacts.warnings && assistantFacts.warnings.length" v-text="'数据限制：' + assistantFacts.warnings[0]"></div>
             </div>
             <div class="assistant-context-loading" v-else-if="assistantLoading"><span></span><small>正在冻结行情与技术事实</small></div>
 
-            <section class="assistant-alert-section">
+            <section class="assistant-alert-section" v-if="assistantScope !== 'market'">
               <div class="assistant-section-head"><div><span class="assistant-section-kicker">LIVE SIGNALS</span><h3>实时提示</h3></div><span class="assistant-count" v-text="assistantVisibleAlerts.length ? assistantVisibleAlerts.length + ' 条' : '暂无'"></span></div>
               <div class="assistant-alert-list" v-if="assistantVisibleAlerts.length">
                 <button type="button" class="assistant-alert" v-for="alert in assistantVisibleAlerts" :key="alert.id" :class="assistantAlertClass(alert)" @click="selectAssistantAlert(alert)">
@@ -938,16 +940,17 @@
               <div class="assistant-empty" v-else>当前快照没有新的结构化触发或点位提醒</div>
             </section>
 
-            <section class="assistant-level-section" v-if="assistantLevels.length">
+            <section class="assistant-level-section" v-if="assistantScope !== 'market' && assistantLevels.length">
               <div class="assistant-section-head"><div><span class="assistant-section-kicker">PRICE MAP</span><h3>关键点位</h3></div><span class="assistant-count" v-text="assistantLevels.length + ' 个' "></span></div>
               <div class="assistant-level-list"><span v-for="level in assistantLevels" :key="level.kind" class="assistant-level" :class="assistantLevelClass(level)"><b v-text="level.label"></b><small v-text="assistantLevelText(level)"></small></span></div>
             </section>
 
             <div class="assistant-thread" ref="assistantThread" aria-live="polite">
-              <div class="assistant-empty assistant-thread-empty" v-if="!assistantTurns.length && !assistantBusy">先选一个问题，助手会基于当前快照回答。</div>
+              <div class="assistant-empty assistant-thread-empty" v-if="!assistantTurns.length && !assistantBusy">暂无问答</div>
               <article class="assistant-turn" v-for="(turn, index) in assistantTurns" :key="(turn.asked_at || index) + '-' + index">
+                <market-chat-review v-if="turn.assessment" :assessment="turn.assessment"></market-chat-review>
                 <div class="assistant-message assistant-user"><span class="assistant-message-label">你</span><p v-text="turn.question"></p></div>
-                <div class="assistant-message assistant-answer"><span class="assistant-message-label">Codex</span><p v-text="turn.answer"></p><small v-if="turn.facts_at" v-text="'事实快照 ' + formatDateTime(turn.facts_at) + (turn.facts_hash ? ' · ' + assistantShortHash(turn.facts_hash) : '')"></small><small class="assistant-fallback" v-if="turn.fallback">本轮模型不可用，已降级为确定性数据回答</small><div class="assistant-agent-status" v-if="turn.agents && turn.agents.length"><span v-for="agent in turn.agents" :key="agent.role || agent.label"><i :class="agent.status"></i><em v-text="(agent.label || agent.role) + ' · ' + assistantAgentStatusLabel(agent.status)"></em></span></div></div>
+                <div class="assistant-message assistant-answer"><span class="assistant-message-label">研究助手</span><div class="assistant-answer-body" v-html="renderAssistantAnswer(turn.answer)"></div><small v-if="turn.facts_at" v-text="'事实快照 ' + formatDateTime(turn.facts_at) + (turn.facts_hash ? ' · ' + assistantShortHash(turn.facts_hash) : '')"></small><small class="assistant-fallback" v-if="turn.fallback">本轮综合分析未完成，仅展示确定性数据</small><details class="assistant-agent-details" v-if="turn.agents && turn.agents.length"><summary>专业分析记录</summary><div v-for="agent in turn.agents" :key="agent.role || agent.label"><strong v-text="(agent.label || agent.role) + ' · ' + assistantAgentStatusLabel(agent.status)"></strong><div class="assistant-answer-body" v-if="agent.status === 'ok' && agent.analysis" v-html="renderAssistantAnswer(agent.analysis)"></div><p v-else-if="agent.status !== 'ok'">该项分析未完成，不计入支持或反对证据。</p></div></details></div>
               </article>
               <div class="assistant-pending" v-if="assistantBusy"><span class="assistant-spinner"></span><div><strong v-text="assistantJobStatus === 'queued' ? '排队中' : 'Agent 分析中'"></strong><small v-text="assistantJobProgress || '正在读取冻结事实'"></small></div><button type="button" class="assistant-cancel" @click="cancelAssistantJob">取消</button></div>
             </div>
@@ -963,10 +966,10 @@
               <small v-for="warning in assistantRuleDraft.warnings" :key="warning" v-text="warning"></small>
               <footer><button type="button" @click="assistantRuleDraft = null" :disabled="assistantRuleConfirming">放弃</button><button type="button" class="confirm" @click="confirmAssistantRule" :disabled="assistantRuleConfirming" v-text="assistantRuleConfirming ? '校验中…' : '确认保存计划'"></button></footer>
             </section>
-            <div class="assistant-prompts" v-if="!assistantBusy"><button type="button" v-for="prompt in ['当前结构偏多还是偏空？','触发观察价需要确认什么？','关键支撑和失效位在哪里？']" :key="prompt" @click="assistantPrompt(prompt)" v-text="prompt"></button></div>
-            <div class="assistant-rule-actions" v-if="!assistantBusy"><button type="button" :disabled="assistantRuleLoading || !assistantDraft.trim()" @click="draftAssistantRule" v-text="assistantRuleLoading ? '正在生成受限草案…' : '生成监控规则草案'"></button><small>仅在当前日K页可用；确认后只保存计划，不自动启用监控。</small></div>
+            <div class="assistant-prompts" v-if="!assistantBusy"><button type="button" v-for="prompt in (assistantScope === 'market' ? ['大盘未来5个和20个交易日偏涨还是偏跌？','三大指数是否共振？最强反证是什么？','哪些条件会改变刚才的大盘判断？'] : ['现在适合介入还是继续等？最关键的依据是什么？','如果已经持有，什么条件会改变判断？','当前判断最强的反证是什么？'])" :key="prompt" @click="assistantPrompt(prompt)" v-text="prompt"></button></div>
+            <div class="assistant-rule-actions" v-if="!assistantBusy && assistantScope !== 'market'"><button type="button" :disabled="assistantRuleLoading || !assistantDraft.trim()" @click="draftAssistantRule" v-text="assistantRuleLoading ? '正在生成受限草案…' : '生成监控规则草案'"></button><small>仅在当前日K页可用；确认后只保存计划，不自动启用监控。</small></div>
             <form class="assistant-composer" @submit.prevent="sendAssistantMessage">
-              <textarea ref="assistantInput" v-model="assistantDraft" rows="2" maxlength="4000" :disabled="assistantBusy || assistantLoading" placeholder="询问当前股票，例如：现在更应该观察什么？" aria-label="询问 AI 研究助手" @keydown.ctrl.enter.prevent="sendAssistantMessage" @keydown.meta.enter.prevent="sendAssistantMessage"></textarea>
+              <textarea ref="assistantInput" v-model="assistantDraft" rows="2" maxlength="4000" :disabled="assistantBusy || assistantLoading" :placeholder="assistantScope === 'market' ? '例如：未来5个交易日偏涨还是偏跌？' : '例如：未持有，计划观察一周，现在适合介入吗？'" aria-label="询问 AI 研究助手" @keydown.ctrl.enter.prevent="sendAssistantMessage" @keydown.meta.enter.prevent="sendAssistantMessage"></textarea>
               <button type="submit" class="assistant-send" :disabled="assistantBusy || assistantLoading || !assistantDraft.trim()" title="发送问题" aria-label="发送问题">发送</button>
             </form>
             <div class="assistant-disclaimer">回答基于带时间戳的结构化快照，仅供研究参考；不会自动下单。</div>

@@ -22,19 +22,21 @@ import (
 // AIChatContext is the frozen, structured snapshot supplied to the Web
 // assistant. The Web layer never asks the model to fetch data itself.
 type AIChatContext struct {
-	Symbol string
-	Name   string
-	Facts  domain.StockReportFacts
+	Symbol      string
+	Name        string
+	Facts       domain.StockReportFacts
+	MarketFacts *domain.MarketChatFacts
 }
 
 // AIChatAnswer is the result of one read-only Agent run. Fallback is true when
 // the deterministic answer was used because one or more model calls failed.
 type AIChatAnswer struct {
-	Answer    string
-	FactsAt   time.Time
-	FactsHash string
-	Agents    []domain.AgentResearchRun
-	Fallback  bool
+	Answer     string
+	FactsAt    time.Time
+	FactsHash  string
+	Agents     []domain.AgentResearchRun
+	Fallback   bool
+	Assessment *domain.MarketChatAssessment
 }
 
 type AIChatConversation struct {
@@ -107,6 +109,7 @@ type assistantAlert struct {
 }
 
 type assistantContextResponse struct {
+	MarketFacts  *domain.MarketChatFacts `json:"market_facts,omitempty"`
 	Symbol       string                  `json:"symbol"`
 	Name         string                  `json:"name,omitempty"`
 	FactsAt      time.Time               `json:"facts_at"`
@@ -131,6 +134,7 @@ type assistantAlertsResponse struct {
 }
 
 type assistantChatRequest struct {
+	Scope    string               `json:"scope,omitempty"`
 	Symbol   string               `json:"symbol"`
 	Question string               `json:"question"`
 	Chart    *assistantChartInput `json:"chart,omitempty"`
@@ -151,13 +155,14 @@ type assistantChatResponse struct {
 }
 
 type assistantChatAnswerResult struct {
-	Answer      string                    `json:"answer"`
-	AskedAt     time.Time                 `json:"asked_at"`
-	FactsAt     time.Time                 `json:"facts_at,omitempty"`
-	FactsHash   string                    `json:"facts_hash,omitempty"`
-	Agents      []domain.AgentResearchRun `json:"agents,omitempty"`
-	Fallback    bool                      `json:"fallback,omitempty"`
-	SaveWarning string                    `json:"save_warning,omitempty"`
+	Assessment  *domain.MarketChatAssessment `json:"assessment,omitempty"`
+	Answer      string                       `json:"answer"`
+	AskedAt     time.Time                    `json:"asked_at"`
+	FactsAt     time.Time                    `json:"facts_at,omitempty"`
+	FactsHash   string                       `json:"facts_hash,omitempty"`
+	Agents      []domain.AgentResearchRun    `json:"agents,omitempty"`
+	Fallback    bool                         `json:"fallback,omitempty"`
+	SaveWarning string                       `json:"save_warning,omitempty"`
 }
 
 type assistantChatJob struct {
@@ -309,7 +314,8 @@ func (s *Server) handleAssistantContext(writer http.ResponseWriter, request *htt
 	alerts := sortAssistantAlerts(append(buildAssistantAlerts(latest, symbol), assistantFactLevelAlerts(prepared.Facts)...), 12)
 	alerts = sortAssistantAlerts(append(alerts, s.planMonitorAlerts(symbol)...), 12)
 	response := assistantContextResponse{
-		Symbol: prepared.Symbol, Name: prepared.Name, FactsAt: prepared.Facts.GeneratedAt,
+		MarketFacts: prepared.MarketFacts,
+		Symbol:      prepared.Symbol, Name: prepared.Name, FactsAt: prepared.Facts.GeneratedAt,
 		FactsHash: prepared.Facts.SnapshotHash, Facts: prepared.Facts,
 		KeyLevels: assistantKeyLevels(prepared.Facts), History: assistantHistoryForWeb(conversation.Turns),
 		Alerts: alerts, AlertAt: latest.GeneratedAt, MarketState: latest.MarketState, TradingDate: latest.TradingDate,
@@ -428,6 +434,15 @@ func (s *Server) startAssistantChat(writer http.ResponseWriter, request *http.Re
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
 	defer cancel()
+	isMarket, err := assistantMarketTarget(input.Symbol, input.Question, input.Scope)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
+		return
+	}
+	if isMarket {
+		input.Symbol = domain.MarketChatSymbol
+		input.Chart = nil
+	}
 	symbol, err := s.resolveAssistantSymbol(ctx, input.Symbol)
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, errorResponse{Error: err.Error()})
@@ -442,7 +457,7 @@ func (s *Server) startAssistantChat(writer http.ResponseWriter, request *http.Re
 		writeJSON(writer, http.StatusInternalServerError, errorResponse{Error: "读取AI会话失败: " + err.Error()})
 		return
 	}
-	history := assistantHistoryForModel(conversation.Turns)
+	history := conversation.Turns
 	chart, err := s.resolveAssistantChartContext(ctx, symbol, input.Chart)
 	if err != nil {
 		writeJSON(writer, http.StatusConflict, errorResponse{Error: err.Error()})
@@ -488,8 +503,14 @@ func (s *Server) cancelAssistantChat(writer http.ResponseWriter, request *http.R
 
 func (s *Server) resolveAssistantSymbol(ctx context.Context, raw string) (string, error) {
 	input := strings.TrimSpace(raw)
+	if input == domain.MarketChatSymbol || market.IsBroadMarketSymbol(input) {
+		return domain.MarketChatSymbol, nil
+	}
 	if input == "" {
 		input = strings.TrimSpace(s.defaultSymbol)
+	}
+	if market.IsBroadMarketSymbol(input) {
+		return domain.MarketChatSymbol, nil
 	}
 	if input == "" {
 		return "", fmt.Errorf("缺少股票代码或名称")
@@ -503,6 +524,9 @@ func (s *Server) resolveAssistantSymbol(ctx context.Context, raw string) (string
 	symbol, err := s.resolver.Resolve(ctx, input)
 	if err != nil {
 		return "", err
+	}
+	if market.IsBroadMarketSymbol(symbol) {
+		return domain.MarketChatSymbol, nil
 	}
 	if !market.ValidPrefixedSymbol(symbol) {
 		return "", fmt.Errorf("无法解析有效股票代码")
@@ -610,14 +634,14 @@ func (s *Server) runAssistantJob(job *assistantChatJob) {
 		return
 	}
 	askedAt := s.currentTime()
-	turn := domain.AIChatTurn{AskedAt: askedAt, FactsAt: answer.FactsAt, FactsHash: answer.FactsHash, Question: job.question, Answer: answer.Answer, Agents: append([]domain.AgentResearchRun(nil), answer.Agents...), Fallback: answer.Fallback}
+	turn := domain.AIChatTurn{AskedAt: askedAt, FactsAt: answer.FactsAt, FactsHash: answer.FactsHash, Question: job.question, Answer: answer.Answer, Agents: append([]domain.AgentResearchRun(nil), answer.Agents...), Fallback: answer.Fallback, Assessment: answer.Assessment}
 	history := append([]domain.AIChatTurn(nil), job.history...)
 	history = append(history, turn)
 	saveWarning := ""
 	if saveErr := s.aiChatService.Save(jobContext, job.symbol, job.name, history); saveErr != nil {
 		saveWarning = saveErr.Error()
 	}
-	result := &assistantChatAnswerResult{Answer: answer.Answer, AskedAt: askedAt, FactsAt: answer.FactsAt, FactsHash: answer.FactsHash, Agents: append([]domain.AgentResearchRun(nil), answer.Agents...), Fallback: answer.Fallback, SaveWarning: saveWarning}
+	result := &assistantChatAnswerResult{Answer: answer.Answer, AskedAt: askedAt, FactsAt: answer.FactsAt, FactsHash: answer.FactsHash, Agents: append([]domain.AgentResearchRun(nil), answer.Agents...), Fallback: answer.Fallback, SaveWarning: saveWarning, Assessment: answer.Assessment}
 	job.complete(result, s.currentTime())
 }
 

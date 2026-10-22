@@ -1126,6 +1126,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/assistant/context", s.handleAssistantContext)
 	mux.HandleFunc("/api/assistant/alerts", s.handleAssistantAlerts)
 	mux.HandleFunc("/api/assistant/chat", s.handleAssistantChat)
+	mux.HandleFunc("/api/assistant/market-review", s.handleMarketChatReview)
 	mux.HandleFunc("/api/assistant/rule-drafts", s.handleAssistantRuleDraft)
 	mux.HandleFunc("/api/ai/config", s.handleAIConfig)
 	mux.HandleFunc("/api/ai/config/test", s.handleAIConfigTest)

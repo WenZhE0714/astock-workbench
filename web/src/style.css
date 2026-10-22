@@ -1378,6 +1378,32 @@ html.assistant-open, body.assistant-open { overflow:hidden; overscroll-behavior:
 .assistant-user { align-self:flex-end; border-color:#35545e; background:#1b3038; }
 .assistant-user .assistant-message-label { color:#a7dfea; }
 .assistant-answer { align-self:flex-start; background:#171f23; }
+.assistant-answer-body { min-width:0; font-size:12px; line-height:1.65; overflow-wrap:anywhere; letter-spacing:0; }
+.assistant-answer-body p { margin:7px 0; font-size:12px; line-height:1.65; white-space:normal; }
+.assistant-answer-body h1,.assistant-answer-body h2,.assistant-answer-body h3,.assistant-answer-body h4,.assistant-answer-body h5,.assistant-answer-body h6 { margin:13px 0 5px; font-size:13px; line-height:1.5; letter-spacing:0; }
+.assistant-answer-body ul,.assistant-answer-body ol { margin:7px 0; padding-left:20px; }
+.assistant-answer-body li { margin:5px 0; }
+.assistant-answer-body blockquote { margin:7px 0; padding-left:9px; border-left:2px solid var(--line); color:var(--muted); }
+.assistant-answer-body blockquote p { color:var(--muted); font-size:10px; }
+.assistant-answer-body code { color:#a7dfea; white-space:pre-wrap; overflow-wrap:anywhere; }
+.assistant-answer-body pre { max-width:100%; overflow:auto; }
+.assistant-answer-body table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.assistant-answer-body th,.assistant-answer-body td { padding:4px; border:1px solid var(--line); }
+.assistant-answer-body a { color:var(--accent); text-decoration:underline; }
+.assistant-agent-details { margin-top:10px; border-top:1px solid var(--line); padding-top:7px; font-size:11px; }
+.assistant-agent-details summary { cursor:pointer; color:var(--muted); }
+.assistant-agent-details > div { margin-top:10px; }
+.assistant-scope { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 13px; font-size:11px; }
+.assistant-scope select { max-width:145px; background:var(--panel); color:var(--text); border:1px solid var(--line); padding:5px; }
+.assistant-scope span { color:var(--muted); }
+.market-chat-review { order:4; min-width:0; padding:10px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.market-chat-review header { display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:space-between; gap:8px; }
+.market-chat-review header > div { display:flex; gap:6px; }
+.market-chat-review .icon-button { width:28px; height:28px; padding:5px; display:inline-flex; align-items:center; justify-content:center; }
+.market-chat-review dl { margin:8px 0; display:grid; grid-template-columns:minmax(85px,1fr) minmax(0,2fr); gap:6px; }
+.market-chat-review dd { margin:0; text-align:right; }
+.market-chat-review p { margin:5px 0; }
+.market-chat-review small { color:var(--muted); }
 .assistant-agent-status { display:flex; flex-wrap:wrap; gap:4px 8px; margin-top:6px; }
 .assistant-agent-status span { display:inline-flex; align-items:center; gap:3px; color:var(--muted); font-size:8px; }
 .assistant-agent-status i { width:5px; height:5px; border-radius:50%; background:var(--muted); }
